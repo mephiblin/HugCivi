@@ -24,6 +24,7 @@ VISION_PIPELINES = {"image-classification", "object-detection", "image-segmentat
 AUDIO_PIPELINES = {"automatic-speech-recognition", "text-to-speech", "audio-classification", "audio-to-audio"}
 
 QUANT_RE = re.compile(r"\b(?:q[2-8](?:_[a-z0-9]+)*|int[248]|fp(?:8|16|32)|bf16|nf4|gguf)\b", re.IGNORECASE)
+CIVITAI_MODEL_FILE_TYPES = {"model", "negative", "diffusion model", "unet"}
 
 
 def slug(value: str | None, default: str = "unknown") -> str:
@@ -81,14 +82,28 @@ def classify_huggingface(metadata: dict[str, Any], repo_type: str, repo_id: str)
     }
 
 
-def classify_civitai(metadata: dict[str, Any], version_id: str, model_name: str | None) -> dict[str, Any]:
-    model = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
-    files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
-    primary_file = pick_primary_file(files)
-    file_metadata = primary_file.get("metadata") if isinstance(primary_file.get("metadata"), dict) else {}
-    model_type = str(model.get("type") or metadata.get("type") or primary_file.get("type") or "Model")
+def classify_civitai(
+    metadata: dict[str, Any],
+    version_id: str,
+    model_name: str | None,
+    file_selector: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw_model = metadata.get("model")
+    model = raw_model if isinstance(raw_model, dict) else {}
+    raw_files = metadata.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    primary_file = pick_civitai_file(files, file_selector)
+    raw_file_metadata = primary_file.get("metadata")
+    file_metadata = raw_file_metadata if isinstance(raw_file_metadata, dict) else {}
+    parent_type = str(model.get("type") or metadata.get("type") or "")
+    selected_file_type = str(primary_file.get("type") or "")
+    if selected_file_type and normalized_text(selected_file_type) != "model":
+        model_type = selected_file_type
+    else:
+        model_type = parent_type or selected_file_type or "Model"
     base_model = str(metadata.get("baseModel") or "unknown")
-    images = metadata.get("images") if isinstance(metadata.get("images"), list) else []
+    raw_images = metadata.get("images")
+    images = raw_images if isinstance(raw_images, list) else []
     thumbnail = pick_thumbnail(images)
 
     type_slug = {
@@ -118,14 +133,60 @@ def classify_civitai(metadata: dict[str, Any], version_id: str, model_name: str 
 
 
 def pick_primary_file(files: list[Any]) -> dict[str, Any]:
+    return pick_civitai_file(files)
+
+
+def pick_civitai_file(files: list[Any], selector: dict[str, Any] | None = None) -> dict[str, Any]:
     dict_files = [item for item in files if isinstance(item, dict)]
+    selector = selector or {}
+    file_id = normalized_text(selector.get("file_id"))
+    requested_type = normalized_text(selector.get("type"))
+    requested_format = normalized_text(selector.get("format"))
+    requested_size = normalized_text(selector.get("size"))
+    requested_fp = normalized_text(selector.get("fp"))
+    has_explicit_selector = bool(file_id or requested_type or requested_format or requested_size or requested_fp)
+
+    if file_id:
+        for item in dict_files:
+            if normalized_text(item.get("id")) == file_id:
+                return item
+
+    if requested_type or requested_format or requested_size or requested_fp:
+        for item in dict_files:
+            raw_metadata = item.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+            if requested_type and normalized_text(item.get("type")) != requested_type:
+                continue
+            if requested_format and normalized_text(metadata.get("format")) != requested_format:
+                continue
+            if requested_size and normalized_text(metadata.get("size")) != requested_size:
+                continue
+            if requested_fp and normalized_text(metadata.get("fp")) != requested_fp:
+                continue
+            return item
+
+    if has_explicit_selector:
+        return {}
+
+    if selector.get("primary"):
+        for item in dict_files:
+            if item.get("primary") and normalized_text(item.get("type")) in CIVITAI_MODEL_FILE_TYPES:
+                return item
+
+    for item in dict_files:
+        if item.get("primary") and normalized_text(item.get("type")) in CIVITAI_MODEL_FILE_TYPES:
+            return item
+    for item in dict_files:
+        if normalized_text(item.get("type")) in CIVITAI_MODEL_FILE_TYPES:
+            return item
     for item in dict_files:
         if item.get("primary"):
             return item
-    for item in dict_files:
-        if str(item.get("type") or "").lower() == "model":
-            return item
     return dict_files[0] if dict_files else {}
+
+
+def normalized_text(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def pick_thumbnail(images: list[Any]) -> str | None:

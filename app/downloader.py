@@ -9,18 +9,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse, unquote
+from urllib.parse import quote, urlparse, urlunparse, unquote
 
 import requests
 
 from . import db
-from .metadata import classify_civitai, classify_huggingface
+from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
+CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 
 JOB_QUEUE: queue.Queue[int] = queue.Queue()
 _WORKERS_STARTED = False
@@ -183,6 +184,81 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         db.update_job(job_id, filename="snapshot")
 
 
+def civitai_file_selector(parsed: ParsedDownload) -> dict[str, Any]:
+    return {
+        "file_id": parsed.civitai_file_id,
+        "type": parsed.civitai_file_type,
+        "format": parsed.civitai_file_format,
+        "size": parsed.civitai_file_size,
+        "fp": parsed.civitai_file_fp,
+        "primary": parsed.civitai_file_primary,
+    }
+
+
+def has_civitai_file_selector(parsed: ParsedDownload) -> bool:
+    return any(
+        [
+            parsed.civitai_file_id,
+            parsed.civitai_file_type,
+            parsed.civitai_file_format,
+            parsed.civitai_file_size,
+            parsed.civitai_file_fp,
+            parsed.civitai_file_primary,
+        ]
+    )
+
+
+def civitai_download_urls(
+    parsed: ParsedDownload,
+    metadata: dict[str, Any],
+    primary_file: dict[str, Any],
+    version_id: str,
+) -> list[str]:
+    urls: list[str] = []
+    has_selector = has_civitai_file_selector(parsed)
+    if parsed.civitai_download_url:
+        urls.append(parsed.civitai_download_url)
+
+    raw_files = metadata.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    selected_file = primary_file or pick_civitai_file(files, civitai_file_selector(parsed))
+    raw_mirrors = selected_file.get("mirrors")
+    mirrors = raw_mirrors if isinstance(raw_mirrors, list) else []
+    for mirror in mirrors:
+        if not isinstance(mirror, dict) or mirror.get("deletedAt"):
+            continue
+        mirror_url = mirror.get("url")
+        if isinstance(mirror_url, str):
+            urls.append(mirror_url)
+
+    file_download_url = selected_file.get("downloadUrl")
+    if isinstance(file_download_url, str):
+        urls.append(file_download_url)
+    metadata_download_url = metadata.get("downloadUrl")
+    if isinstance(metadata_download_url, str) and not has_selector:
+        urls.append(metadata_download_url)
+    if not has_selector:
+        urls.append(f"https://civitai.com/api/download/models/{version_id}")
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for url in urls:
+        clean_url = normalize_civitai_download_url(url)
+        if clean_url not in seen:
+            normalized.append(clean_url)
+            seen.add(clean_url)
+    return normalized
+
+
+def normalize_civitai_download_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() in {"civitai.red", "www.civitai.red", "civitai.green", "www.civitai.green"}:
+        if parsed.path.startswith("/api/download/"):
+            netloc = "civitai.com"
+            return urlunparse(parsed._replace(netloc=netloc))
+    return url
+
+
 def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     token = db.get_secret("CIVITAI_TOKEN")
     headers = auth_headers(token)
@@ -192,14 +268,25 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     metadata: dict[str, Any] = {}
     model_name = None
     version_id = parsed.civitai_version_id
+    file_selector = civitai_file_selector(parsed)
 
     if version_id:
-        meta_url = f"https://civitai.com/api/v1/model-versions/{version_id}"
+        meta_url = f"{CIVITAI_API_BASE}/model-versions/{version_id}"
         db.append_log(job_id, f"Civitai metadata: {meta_url}")
         metadata = fetch_json(session, meta_url)
-        model_name = metadata.get("model", {}).get("name") or metadata.get("modelName") or metadata.get("name")
+        raw_model = metadata.get("model")
+        model_info = raw_model if isinstance(raw_model, dict) else {}
+        model_name = model_info.get("name") or metadata.get("modelName") or metadata.get("name")
+    elif parsed.civitai_hash:
+        meta_url = f"{CIVITAI_API_BASE}/model-versions/by-hash/{parsed.civitai_hash}"
+        db.append_log(job_id, f"Civitai metadata by hash: {meta_url}")
+        metadata = fetch_json(session, meta_url)
+        version_id = str(metadata.get("id") or "")
+        raw_model = metadata.get("model")
+        model_info = raw_model if isinstance(raw_model, dict) else {}
+        model_name = model_info.get("name") or metadata.get("modelName") or metadata.get("name")
     elif parsed.civitai_model_id:
-        meta_url = f"https://civitai.com/api/v1/models/{parsed.civitai_model_id}"
+        meta_url = f"{CIVITAI_API_BASE}/models/{parsed.civitai_model_id}"
         db.append_log(job_id, f"Civitai metadata: {meta_url}")
         metadata = fetch_json(session, meta_url)
         model_name = metadata.get("name")
@@ -217,15 +304,11 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     if not version_id:
         raise ValueError("Civitai modelVersionId를 결정하지 못했습니다.")
 
-    archive_info = classify_civitai(metadata, version_id, model_name)
-    primary_file = archive_info.get("primary_file") if isinstance(archive_info.get("primary_file"), dict) else {}
+    archive_info = classify_civitai(metadata, version_id, model_name, file_selector)
+    raw_primary_file = archive_info.get("primary_file")
+    primary_file = raw_primary_file if isinstance(raw_primary_file, dict) else {}
 
-    download_url = (
-        parsed.civitai_download_url
-        or primary_file.get("downloadUrl")
-        or metadata.get("downloadUrl")
-        or f"https://civitai.com/api/download/models/{version_id}"
-    )
+    download_urls = civitai_download_urls(parsed, metadata, primary_file, version_id)
 
     target = base_target(parsed, *archive_info["target_parts"])
     target.mkdir(parents=True, exist_ok=True)
@@ -240,14 +323,34 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
             "model_name": model_name,
             "model_id": parsed.civitai_model_id,
             "version_id": version_id,
+            "hash": parsed.civitai_hash,
+            "file_selector": file_selector,
             "raw_input": parsed.raw_input,
             "archive_info": archive_info,
             "metadata": metadata,
         },
     )
 
-    db.append_log(job_id, f"Civitai file download: version={version_id}")
-    saved = stream_download(job_id, session, download_url, target)
+    if not download_urls:
+        raise ValueError("Civitai download URL을 찾지 못했습니다.")
+
+    saved = None
+    last_error: Exception | None = None
+    for index, download_url in enumerate(download_urls, start=1):
+        try:
+            db.append_log(
+                job_id,
+                f"Civitai file download: version={version_id} url={redact_sensitive_text(download_url)}",
+            )
+            saved = stream_download(job_id, session, download_url, target)
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            db.append_log(job_id, f"Civitai download failed ({index}/{len(download_urls)}): {exc}")
+
+    if saved is None:
+        raise RuntimeError(f"Civitai download failed: {last_error}")
+
     db.update_job(job_id, filename=saved.name)
 
 
@@ -315,7 +418,10 @@ def update_job_archive_info(job_id: int, target: Path, archive_info: dict[str, A
 
 
 def metadata_summary(metadata: dict[str, Any]) -> dict[str, Any]:
-    model = metadata.get("model") if isinstance(metadata.get("model"), dict) else {}
+    raw_model = metadata.get("model")
+    model = raw_model if isinstance(raw_model, dict) else {}
+    raw_images = metadata.get("images")
+    images = raw_images if isinstance(raw_images, list) else None
     return {
         "id": metadata.get("id") or metadata.get("modelId"),
         "name": metadata.get("name") or metadata.get("modelId"),
@@ -325,7 +431,7 @@ def metadata_summary(metadata: dict[str, Any]) -> dict[str, Any]:
         "baseModel": metadata.get("baseModel"),
         "baseModelType": metadata.get("baseModelType"),
         "files": metadata.get("files"),
-        "images": metadata.get("images")[:3] if isinstance(metadata.get("images"), list) else None,
+        "images": images[:3] if images else None,
         "stats": metadata.get("stats"),
         "config": metadata.get("config"),
         "cardData": metadata.get("cardData"),
@@ -348,7 +454,7 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
     part_path = target_dir / f"{filename}.part"
 
     existing = part_path.stat().st_size if part_path.exists() else 0
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"Accept-Encoding": "identity"}
     if existing > 0:
         headers["Range"] = f"bytes={existing}-"
         db.append_log(job_id, f"resume from {human_bytes(existing)}")
@@ -398,6 +504,9 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
                     db.update_job(job_id, progress_bytes=downloaded, total_bytes=total)
                     last_update = now
 
+    if total is not None and downloaded < total:
+        raise requests.ConnectionError(f"incomplete download: {human_bytes(downloaded)} / {human_bytes(total)}")
+
     part_path.replace(final_path)
     db.update_job(job_id, progress_bytes=final_path.stat().st_size, total_bytes=final_path.stat().st_size)
     db.append_log(job_id, f"saved: {final_path} ({human_bytes(final_path.stat().st_size)})")
@@ -408,7 +517,7 @@ def resolve_remote_filename(session: requests.Session, url: str) -> tuple[str, i
     filename = url_basename(url)
     total = None
     try:
-        response = session.head(url, timeout=(10, 30), allow_redirects=True)
+        response = session.head(url, timeout=(10, 30), allow_redirects=True, headers={"Accept-Encoding": "identity"})
         if response.ok:
             cd_filename = filename_from_content_disposition(response.headers.get("content-disposition"))
             if cd_filename:

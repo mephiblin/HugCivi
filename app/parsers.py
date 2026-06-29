@@ -7,6 +7,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .models import ParsedDownload
 
 CIVITAI_VERSION_ID_RE = re.compile(r"^\d{3,}$")
+CIVITAI_HOSTS = {
+    "civitai.com",
+    "www.civitai.com",
+    "civitai.red",
+    "www.civitai.red",
+    "civitai.green",
+    "www.civitai.green",
+}
 
 
 class InputParseError(ValueError):
@@ -37,7 +45,7 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
         host = parsed.netloc.lower()
         if host in {"huggingface.co", "www.huggingface.co", "hf.co", "www.hf.co"}:
             return parse_huggingface_url(text, target_subdir=target_subdir)
-        if host.endswith("civitai.com"):
+        if is_civitai_host(host):
             return parse_civitai_url(text, target_subdir=target_subdir)
         return ParsedDownload(source="generic", raw_input=text, target_subdir=target_subdir, url=text)
 
@@ -236,10 +244,39 @@ def parse_hf_cli(text: str, target_subdir: str | None = None) -> ParsedDownload:
     )
 
 
+def is_civitai_host(host: str) -> bool:
+    return host.lower() in CIVITAI_HOSTS
+
+
+def first_query(query: dict[str, list[str]], *keys: str) -> str | None:
+    for key in keys:
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return None
+
+
+def query_bool(query: dict[str, list[str]], *keys: str) -> bool:
+    value = first_query(query, *keys)
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def civitai_file_params(query: dict[str, list[str]]) -> dict:
+    return {
+        "civitai_file_id": first_query(query, "fileId", "file_id", "fileID"),
+        "civitai_file_type": first_query(query, "type"),
+        "civitai_file_format": first_query(query, "format"),
+        "civitai_file_size": first_query(query, "size"),
+        "civitai_file_fp": first_query(query, "fp"),
+        "civitai_file_primary": query_bool(query, "primary", "isPrimary", "is_primary"),
+    }
+
+
 def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownload:
     u = urlparse(url)
     parts = [p for p in u.path.strip("/").split("/") if p]
     query = parse_qs(u.query)
+    file_params = civitai_file_params(query)
 
     version_id = None
     model_id = None
@@ -257,6 +294,22 @@ def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownl
             target_subdir=target_subdir,
             civitai_version_id=version_id,
             civitai_download_url=url,
+            **file_params,
+        )
+
+    if (
+        len(parts) >= 5
+        and parts[0] == "api"
+        and parts[1] == "v1"
+        and parts[2] in {"model-versions", "modelVersions"}
+        and parts[3] == "by-hash"
+    ):
+        return ParsedDownload(
+            source="civitai",
+            raw_input=url,
+            target_subdir=target_subdir,
+            civitai_hash=parts[4],
+            **file_params,
         )
 
     if len(parts) >= 4 and parts[0] == "api" and parts[1] == "v1" and parts[2] in {"model-versions", "modelVersions"}:
@@ -266,6 +319,7 @@ def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownl
             raw_input=url,
             target_subdir=target_subdir,
             civitai_version_id=version_id,
+            **file_params,
         )
 
     if len(parts) >= 4 and parts[0] == "api" and parts[1] == "v1" and parts[2] == "models":
@@ -275,6 +329,7 @@ def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownl
             raw_input=url,
             target_subdir=target_subdir,
             civitai_model_id=model_id,
+            **file_params,
         )
 
     if len(parts) >= 2 and parts[0] == "models":
@@ -285,6 +340,7 @@ def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownl
             target_subdir=target_subdir,
             civitai_model_id=model_id,
             civitai_version_id=version_id,
+            **file_params,
         )
 
     raise InputParseError("Civitai URL에서 모델 ID 또는 버전 ID를 찾지 못했습니다.")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field, fields
 from typing import Literal
 
 SourceType = Literal["huggingface", "civitai", "generic"]
@@ -23,7 +23,14 @@ class ParsedDownload:
     # Civitai
     civitai_model_id: str | None = None
     civitai_version_id: str | None = None
+    civitai_hash: str | None = None
     civitai_download_url: str | None = None
+    civitai_file_id: str | None = None
+    civitai_file_type: str | None = None
+    civitai_file_format: str | None = None
+    civitai_file_size: str | None = None
+    civitai_file_fp: str | None = None
+    civitai_file_primary: bool = False
 
     # Generic URL
     url: str | None = None
@@ -33,4 +40,5 @@ class ParsedDownload:
 
     @staticmethod
     def from_dict(data: dict) -> "ParsedDownload":
-        return ParsedDownload(**data)
+        allowed = {field.name for field in fields(ParsedDownload)}
+        return ParsedDownload(**{key: value for key, value in data.items() if key in allowed})
