@@ -397,15 +397,19 @@ a:hover {
 
 .settings-nav-item {
   display: flex;
+  width: 100%;
   min-height: 36px;
   align-items: center;
   gap: 9px;
+  border: 0;
   border-radius: 7px;
   padding: 8px 10px;
   color: #111827;
+  background: transparent;
   font-size: 14px;
   font-weight: 600;
   text-decoration: none;
+  text-align: left;
 }
 
 .settings-nav-item + .settings-nav-item {
@@ -422,24 +426,21 @@ a:hover {
 }
 
 .settings-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 0 30px;
+  overflow: hidden;
 }
 
 .settings-header {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   display: flex;
   min-height: 76px;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
   border-bottom: 1px solid #edf1f7;
-  padding: 16px 0;
+  padding: 16px 30px;
   background: #ffffff;
 }
 
@@ -460,12 +461,15 @@ a:hover {
 }
 
 .settings-block {
-  border-bottom: 1px solid #edf1f7;
-  padding: 22px 0 24px;
+  padding: 0;
 }
 
 .settings-block-copy {
   margin-bottom: 14px;
+}
+
+.settings-pane > .settings-block-copy {
+  display: none;
 }
 
 .settings-block-copy h3 {
@@ -483,6 +487,21 @@ a:hover {
 
 .settings-grid.two-cols {
   align-items: start;
+}
+
+.settings-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 22px 30px 24px;
+}
+
+.settings-pane {
+  display: none;
+}
+
+.settings-pane.active {
+  display: block;
 }
 
 .setting-field {
@@ -508,12 +527,11 @@ a:hover {
 }
 
 .settings-footer {
-  position: sticky;
-  bottom: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 14px 0 18px;
+  border-top: 1px solid #edf1f7;
+  padding: 14px 30px 18px;
   background: #ffffff;
 }
 
@@ -1386,11 +1404,23 @@ a:hover {
   }
 
   .settings-nav-item {
+    width: auto;
     flex: 0 0 auto;
   }
 
-  .settings-form {
-    padding: 0 16px;
+  .settings-header {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .settings-content {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .settings-footer {
+    padding-right: 16px;
+    padding-left: 16px;
   }
 
   .settings-header {

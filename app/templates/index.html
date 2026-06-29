@@ -182,42 +182,37 @@
             <path d="M17.6 5 19 6.4 6.4 19 5 17.6 17.6 5Z"/>
           </svg>
         </button>
-        <a class="settings-nav-item active" href="#settings-general">
-          <span aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.5-2-3.5-2.4 1a7.3 7.3 0 0 0-2.6-1.5L14 2.5h-4L9.6 5a7.3 7.3 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a7.6 7.6 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a7.3 7.3 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5A7.3 7.3 0 0 0 17 17.5l2.4 1 2-3.5-2-1.5ZM12 15.2A3.2 3.2 0 1 1 12 8.8a3.2 3.2 0 0 1 0 6.4Z"/>
-            </svg>
-          </span>
-          일반
-        </a>
-        <a class="settings-nav-item" href="#settings-tokens">
+        <button type="button" class="settings-nav-item active" data-settings-pane="settings-tokens">
           <span aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
               <path d="M7.5 14a5.5 5.5 0 1 1 5-3.2l6.7 6.7V20H17v-2.2h-2.2v-2.2h-2.3A5.4 5.4 0 0 1 7.5 14Zm0-2a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
             </svg>
           </span>
           API 토큰
-        </a>
-        <a class="settings-nav-item" href="#settings-folders">
+        </button>
+        <button type="button" class="settings-nav-item" data-settings-pane="settings-folders">
           <span aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
               <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2H18a3 3 0 0 1 3 3v8.5A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Zm2 1V17.5c0 .3.2.5.5.5h13c.3 0 .5-.2.5-.5V9a1 1 0 0 0-1-1h-7.3l-2-2H5.5c-.3 0-.5.2-.5.5Z"/>
             </svg>
           </span>
           폴더
-        </a>
+        </button>
       </nav>
 
       <form class="settings-form" method="post" action="/settings">
-        <header class="settings-header" id="settings-general">
+        <header class="settings-header">
           <div>
-            <h2 id="settings-title">설정</h2>
-            <p>다운로드 토큰과 자동 분류 폴더를 한곳에서 관리합니다.</p>
+            <h2 id="settings-title">API 토큰</h2>
+            <p id="settings-description">비워 두면 기존에 저장된 토큰을 유지합니다.</p>
           </div>
           <button type="submit" class="settings-save top-save">저장</button>
         </header>
 
-        <section class="settings-block" id="settings-tokens">
+        <div class="settings-content">
+        <section class="settings-block settings-pane active" id="settings-tokens"
+                 data-settings-title="API 토큰"
+                 data-settings-description="비워 두면 기존에 저장된 토큰을 유지합니다.">
           <div class="settings-block-copy">
             <h3>API 토큰</h3>
             <p>비워 두면 기존에 저장된 토큰을 유지합니다.</p>
@@ -236,7 +231,9 @@
           </div>
         </section>
 
-        <section class="settings-block" id="settings-folders">
+        <section class="settings-block settings-pane" id="settings-folders"
+                 data-settings-title="폴더 설정"
+                 data-settings-description="모든 경로는 /data 기준입니다. 다운로드 정보에 따라 기본 저장 위치로 사용됩니다.">
           <div class="settings-block-copy">
             <h3>폴더 설정</h3>
             <p>모든 경로는 /data 기준입니다. 다운로드 정보에 따라 기본 저장 위치로 사용됩니다.</p>
@@ -305,6 +302,7 @@
             </label>
           </div>
         </section>
+        </div>
 
         <footer class="settings-footer">
           <button type="button" class="settings-cancel" id="settings-cancel">취소</button>
@@ -343,8 +341,11 @@
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
     const settingsCancel = document.getElementById('settings-cancel');
-    const settingsForm = document.querySelector('.settings-form');
+    const settingsContent = document.querySelector('.settings-content');
+    const settingsTitle = document.getElementById('settings-title');
+    const settingsDescription = document.getElementById('settings-description');
     const settingsNavItems = document.querySelectorAll('.settings-nav-item');
+    const settingsPanes = document.querySelectorAll('.settings-pane');
     const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
@@ -407,12 +408,8 @@
     settingsClose.addEventListener('click', closeSettingsModal);
     settingsCancel.addEventListener('click', closeSettingsModal);
     settingsNavItems.forEach(item => {
-      item.addEventListener('click', event => {
-        event.preventDefault();
-        const targetId = item.getAttribute('href')?.slice(1);
-        if (targetId) {
-          scrollSettingsTo(targetId);
-        }
+      item.addEventListener('click', () => {
+        activateSettingsPane(item.dataset.settingsPane || 'settings-tokens');
       });
     });
     mobileTabs.forEach(button => {
@@ -475,10 +472,10 @@
     function openSettingsModal() {
       tokenModal.hidden = false;
       document.body.classList.add('modal-open');
-      if (settingsForm) {
-        settingsForm.scrollTop = 0;
+      if (settingsContent) {
+        settingsContent.scrollTop = 0;
       }
-      setActiveSettingsNav('settings-general');
+      activateSettingsPane('settings-tokens');
       settingsClose.focus();
     }
 
@@ -488,20 +485,21 @@
       document.body.classList.remove('modal-open');
     }
 
-    function scrollSettingsTo(targetId) {
-      const target = document.getElementById(targetId);
-      if (!target || !settingsForm) return;
-      setActiveSettingsNav(targetId);
-      const formRect = settingsForm.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const nextTop = settingsForm.scrollTop + targetRect.top - formRect.top - 10;
-      settingsForm.scrollTo({top: Math.max(0, nextTop), behavior: 'smooth'});
-    }
-
-    function setActiveSettingsNav(targetId) {
-      settingsNavItems.forEach(item => {
-        item.classList.toggle('active', item.getAttribute('href') === `#${targetId}`);
+    function activateSettingsPane(targetId) {
+      settingsPanes.forEach(pane => {
+        pane.classList.toggle('active', pane.id === targetId);
       });
+      settingsNavItems.forEach(item => {
+        item.classList.toggle('active', item.dataset.settingsPane === targetId);
+      });
+      const activePane = document.getElementById(targetId);
+      if (activePane) {
+        settingsTitle.textContent = activePane.dataset.settingsTitle || '설정';
+        settingsDescription.textContent = activePane.dataset.settingsDescription || '';
+      }
+      if (settingsContent) {
+        settingsContent.scrollTop = 0;
+      }
     }
 
     function switchToLibrary(path) {
