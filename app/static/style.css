@@ -114,6 +114,9 @@ a:hover {
 }
 
 .folder-section {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-height: 0;
   padding: 0 4px;
 }
@@ -146,8 +149,8 @@ a:hover {
 }
 
 .folder-tree {
-  height: 150px;
-  max-height: 34dvh;
+  flex: 1 1 auto;
+  min-height: 260px;
   overflow: auto;
   border: 1px solid var(--soft-line);
   border-radius: 6px;
@@ -937,6 +940,8 @@ a:hover {
   }
 
   .folder-tree {
+    flex: initial;
+    min-height: 190px;
     height: 190px;
   }
 
