@@ -470,31 +470,14 @@ a:hover {
   gap: 6px;
   border: 1px solid #e1e5ea;
   border-radius: 28px;
-  padding: 0 9px 0 11px;
+  padding: 0 9px 0 22px;
   background: #ffffff;
   box-shadow: 0 9px 24px rgba(15, 23, 42, 0.08);
 }
 
-.bar-icon,
-.extension-button,
 .submit-orb {
   border: 0;
   flex: 0 0 auto;
-}
-
-.bar-icon {
-  display: inline-flex;
-  width: 35px;
-  height: 35px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  color: #111827;
-  background: transparent;
-}
-
-.bar-icon:hover {
-  background: #f1f5f9;
 }
 
 .download-input {
@@ -511,46 +494,6 @@ a:hover {
 
 .download-input::placeholder {
   color: #8b949e;
-}
-
-.download-form.search-mode .download-bar {
-  padding: 0 22px;
-}
-
-.download-form.search-mode .bar-icon,
-.download-form.search-mode .extension-button,
-.download-form.search-mode .submit-orb {
-  display: none;
-}
-
-.download-form.search-mode .download-input {
-  width: 100%;
-  text-align: left;
-}
-
-.download-form.search-mode .selected-folder-line {
-  display: none;
-}
-
-.extension-button {
-  display: inline-flex;
-  min-height: 35px;
-  align-items: center;
-  gap: 4px;
-  border-radius: 18px;
-  padding: 0 8px;
-  color: #7d6d59;
-  background: transparent;
-  white-space: nowrap;
-}
-
-.extension-button svg {
-  width: 15px;
-  height: 15px;
-}
-
-.extension-button:hover {
-  background: #f6f3ef;
 }
 
 .submit-orb {
@@ -978,11 +921,7 @@ a:hover {
     min-height: 52px;
     gap: 2px;
     padding-right: 7px;
-    padding-left: 7px;
-  }
-
-  .extension-button {
-    display: none;
+    padding-left: 16px;
   }
 
   .jobs-section {

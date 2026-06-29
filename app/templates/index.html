@@ -99,23 +99,8 @@
           <input id="target_subdir" name="target_subdir" type="hidden">
           <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
           <div class="download-bar">
-            <button type="button" class="bar-icon" title="추가" aria-label="추가">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M11 5h2v14h-2V5Zm-6 6h14v2H5v-2Z"/>
-              </svg>
-            </button>
             <input id="input_text" name="input_text" class="download-input"
-                   placeholder="무엇이든 물어보세요" autocomplete="off" required>
-            <button type="button" class="extension-button">Pro 확장
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="m7 9 5 5 5-5H7Z"/>
-              </svg>
-            </button>
-            <button type="button" class="bar-icon" title="음성 입력" aria-label="음성 입력">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Zm-1 13.9V21h2v-3.1a6 6 0 0 0 5-5.9h-2a4 4 0 0 1-8 0H6a6 6 0 0 0 5 5.9Z"/>
-              </svg>
-            </button>
+                   placeholder="URL 또는 다운로드 명령 입력" autocomplete="off" required>
             <button type="submit" class="submit-orb" title="다운로드 시작" aria-label="다운로드 시작">
               <span></span><span></span><span></span>
             </button>
@@ -208,7 +193,6 @@
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
     const refreshButton = document.getElementById('refresh-button');
-    const commandForm = document.getElementById('command-form');
     const commandInput = document.getElementById('input_text');
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeLibraryPath = null;
@@ -254,24 +238,12 @@
 
     refreshButton.addEventListener('click', refreshJobs);
 
-    commandForm.addEventListener('submit', event => {
-      if (activeLibraryPath !== null) {
-        event.preventDefault();
-        renderLibrary();
-      }
-    });
-
-    commandInput.addEventListener('input', () => {
-      if (activeLibraryPath !== null) renderLibrary();
-    });
-
     function switchToHome() {
       activeLibraryPath = null;
       targetInput.value = '';
-      commandForm.classList.remove('search-mode');
       commandInput.value = '';
       commandInput.required = true;
-      commandInput.placeholder = '무엇이든 물어보세요';
+      commandInput.placeholder = 'URL 또는 다운로드 명령 입력';
       commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
       selectedFolder.textContent = '자동 분류';
       document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
@@ -281,11 +253,10 @@
 
     function switchToLibrary(path) {
       activeLibraryPath = path || '';
-      commandForm.classList.add('search-mode');
       commandInput.value = '';
-      commandInput.required = false;
-      commandInput.placeholder = '라이브러리 검색';
-      commandInput.setAttribute('aria-label', '현재 폴더 내부 검색');
+      commandInput.required = true;
+      commandInput.placeholder = '이 폴더에 받을 URL 또는 다운로드 명령 입력';
+      commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
       homeView.classList.remove('active');
       libraryView.classList.add('active');
       renderLibrary();
@@ -342,13 +313,11 @@
 
     function renderLibrary() {
       const folder = activeLibraryPath || '';
-      const folderMatches = currentJobs.filter(job => jobMatchesFolder(job, folder));
-      const query = commandInput.value.trim().toLowerCase();
-      const matches = folderMatches.filter(job => jobMatchesQuery(job, query));
+      const matches = currentJobs.filter(job => jobMatchesFolder(job, folder));
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
-      libraryCount.textContent = query ? `${matches.length} / ${folderMatches.length}개` : `${matches.length}개`;
+      libraryCount.textContent = `${matches.length}개`;
       if (!matches.length) {
-        libraryGrid.innerHTML = `<div class="library-empty">${query ? '검색 결과가 없습니다.' : '이 폴더에 표시할 모델 카드가 없습니다.'}</div>`;
+        libraryGrid.innerHTML = '<div class="library-empty">이 폴더에 표시할 모델 카드가 없습니다.</div>';
         return;
       }
       libraryGrid.innerHTML = matches.map(job => {
@@ -371,21 +340,6 @@
           </div>
         </article>`;
       }).join('');
-    }
-
-    function jobMatchesQuery(job, query) {
-      if (!query) return true;
-      const values = [
-        job.model_title,
-        job.model_category,
-        job.model_type,
-        job.base_model,
-        job.precision,
-        job.file_format,
-        job.filename,
-        job.source,
-      ];
-      return values.some(value => String(value || '').toLowerCase().includes(query));
     }
 
     function jobMatchesFolder(job, folder) {
