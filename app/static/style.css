@@ -352,7 +352,7 @@ a:hover {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
   width: min(860px, calc(100vw - 48px));
-  max-height: min(780px, calc(100dvh - 48px));
+  height: min(780px, calc(100dvh - 48px));
   overflow: hidden;
   border: 1px solid #d7dde8;
   border-radius: 14px;
@@ -365,6 +365,8 @@ a:hover {
 }
 
 .settings-nav {
+  min-height: 0;
+  overflow: auto;
   border-right: 1px solid #edf1f7;
   padding: 14px 8px;
   background: #fbfcfe;
@@ -423,6 +425,7 @@ a:hover {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 30px;
 }
 
@@ -1363,6 +1366,7 @@ a:hover {
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-columns: 1fr;
     width: 100%;
+    height: calc(100dvh - 20px);
     max-height: calc(100dvh - 20px);
   }
 

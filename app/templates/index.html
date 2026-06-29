@@ -343,6 +343,8 @@
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
     const settingsCancel = document.getElementById('settings-cancel');
+    const settingsForm = document.querySelector('.settings-form');
+    const settingsNavItems = document.querySelectorAll('.settings-nav-item');
     const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
@@ -404,6 +406,15 @@
     });
     settingsClose.addEventListener('click', closeSettingsModal);
     settingsCancel.addEventListener('click', closeSettingsModal);
+    settingsNavItems.forEach(item => {
+      item.addEventListener('click', event => {
+        event.preventDefault();
+        const targetId = item.getAttribute('href')?.slice(1);
+        if (targetId) {
+          scrollSettingsTo(targetId);
+        }
+      });
+    });
     mobileTabs.forEach(button => {
       button.addEventListener('click', () => {
         activateMobileTab(button.dataset.mobileTab || 'download');
@@ -464,6 +475,10 @@
     function openSettingsModal() {
       tokenModal.hidden = false;
       document.body.classList.add('modal-open');
+      if (settingsForm) {
+        settingsForm.scrollTop = 0;
+      }
+      setActiveSettingsNav('settings-general');
       settingsClose.focus();
     }
 
@@ -471,6 +486,22 @@
       if (tokenModal.hidden) return;
       tokenModal.hidden = true;
       document.body.classList.remove('modal-open');
+    }
+
+    function scrollSettingsTo(targetId) {
+      const target = document.getElementById(targetId);
+      if (!target || !settingsForm) return;
+      setActiveSettingsNav(targetId);
+      const formRect = settingsForm.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const nextTop = settingsForm.scrollTop + targetRect.top - formRect.top - 10;
+      settingsForm.scrollTo({top: Math.max(0, nextTop), behavior: 'smooth'});
+    }
+
+    function setActiveSettingsNav(targetId) {
+      settingsNavItems.forEach(item => {
+        item.classList.toggle('active', item.getAttribute('href') === `#${targetId}`);
+      });
     }
 
     function switchToLibrary(path) {
