@@ -1582,6 +1582,57 @@ a:hover {
   font-size: 13px;
 }
 
+.properties-note-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.properties-note-editor textarea {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 13px;
+  line-height: 1.45;
+  outline: 0;
+}
+
+.properties-note-editor textarea:focus {
+  border-color: #8aa7ff;
+  box-shadow: 0 0 0 3px rgba(61, 102, 232, 0.12);
+}
+
+.properties-note-actions {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 9px;
+}
+
+.properties-note-actions button {
+  min-height: 30px;
+  border: 1px solid #d8dee8;
+  border-radius: 5px;
+  padding: 5px 11px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.properties-note-actions button:hover {
+  background: #f8fafc;
+}
+
+.properties-note-actions span {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .workflow-modal {
   position: fixed;
   inset: 0;

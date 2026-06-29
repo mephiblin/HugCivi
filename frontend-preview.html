@@ -540,6 +540,7 @@
     let workflowDropDepth = 0;
     let workflowDropTimer = null;
     let workflowImportActive = false;
+    const previewNotes = new Map();
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
     setupWorkflowDropImport();
@@ -627,6 +628,12 @@
     propertiesModal.addEventListener('click', event => {
       if (event.target === propertiesModal) closePropertiesModal();
       event.stopPropagation();
+    });
+    propertiesList.addEventListener('click', event => {
+      const button = event.target.closest('[data-note-save]');
+      if (!button) return;
+      event.preventDefault();
+      savePreviewPropertiesNote(button.dataset.notePath || '');
     });
 
     libraryGrid.addEventListener('contextmenu', event => {
@@ -1132,15 +1139,39 @@
     function showPreviewProperties(target) {
       propertiesTitle.textContent = target.name || '속성';
       propertiesPath.textContent = target.path ? `/data/${target.path}` : '/data';
+      const note = previewNotes.get(target.path || '') || '';
       propertiesList.innerHTML = `
         <div class="properties-row"><dt>종류</dt><dd>폴더</dd></div>
         <div class="properties-row"><dt>용량</dt><dd>548.0 MB</dd></div>
         <div class="properties-row"><dt>확장자</dt><dd>.json, .safetensors</dd></div>
         <div class="properties-row"><dt>날짜</dt><dd>${escapeHtml(new Date().toLocaleString())}</dd></div>
         <div class="properties-row"><dt>URL</dt><dd><a href="https://huggingface.co/openai-community/gpt2" target="_blank" rel="noopener">https://huggingface.co/openai-community/gpt2</a></dd></div>
+        <div class="properties-row"><dt>메모</dt><dd>${renderPreviewNoteEditor(target.path || '', note)}</dd></div>
       `;
       propertiesModal.hidden = false;
       document.body.classList.add('modal-open');
+    }
+
+    function renderPreviewNoteEditor(path, note) {
+      return `<div class="properties-note-editor">
+        <textarea data-note-input rows="5" placeholder="메모를 입력하세요.">${escapeHtml(note)}</textarea>
+        <div class="properties-note-actions">
+          <button type="button" data-note-save data-note-path="${escapeHtml(path)}">저장</button>
+          <span data-note-status></span>
+        </div>
+      </div>`;
+    }
+
+    function savePreviewPropertiesNote(path) {
+      const input = propertiesList.querySelector('[data-note-input]');
+      const status = propertiesList.querySelector('[data-note-status]');
+      if (!input || !path) return;
+      if (input.value.trim()) {
+        previewNotes.set(path, input.value);
+      } else {
+        previewNotes.delete(path);
+      }
+      if (status) status.textContent = '저장됨';
     }
 
     function closePropertiesModal() {

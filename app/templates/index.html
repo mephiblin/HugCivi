@@ -581,6 +581,12 @@
       }
       event.stopPropagation();
     });
+    propertiesList.addEventListener('click', event => {
+      const button = event.target.closest('[data-note-save]');
+      if (!button) return;
+      event.preventDefault();
+      savePropertiesNote(button.dataset.notePath || '');
+    });
     workflowClose.addEventListener('click', closeWorkflowViewer);
     workflowModal.addEventListener('click', event => {
       if (event.target === workflowModal) {
@@ -1555,6 +1561,7 @@
         ['확장자', escapeHtml(Array.isArray(data.extensions) && data.extensions.length ? data.extensions.join(', ') : '-')],
         ['날짜', escapeHtml(formatDate(data.modified_at))],
         ['URL', renderUrlValues(data.urls)],
+        ['메모', renderNoteEditor(data)],
       ];
       return rows.map(([label, value]) => `
         <div class="properties-row">
@@ -1562,6 +1569,48 @@
           <dd>${value}</dd>
         </div>
       `).join('');
+    }
+
+    function renderNoteEditor(data) {
+      const path = data.path || '';
+      const note = data.note || '';
+      return `<div class="properties-note-editor">
+        <textarea data-note-input rows="5" placeholder="메모를 입력하세요.">${escapeHtml(note)}</textarea>
+        <div class="properties-note-actions">
+          <button type="button" data-note-save data-note-path="${escapeHtml(path)}">저장</button>
+          <span data-note-status></span>
+        </div>
+      </div>`;
+    }
+
+    async function savePropertiesNote(path) {
+      const input = propertiesList.querySelector('[data-note-input]');
+      const status = propertiesList.querySelector('[data-note-status]');
+      if (!input || !path) return;
+      if (status) status.textContent = '저장 중';
+      try {
+        const response = await fetch('/api/fs/note', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path, note: input.value}),
+        });
+        if (!response.ok) {
+          let message = '메모를 저장하지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          if (status) status.textContent = message;
+          return;
+        }
+        const data = await response.json();
+        input.value = data.note || '';
+        if (status) status.textContent = '저장됨';
+      } catch (err) {
+        if (status) status.textContent = '네트워크 오류';
+      }
     }
 
     function renderUrlValues(urls) {

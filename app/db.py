@@ -79,6 +79,15 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS item_notes (
+                path TEXT PRIMARY KEY,
+                note TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -177,6 +186,32 @@ def set_favorite(path: str, enabled: bool) -> None:
         conn.commit()
 
 
+def get_item_note(path: str) -> str:
+    normalized = path.strip("/")
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT note FROM item_notes WHERE path = ?", (normalized,)).fetchone()
+    return str(row["note"]) if row else ""
+
+
+def set_item_note(path: str, note: str) -> None:
+    normalized = path.strip("/")
+    cleaned = note[:20000]
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        if cleaned.strip():
+            conn.execute(
+                """
+                INSERT INTO item_notes (path, note, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+                """,
+                (normalized, cleaned, now),
+            )
+        else:
+            conn.execute("DELETE FROM item_notes WHERE path = ?", (normalized,))
+        conn.commit()
+
+
 def get_next_queued_job() -> dict[str, Any] | None:
     with _DB_LOCK, connect() as conn:
         row = conn.execute(
@@ -246,6 +281,33 @@ def update_favorite_path_prefix(old_path: str, new_path: str) -> None:
         conn.commit()
 
 
+def update_note_path_prefix(old_path: str, new_path: str) -> None:
+    old_text = old_path.strip("/")
+    new_text = new_path.strip("/")
+    old_prefix = old_text.rstrip("/") + "/"
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT path, note FROM item_notes").fetchall()
+        for row in rows:
+            path = str(row["path"])
+            if path == old_text:
+                updated = new_text
+            elif path.startswith(old_prefix):
+                updated = new_text.rstrip("/") + "/" + path[len(old_prefix) :]
+            else:
+                continue
+            conn.execute("DELETE FROM item_notes WHERE path = ?", (path,))
+            conn.execute(
+                """
+                INSERT INTO item_notes (path, note, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at
+                """,
+                (updated, str(row["note"]), now),
+            )
+        conn.commit()
+
+
 def clear_target_dir_prefix(target_root: str | Path) -> None:
     root_text = str(target_root)
     root_prefix = root_text.rstrip("\\/") + os.sep
@@ -264,6 +326,14 @@ def clear_favorite_path_prefix(target_path: str) -> None:
     root_prefix = root_text.rstrip("/") + "/"
     with _DB_LOCK, connect() as conn:
         conn.execute("DELETE FROM favorites WHERE path = ? OR path LIKE ?", (root_text, root_prefix + "%"))
+        conn.commit()
+
+
+def clear_note_path_prefix(target_path: str) -> None:
+    root_text = target_path.strip("/")
+    root_prefix = root_text.rstrip("/") + "/"
+    with _DB_LOCK, connect() as conn:
+        conn.execute("DELETE FROM item_notes WHERE path = ? OR path LIKE ?", (root_text, root_prefix + "%"))
         conn.commit()
 
 

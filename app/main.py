@@ -239,6 +239,7 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     source.rename(target)
     db.update_target_dir_prefix(source, target)
     db.update_favorite_path_prefix(old_relative, new_relative)
+    db.update_note_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -265,6 +266,7 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     shutil.move(str(source), str(target))
     db.update_target_dir_prefix(source, target)
     db.update_favorite_path_prefix(old_relative, new_relative)
+    db.update_note_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -282,6 +284,7 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
         source.unlink()
     db.clear_target_dir_prefix(source)
     db.clear_favorite_path_prefix(relative_path)
+    db.clear_note_path_prefix(relative_path)
     return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -389,13 +392,14 @@ def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse
 @app.get("/api/fs/properties")
 def api_path_properties(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
+    relative_path = relative_data_path(source)
     stat = source.stat()
     size = path_size(source)
     urls = source_input_values(source)
     return JSONResponse(
         {
             "ok": True,
-            "path": relative_data_path(source),
+            "path": relative_path,
             "name": source.name,
             "kind": "folder" if source.is_dir() else "file",
             "size_bytes": size,
@@ -403,8 +407,19 @@ def api_path_properties(path: str, _: str = Depends(require_auth)) -> JSONRespon
             "extensions": path_extensions(source),
             "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
             "urls": urls,
+            "note": db.get_item_note(relative_path),
         }
     )
+
+
+@app.post("/api/fs/note")
+async def api_save_path_note(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    relative_path = relative_data_path(source)
+    note = str(payload.get("note") or "")
+    db.set_item_note(relative_path, note)
+    return JSONResponse({"ok": True, "path": relative_path, "note": db.get_item_note(relative_path)})
 
 
 @app.get("/api/fs/download")
