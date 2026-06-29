@@ -26,6 +26,8 @@ Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용
 3. 아래 Compose의 볼륨 경로를 NAS 경로에 맞게 수정
 4. 프로젝트 실행 후 `http://NAS_IP:8088` 접속
 
+Portainer에서는 [portainer-stack.yml](portainer-stack.yml)을 Stack Web editor에 붙여넣어 사용할 수 있습니다. Web editor 방식은 프로젝트 전체 파일을 먼저 `/volume1/docker/nas-model-archiver`에 복사해 둔 구성을 기준으로 합니다. Git Repository 방식으로 배포할 때는 `build.context`를 `.`로 바꾸세요.
+
 ## docker-compose.yml 예시
 
 ```yaml

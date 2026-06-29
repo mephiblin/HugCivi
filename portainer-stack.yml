@@ -1,0 +1,65 @@
+# Portainer Stack for Synology NAS
+#
+# Web editor mode:
+#   1. Copy this whole project to /volume1/docker/nas-model-archiver
+#   2. Create /volume1/AI_MODELS for model storage
+#   3. Change APP_PASSWORD below
+#   4. Portainer > Stacks > Add stack > Web editor, paste this file
+#
+# Git repository mode:
+#   Change build.context to "." because Portainer checks out the repository first.
+
+services:
+  nas-model-archiver:
+    image: nas-model-archiver:portainer
+    build:
+      context: /volume1/docker/nas-model-archiver
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      TZ: "Asia/Seoul"
+      APP_USERNAME: "admin"
+      APP_PASSWORD: "CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"
+
+      # Tokens can also be saved later in the web UI.
+      HF_TOKEN: ""
+      CIVITAI_TOKEN: ""
+
+      # Default library routing. Paths are relative to /data.
+      LIBRARY_ACTIVE: "ComfyUI"
+      ROUTE_LLM_ROOT: "huggingface/llm"
+      ROUTE_LORA_ROOT: "stable-diffusion/loras"
+      ROUTE_CHECKPOINT_ROOT: "stable-diffusion/checkpoints"
+      ROUTE_DIFFUSION_MODEL_ROOT: "stable-diffusion/diffusion_models"
+      ROUTE_EMBEDDING_ROOT: "stable-diffusion/embeddings"
+      ROUTE_VAE_ROOT: "stable-diffusion/vae"
+      ROUTE_CONTROLNET_ROOT: "stable-diffusion/controlnet"
+      ROUTE_UPSCALER_ROOT: "stable-diffusion/upscalers"
+
+      # Conservative download defaults to reduce rate-limit risk.
+      MAX_CONCURRENT_DOWNLOADS: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "120"
+      HF_XET_HIGH_PERFORMANCE: "0"
+      HF_XET_NUM_CONCURRENT_RANGE_GETS: "4"
+      HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY: "1"
+      HF_SNAPSHOT_MAX_WORKERS: "2"
+      DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS: "1.5"
+      DOWNLOAD_HTTP_MAX_RETRIES: "3"
+      DOWNLOAD_RETRY_BACKOFF_SECONDS: "5"
+      DOWNLOAD_MAX_RETRY_SLEEP_SECONDS: "300"
+      DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
+    volumes:
+      - type: bind
+        source: /volume1/AI_MODELS
+        target: /data
+      - type: bind
+        source: /volume1/docker/nas-model-archiver/config
+        target: /config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"$${APP_USERNAME}:$${APP_PASSWORD}\" http://127.0.0.1:8088/ >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
