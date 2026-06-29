@@ -1,31 +1,27 @@
 # Portainer Stack for Synology NAS
 #
-# Web editor mode:
-#   1. Copy this whole project to /volume1/docker/nas-model-archiver
-#   2. Create /volume1/AI_MODELS for model storage
-#   3. Change APP_PASSWORD below
-#   4. Portainer > Stacks > Add stack > Web editor, paste this file
-#
-# Git repository mode:
-#   Change build.context to "." because Portainer checks out the repository first.
+# Recommended mode:
+#   Portainer > Stacks > Add stack > Repository
+#   Compose path: portainer-stack.yml
+#   Set APP_PASSWORD in the stack environment variables before deploying.
 
 services:
   nas-model-archiver:
     image: nas-model-archiver:portainer
     build:
-      context: /volume1/docker/nas-model-archiver
+      context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "8088:8088"
     environment:
       TZ: "Asia/Seoul"
-      APP_USERNAME: "admin"
-      APP_PASSWORD: "CHANGE_ME_TO_A_LONG_RANDOM_PASSWORD"
+      APP_USERNAME: "${APP_USERNAME:-admin}"
+      APP_PASSWORD: "${APP_PASSWORD:-replace-with-a-strong-password}"
 
       # Tokens can also be saved later in the web UI.
-      HF_TOKEN: ""
-      CIVITAI_TOKEN: ""
+      HF_TOKEN: "${HF_TOKEN:-}"
+      CIVITAI_TOKEN: "${CIVITAI_TOKEN:-}"
 
       # Default library routing. Paths are relative to /data.
       LIBRARY_ACTIVE: "ComfyUI"

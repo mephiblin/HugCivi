@@ -1,82 +1,145 @@
 # NAS Model Archiver
 
-Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용 목적이 아닌 보관 목적**으로 다운로드하는 간단한 웹 UI + Docker 앱입니다.
+Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일을 내려받아 보관하는 웹 앱입니다.
 
-## 기능
+브라우저에서 URL을 붙여넣으면 모델 정보를 읽고, LLM, LoRA, Checkpoint, Embedding 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다.
 
-- 웹 UI에서 URL 또는 안전한 CLI 형태 입력
-- Hugging Face 모델/데이터셋/스페이스 전체 또는 파일 다운로드
-- Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 처리
+## 이런 용도입니다
+
+- NAS에 AI 모델 파일을 모아두고 싶을 때
+- Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
+- ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
+- 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
+
+## 주요 기능
+
+- Hugging Face 모델, 데이터셋, 스페이스 다운로드
+- Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
-- `/data` 폴더 트리 조회와 하위 폴더 생성
-- 폴더/라이브러리 카드 우클릭으로 이름 변경, 이동, 삭제
-- Hugging Face / Civitai 메타데이터 기반 자동 분류
-- LLM / LoRA / Checkpoint / Diffusion Model / Embedding / VAE / ControlNet / Upscaler 기본 저장 루트 지정
-- Civitai 이미지 썸네일, 모델 타입, 베이스 모델, 파일 포맷, 정밀도 정보 표시
-- SQLite 기반 작업 기록
-- 다운로드 진행률 표시
-- 토큰은 환경변수 또는 웹 UI에서 설정: `HF_TOKEN`, `CIVITAI_TOKEN`
-- Hugging Face 토큰은 인증/게이트 모델/rate limit 완화에 사용하고, 요청 간격/재시도 backoff/낮은 병렬도로 과도한 요청을 방지
-- 웹 UI Basic Auth 지원
+- Civitai 썸네일, 모델 타입, 베이스 모델, 포맷, 정밀도 표시
+- Hugging Face 메타데이터 기반 LLM, Embedding, Image 모델 분류
+- 폴더 트리에서 저장 위치 선택
+- 자동 폴더 분류와 사용자 지정 기본 폴더
+- 라이브러리 카드 보기
+- 폴더 또는 카드 우클릭으로 이름 변경, 이동, 삭제
+- HF 토큰, Civitai 토큰을 웹 UI에서 저장
+- 요청 간격, 재시도, 낮은 병렬도 기본값으로 rate limit 위험 완화
+- Basic Auth 로그인
 
-## Synology 설치 개요
+## 준비물
 
-1. NAS에 공유 폴더 생성 예: `/volume1/AI_MODELS`
-2. Container Manager > Project > Create에서 이 폴더 또는 `/volume1/docker/nas-model-archiver`에 `docker-compose.yml` 업로드/작성
-3. 아래 Compose의 볼륨 경로를 NAS 경로에 맞게 수정
-4. 프로젝트 실행 후 `http://NAS_IP:8088` 접속
+- Synology NAS 또는 Docker가 실행되는 서버
+- Portainer 또는 Synology Container Manager
+- GitHub 저장소 URL
+- 모델 저장용 NAS 폴더
+- 앱 설정 저장용 NAS 폴더
 
-Portainer에서는 [portainer-stack.yml](portainer-stack.yml)을 Stack Web editor에 붙여넣어 사용할 수 있습니다. Web editor 방식은 프로젝트 전체 파일을 먼저 `/volume1/docker/nas-model-archiver`에 복사해 둔 구성을 기준으로 합니다. Git Repository 방식으로 배포할 때는 `build.context`를 `.`로 바꾸세요.
+예시 경로:
 
-## docker-compose.yml 예시
-
-```yaml
-services:
-  nas-model-archiver:
-    build: .
-    container_name: nas-model-archiver
-    restart: unless-stopped
-    ports:
-      - "8088:8088"
-    environment:
-      APP_USERNAME: "admin"
-      APP_PASSWORD: "replace-with-a-strong-password"
-      HF_TOKEN: ""
-      CIVITAI_TOKEN: ""
-      LIBRARY_ACTIVE: "ComfyUI"
-      ROUTE_LLM_ROOT: "huggingface/llm"
-      ROUTE_LORA_ROOT: "stable-diffusion/loras"
-      ROUTE_CHECKPOINT_ROOT: "stable-diffusion/checkpoints"
-      ROUTE_DIFFUSION_MODEL_ROOT: "stable-diffusion/diffusion_models"
-      ROUTE_EMBEDDING_ROOT: "stable-diffusion/embeddings"
-      ROUTE_VAE_ROOT: "stable-diffusion/vae"
-      ROUTE_CONTROLNET_ROOT: "stable-diffusion/controlnet"
-      ROUTE_UPSCALER_ROOT: "stable-diffusion/upscalers"
-      MAX_CONCURRENT_DOWNLOADS: "1"
-      HF_HUB_DOWNLOAD_TIMEOUT: "120"
-      HF_XET_HIGH_PERFORMANCE: "0"
-      HF_XET_NUM_CONCURRENT_RANGE_GETS: "4"
-      HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY: "1"
-      HF_SNAPSHOT_MAX_WORKERS: "2"
-      DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS: "1.5"
-      DOWNLOAD_HTTP_MAX_RETRIES: "3"
-      DOWNLOAD_RETRY_BACKOFF_SECONDS: "5"
-      DOWNLOAD_MAX_RETRY_SLEEP_SECONDS: "300"
-      DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
-    volumes:
-      - /volume1/AI_MODELS:/data
-      - /volume1/docker/nas-model-archiver/config:/config
+```text
+/volume1/AI_MODELS
+/volume1/docker/nas-model-archiver/config
 ```
 
-## 지원 입력 예시
+## 가장 쉬운 설치: Portainer + GitHub
+
+1. 이 프로젝트를 GitHub 저장소에 올립니다.
+2. NAS에 모델 저장 폴더를 만듭니다.
+
+```text
+/volume1/AI_MODELS
+```
+
+3. NAS에 설정 저장 폴더를 만듭니다.
+
+```text
+/volume1/docker/nas-model-archiver/config
+```
+
+4. Portainer에 접속합니다.
+5. 왼쪽 메뉴에서 `Stacks`를 누릅니다.
+6. `Add stack`을 누릅니다.
+7. `Repository` 방식을 선택합니다.
+8. GitHub 저장소 URL을 입력합니다.
+9. Compose path에 아래 값을 입력합니다.
+
+```text
+portainer-stack.yml
+```
+
+10. Branch는 본인 저장소 브랜치에 맞춥니다.
+
+```text
+main
+```
+
+또는 현재 로컬 기본 브랜치를 그대로 쓰면:
+
+```text
+master
+```
+
+11. Environment variables에 최소한 아래 값을 추가합니다.
+
+```text
+APP_PASSWORD=원하는_긴_비밀번호
+```
+
+12. `Deploy the stack`을 누릅니다.
+13. 브라우저에서 접속합니다.
+
+```text
+http://NAS_IP:8088
+```
+
+로그인 기본 아이디:
+
+```text
+admin
+```
+
+비밀번호는 `APP_PASSWORD`에 넣은 값입니다.
+
+## Portainer에서 꼭 확인할 값
+
+[portainer-stack.yml](portainer-stack.yml)은 기본적으로 아래 NAS 경로를 사용합니다.
+
+```yaml
+volumes:
+  - /volume1/AI_MODELS:/data
+  - /volume1/docker/nas-model-archiver/config:/config
+```
+
+내 NAS 경로가 다르면 `portainer-stack.yml`에서 `source` 값을 바꾸세요.
+
+예:
+
+```yaml
+source: /volume1/my-models
+target: /data
+```
+
+## 첫 사용 방법
+
+1. 웹 UI에 로그인합니다.
+2. 왼쪽 아래 사용자 버튼을 누릅니다.
+3. Hugging Face Token, Civitai Token을 입력합니다.
+4. 필요한 경우 기본 폴더 경로를 바꿉니다.
+5. 상단 입력창에 Hugging Face 또는 Civitai URL을 붙여넣습니다.
+6. 다운로드 버튼을 누릅니다.
+7. 작업 목록에서 진행률과 로그를 확인합니다.
+
+토큰은 나중에 입력해도 됩니다. 공개 모델은 토큰 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델이나 속도 제한 완화에는 토큰이 도움이 됩니다.
+
+## 다운로드 입력 예시
 
 ### Hugging Face
 
 ```text
+https://huggingface.co/openai-community/gpt2
 https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0
-https://huggingface.co/datasets/bigcode/the-stack
 https://huggingface.co/openai-community/gpt2/resolve/main/config.json
-hf download openai-community/gpt2 --include "*.json" --exclude "*.msgpack"
+hf download openai-community/gpt2 --include "*.json"
 hf download hf://datasets/bigcode/the-stack@v1.1
 ```
 
@@ -88,57 +151,155 @@ https://civitai.com/api/download/models/456789
 456789
 ```
 
-숫자만 넣으면 Civitai model version ID로 간주합니다.
+숫자만 입력하면 Civitai model version ID로 처리합니다.
 
-## 자동 분류
+## 폴더 자동 분류
 
-저장 하위 폴더를 비워두면 API 메타데이터를 기준으로 자동 저장 경로를 나눕니다. 웹 UI 왼쪽 아래 설정에서 기본 루트를 바꾸면 다음 다운로드부터 해당 루트 아래에 모델명/버전 폴더를 자동 생성합니다.
+저장 폴더를 직접 선택하지 않으면 모델 정보를 보고 자동으로 경로를 정합니다.
+
+기본 예시:
 
 ```text
-/data/stable-diffusion/checkpoints/sdxl-1.0/.../version_456789
-/data/stable-diffusion/loras/sd-1.5/.../version_456789
+/data/huggingface/llm/openai-community__gpt2
+/data/stable-diffusion/checkpoints/sdxl-1.0/...
+/data/stable-diffusion/loras/sd-1.5/...
 /data/stable-diffusion/embeddings/...
 /data/stable-diffusion/diffusion_models/...
-/data/huggingface/llm/openai-community__gpt2
 ```
 
-직접 폴더를 선택하거나 입력하면 해당 경로를 우선 사용합니다.
+왼쪽 폴더 트리에서 폴더를 클릭한 뒤 다운로드하면 자동 분류보다 선택한 폴더가 우선입니다.
 
-## 다운로드 안전장치
+## 기본 폴더 설정
 
-기본 설정은 요청 폭주를 피하도록 보수적으로 잡혀 있습니다.
+왼쪽 아래 사용자 버튼을 누르면 폴더 설정이 나옵니다.
 
-- `MAX_CONCURRENT_DOWNLOADS=1`: 동시에 실행되는 다운로드 작업 수
-- `HF_SNAPSHOT_MAX_WORKERS=2`: Hugging Face snapshot 내부 병렬 다운로드 수
-- `DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5`: 같은 호스트로 보내는 직접 HTTP 요청 사이 최소 간격
-- `DOWNLOAD_HTTP_MAX_RETRIES=3`: `429`, `500`, `502`, `503`, `504` 응답의 최대 재시도 횟수
-- `DOWNLOAD_RETRY_BACKOFF_SECONDS=5`: `Retry-After` 헤더가 없을 때 쓰는 지수 backoff 기준값
-- `DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300`: 한 번의 재시도 대기 최대값
-- `DOWNLOAD_ENABLE_HEAD_REQUESTS=1`: 파일명/크기 확인용 `HEAD` 요청 사용 여부
+기본값:
 
-더 빠르게 받고 싶으면 위 값을 올릴 수 있지만, NAS/IP/계정 단위 rate limit을 피하려면 기본값을 권장합니다.
+```text
+LLM: huggingface/llm
+LoRA: stable-diffusion/loras
+Checkpoint: stable-diffusion/checkpoints
+Diffusion Model: stable-diffusion/diffusion_models
+Embedding: stable-diffusion/embeddings
+VAE: stable-diffusion/vae
+ControlNet: stable-diffusion/controlnet
+Upscaler: stable-diffusion/upscalers
+```
+
+모든 경로는 `/data` 기준 상대경로입니다.
+
+## 폴더 수동 정리
+
+폴더 트리 또는 라이브러리 카드에서 마우스 오른쪽 버튼을 누르면 메뉴가 나옵니다.
+
+- 이름 변경
+- 이동
+- 삭제
+
+안전 장치:
+
+- `/data` 루트는 변경하거나 삭제할 수 없습니다.
+- 실행 중이거나 대기 중인 다운로드가 들어있는 폴더는 이동, 이름 변경, 삭제를 차단합니다.
+- 모든 작업은 `/data` 안에서만 허용됩니다.
+
+## 토큰 입력
+
+### Hugging Face Token
+
+Hugging Face에서 발급한 토큰입니다.
+
+필요한 경우:
+
+- 로그인 필요한 모델
+- 게이트 모델
+- 비공개 모델
+- rate limit 완화
+
+환경변수 이름:
+
+```text
+HF_TOKEN
+```
+
+### Civitai Token
+
+Civitai에서 발급한 API 토큰입니다.
+
+환경변수 이름:
+
+```text
+CIVITAI_TOKEN
+```
+
+토큰은 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
+
+## 다운로드 안전 설정
+
+기본값은 빠른 다운로드보다 안정성을 우선합니다.
+
+```text
+MAX_CONCURRENT_DOWNLOADS=1
+HF_SNAPSHOT_MAX_WORKERS=2
+DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
+DOWNLOAD_HTTP_MAX_RETRIES=3
+DOWNLOAD_RETRY_BACKOFF_SECONDS=5
+DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300
+```
+
+너무 많은 요청으로 차단될 가능성을 줄이기 위해 기본값을 보수적으로 잡았습니다.
 
 ## 보안 주의
 
-- 웹에서 임의의 셸 명령을 실행하지 않습니다. `hf download ...` 형태는 안전 파서로 해석만 합니다.
-- 외부 인터넷에 공개하지 않는 것을 권장합니다.
-- `APP_PASSWORD` 기본 예시값은 반드시 강한 비밀번호로 바꾸세요. 예시값 그대로 두면 앱이 로그인을 차단합니다.
-- 토큰은 Synology Secret/환경변수 관리가 가장 안전합니다. 웹 UI로 입력한 토큰은 `/config/jobs.sqlite3`에 저장되므로 `/config` 폴더 권한을 제한하세요.
-- 웹 UI로 토큰을 저장하면 환경변수보다 UI 저장값을 우선 사용합니다. 입력칸을 비워 저장하면 기존 값은 유지됩니다.
-- 작업 목록, 로그, 메타데이터에는 토큰성 쿼리값을 마스킹해서 저장합니다. 단, 재시작 후 다운로드 재개를 위해 내부 작업 payload에는 실제 다운로드 URL이 남을 수 있으므로 `/config` 폴더 접근 권한도 제한하세요.
-- 모델 라이선스와 각 사이트의 이용약관을 확인하고 보관하세요.
-- 실행 중이거나 대기 중인 다운로드가 들어있는 폴더는 우클릭 이동/이름 변경/삭제를 차단합니다.
+- 이 앱을 인터넷에 직접 공개하지 않는 것을 권장합니다.
+- `APP_PASSWORD`는 반드시 긴 비밀번호로 바꾸세요.
+- `/config` 폴더에는 작업 DB와 UI 저장 토큰이 들어갈 수 있습니다.
+- `/config` 폴더 권한을 NAS에서 제한하세요.
+- 모델 파일은 각 사이트의 라이선스와 이용약관을 확인한 뒤 보관하세요.
 
-## 진행률 참고
+## 미리보기 파일
 
-- Civitai와 일반 URL 다운로드는 스트리밍 다운로드 중 진행률을 갱신합니다.
-- Hugging Face 전체 저장소 다운로드는 `huggingface_hub` 내부 다운로드에 맡기므로 파일 단위 완료 로그 중심으로 표시됩니다.
+[frontend-preview.html](frontend-preview.html)은 디자인 확인용 정적 파일입니다.
 
-## 개발 실행
+실제 Docker 컨테이너에는 포함되지 않습니다. 삭제하지 않아도 설치에는 영향이 없습니다.
+
+## 자주 막히는 부분
+
+### 접속하면 비밀번호 오류가 납니다
+
+Portainer Stack의 Environment variables에서 `APP_PASSWORD`를 설정했는지 확인하세요.
+
+### 앱이 503을 보여줍니다
+
+`APP_PASSWORD`가 기본 예시값이면 앱이 실행을 막습니다. 긴 비밀번호로 바꾸세요.
+
+### 다운로드가 느립니다
+
+기본값은 차단 방지를 위해 느리게 잡혀 있습니다. 먼저 토큰을 입력하고, 그래도 부족하면 `HF_SNAPSHOT_MAX_WORKERS` 또는 `MAX_CONCURRENT_DOWNLOADS`를 조금씩 올리세요.
+
+### 폴더 삭제가 안 됩니다
+
+실행 중이거나 대기 중인 다운로드가 있는 폴더는 삭제할 수 없습니다. 작업이 끝난 뒤 다시 시도하세요.
+
+### Hugging Face 모델 분류가 완벽하지 않습니다
+
+Hugging Face는 Civitai처럼 모델 타입을 항상 명확히 주지 않습니다. `pipeline_tag`, 태그, 파일명, 모델 카드 정보를 조합해 분류합니다.
+
+## 로컬 개발 실행
+
+개발용으로 PC에서 직접 실행할 때 사용합니다.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
+```
+
+Windows PowerShell에서는 가상환경 활성화 명령이 다릅니다.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
