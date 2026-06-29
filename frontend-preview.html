@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="app-frame">
-    <aside class="sidebar">
+    <aside class="sidebar mobile-panel" data-mobile-panel="folders">
       <button type="button" class="brand-button" id="home-button">
         <span class="brand-title">Model Archiver</span>
         <span class="brand-subtitle">저장소로 모델 파일을 보관합니다</span>
@@ -145,57 +145,6 @@
         <button type="submit">폴더 생성</button>
       </form>
 
-      <section class="token-modal" id="token-modal" aria-label="API 토큰 입력" hidden>
-        <form onsubmit="event.preventDefault()">
-          <h2>Hugging Face Token</h2>
-          <label class="sr-only" for="hf_token">Hugging Face Token</label>
-          <input id="hf_token" name="hf_token" type="password" placeholder="설정됨 · ui">
-
-          <h2>Civitai Token</h2>
-          <label class="sr-only" for="civitai_token">Civitai Token</label>
-          <input id="civitai_token" name="civitai_token" type="password" placeholder="설정됨 · ui">
-
-          <h2>폴더 설정</h2>
-          <label class="setting-label" for="library_active">활성 라이브러리</label>
-          <select id="library_active" name="library_active">
-            <option value="ComfyUI" selected>ComfyUI</option>
-            <option value="Custom">Custom</option>
-          </select>
-          <p class="setting-help">다운로드 정보로 기본 폴더를 고릅니다. 모든 경로는 /data 기준입니다.</p>
-
-          <label class="setting-label" for="route_llm_root">기본 LLM 루트</label>
-          <input id="route_llm_root" name="route_llm_root" value="huggingface/llm" placeholder="huggingface/llm">
-          <p class="setting-help">Hugging Face LLM, GGUF 계열의 기본 위치입니다.</p>
-
-          <label class="setting-label" for="route_lora_root">기본 LoRA 루트</label>
-          <input id="route_lora_root" name="route_lora_root" value="stable-diffusion/loras" placeholder="stable-diffusion/loras">
-          <p class="setting-help">LoRA, LoCon 다운로드의 기본 위치입니다.</p>
-
-          <label class="setting-label" for="route_checkpoint_root">기본 Checkpoint 루트</label>
-          <input id="route_checkpoint_root" name="route_checkpoint_root" value="stable-diffusion/checkpoints" placeholder="stable-diffusion/checkpoints">
-          <p class="setting-help">Civitai Checkpoint와 Hugging Face 이미지 모델의 기본 위치입니다.</p>
-
-          <label class="setting-label" for="route_diffusion_model_root">기본 Diffusion Model 루트</label>
-          <input id="route_diffusion_model_root" name="route_diffusion_model_root" value="stable-diffusion/diffusion_models" placeholder="stable-diffusion/diffusion_models">
-          <p class="setting-help">UNET, Diffusion Model 파일의 기본 위치입니다.</p>
-
-          <label class="setting-label" for="route_embedding_root">기본 Embedding 루트</label>
-          <input id="route_embedding_root" name="route_embedding_root" value="stable-diffusion/embeddings" placeholder="stable-diffusion/embeddings">
-          <p class="setting-help">Textual Inversion, 임베딩 모델의 기본 위치입니다.</p>
-
-          <label class="setting-label" for="route_vae_root">기본 VAE 루트</label>
-          <input id="route_vae_root" name="route_vae_root" value="stable-diffusion/vae" placeholder="stable-diffusion/vae">
-
-          <label class="setting-label" for="route_controlnet_root">기본 ControlNet 루트</label>
-          <input id="route_controlnet_root" name="route_controlnet_root" value="stable-diffusion/controlnet" placeholder="stable-diffusion/controlnet">
-
-          <label class="setting-label" for="route_upscaler_root">기본 Upscaler 루트</label>
-          <input id="route_upscaler_root" name="route_upscaler_root" value="stable-diffusion/upscalers" placeholder="stable-diffusion/upscalers">
-
-          <button type="submit">저장</button>
-        </form>
-      </section>
-
       <button type="button" class="account-button" id="token-button" aria-haspopup="dialog" aria-controls="token-modal">
         <span class="avatar">GB</span>
         <span class="account-copy">
@@ -218,7 +167,7 @@
         </svg>
       </button>
 
-      <section class="hero" aria-label="다운로드 입력">
+      <section class="hero mobile-panel is-mobile-panel-active" data-mobile-panel="download" aria-label="다운로드 입력">
         <h1>civitai - Hugging Face</h1>
         <form class="download-form" id="command-form" onsubmit="event.preventDefault()">
           <input id="target_subdir" name="target_subdir" type="hidden">
@@ -235,7 +184,7 @@
         </form>
       </section>
 
-      <section class="view active" id="home-view" aria-label="작업 목록">
+      <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
         <section class="jobs-section">
           <h2>작업 목록</h2>
           <div class="table-shell">
@@ -258,7 +207,7 @@
         </section>
       </section>
 
-      <section class="view" id="library-view" aria-label="라이브러리">
+      <section class="view mobile-panel" id="library-view" data-mobile-panel="library" aria-label="라이브러리">
         <section class="library-section">
           <div class="library-meta">
             <span id="library-path">/data</span>
@@ -269,6 +218,138 @@
       </section>
     </main>
   </div>
+
+  <nav class="mobile-tabbar" aria-label="모바일 탭">
+    <button type="button" class="active" data-mobile-tab="download">입력</button>
+    <button type="button" data-mobile-tab="jobs">작업</button>
+    <button type="button" data-mobile-tab="library">보관함</button>
+    <button type="button" data-mobile-tab="folders">폴더</button>
+    <button type="button" data-mobile-action="settings">설정</button>
+  </nav>
+
+  <section class="token-modal" id="token-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div class="settings-panel">
+      <nav class="settings-nav" aria-label="설정 메뉴">
+        <button type="button" class="settings-close" id="settings-close" aria-label="설정 닫기">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Z"/>
+            <path d="M17.6 5 19 6.4 6.4 19 5 17.6 17.6 5Z"/>
+          </svg>
+        </button>
+        <a class="settings-nav-item active" href="#settings-general">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l2-1.5-2-3.5-2.4 1a7.3 7.3 0 0 0-2.6-1.5L14 2.5h-4L9.6 5a7.3 7.3 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a7.6 7.6 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a7.3 7.3 0 0 0 2.6 1.5l.4 2.5h4l.4-2.5A7.3 7.3 0 0 0 17 17.5l2.4 1 2-3.5-2-1.5ZM12 15.2A3.2 3.2 0 1 1 12 8.8a3.2 3.2 0 0 1 0 6.4Z"/>
+            </svg>
+          </span>
+          일반
+        </a>
+        <a class="settings-nav-item" href="#settings-tokens">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M7.5 14a5.5 5.5 0 1 1 5-3.2l6.7 6.7V20H17v-2.2h-2.2v-2.2h-2.3A5.4 5.4 0 0 1 7.5 14Zm0-2a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+            </svg>
+          </span>
+          API 토큰
+        </a>
+        <a class="settings-nav-item" href="#settings-folders">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2H18a3 3 0 0 1 3 3v8.5A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Zm2 1V17.5c0 .3.2.5.5.5h13c.3 0 .5-.2.5-.5V9a1 1 0 0 0-1-1h-7.3l-2-2H5.5c-.3 0-.5.2-.5.5Z"/>
+            </svg>
+          </span>
+          폴더
+        </a>
+      </nav>
+
+      <form class="settings-form" onsubmit="event.preventDefault()">
+        <header class="settings-header" id="settings-general">
+          <div>
+            <h2 id="settings-title">설정</h2>
+            <p>다운로드 토큰과 자동 분류 폴더를 한곳에서 관리합니다.</p>
+          </div>
+          <button type="submit" class="settings-save top-save">저장</button>
+        </header>
+
+        <section class="settings-block" id="settings-tokens">
+          <div class="settings-block-copy">
+            <h3>API 토큰</h3>
+            <p>비워 두면 기존에 저장된 토큰을 유지합니다.</p>
+          </div>
+          <div class="settings-grid two-cols">
+            <label class="setting-field" for="hf_token">
+              <span>Hugging Face Token</span>
+              <input id="hf_token" name="hf_token" type="password" placeholder="설정됨 · ui">
+            </label>
+            <label class="setting-field" for="civitai_token">
+              <span>Civitai Token</span>
+              <input id="civitai_token" name="civitai_token" type="password" placeholder="설정됨 · ui">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-block" id="settings-folders">
+          <div class="settings-block-copy">
+            <h3>폴더 설정</h3>
+            <p>모든 경로는 /data 기준입니다. 다운로드 정보에 따라 기본 저장 위치로 사용됩니다.</p>
+          </div>
+
+          <label class="setting-field compact" for="library_active">
+            <span>활성 라이브러리</span>
+            <select id="library_active" name="library_active">
+              <option value="ComfyUI" selected>ComfyUI</option>
+              <option value="Custom">Custom</option>
+            </select>
+          </label>
+
+          <div class="settings-grid">
+            <label class="setting-field" for="route_llm_root">
+              <span>기본 LLM 루트</span>
+              <input id="route_llm_root" name="route_llm_root" value="huggingface/llm" placeholder="huggingface/llm">
+              <small>Hugging Face LLM, GGUF 계열의 기본 위치입니다.</small>
+            </label>
+            <label class="setting-field" for="route_lora_root">
+              <span>기본 LoRA 루트</span>
+              <input id="route_lora_root" name="route_lora_root" value="stable-diffusion/loras" placeholder="stable-diffusion/loras">
+              <small>LoRA, LoCon 다운로드의 기본 위치입니다.</small>
+            </label>
+            <label class="setting-field" for="route_checkpoint_root">
+              <span>기본 Checkpoint 루트</span>
+              <input id="route_checkpoint_root" name="route_checkpoint_root" value="stable-diffusion/checkpoints" placeholder="stable-diffusion/checkpoints">
+              <small>Civitai Checkpoint와 Hugging Face 이미지 모델의 기본 위치입니다.</small>
+            </label>
+            <label class="setting-field" for="route_diffusion_model_root">
+              <span>기본 Diffusion Model 루트</span>
+              <input id="route_diffusion_model_root" name="route_diffusion_model_root" value="stable-diffusion/diffusion_models" placeholder="stable-diffusion/diffusion_models">
+              <small>UNET, Diffusion Model 파일의 기본 위치입니다.</small>
+            </label>
+            <label class="setting-field" for="route_embedding_root">
+              <span>기본 Embedding 루트</span>
+              <input id="route_embedding_root" name="route_embedding_root" value="stable-diffusion/embeddings" placeholder="stable-diffusion/embeddings">
+              <small>Textual Inversion, 임베딩 모델의 기본 위치입니다.</small>
+            </label>
+            <label class="setting-field" for="route_vae_root">
+              <span>기본 VAE 루트</span>
+              <input id="route_vae_root" name="route_vae_root" value="stable-diffusion/vae" placeholder="stable-diffusion/vae">
+            </label>
+            <label class="setting-field" for="route_controlnet_root">
+              <span>기본 ControlNet 루트</span>
+              <input id="route_controlnet_root" name="route_controlnet_root" value="stable-diffusion/controlnet" placeholder="stable-diffusion/controlnet">
+            </label>
+            <label class="setting-field" for="route_upscaler_root">
+              <span>기본 Upscaler 루트</span>
+              <input id="route_upscaler_root" name="route_upscaler_root" value="stable-diffusion/upscalers" placeholder="stable-diffusion/upscalers">
+            </label>
+          </div>
+        </section>
+
+        <footer class="settings-footer">
+          <button type="button" class="settings-cancel" id="settings-cancel">취소</button>
+          <button type="submit" class="settings-save">저장</button>
+        </footer>
+      </form>
+    </div>
+  </section>
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
@@ -371,6 +452,11 @@
     const libraryCount = document.getElementById('library-count');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
+    const settingsClose = document.getElementById('settings-close');
+    const settingsCancel = document.getElementById('settings-cancel');
+    const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
+    const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
+    const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const commandInput = document.getElementById('input_text');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
@@ -381,6 +467,7 @@
     let downloadQueue = [];
     let downloadQueueId = 1;
     let activeLibraryPath = null;
+    let activeMobileTab = 'download';
 
     document.getElementById('home-button').addEventListener('click', switchToHome);
 
@@ -412,17 +499,34 @@
 
     tokenButton.addEventListener('click', event => {
       event.stopPropagation();
-      tokenModal.hidden = !tokenModal.hidden;
+      openSettingsModal();
     });
 
-    tokenModal.addEventListener('click', event => event.stopPropagation());
+    tokenModal.addEventListener('click', event => {
+      if (event.target === tokenModal) {
+        closeSettingsModal();
+      }
+      event.stopPropagation();
+    });
+    settingsClose.addEventListener('click', closeSettingsModal);
+    settingsCancel.addEventListener('click', closeSettingsModal);
+    mobileTabs.forEach(button => {
+      button.addEventListener('click', () => {
+        activateMobileTab(button.dataset.mobileTab || 'download');
+      });
+    });
+    mobileSettingsButton.addEventListener('click', event => {
+      event.stopPropagation();
+      openSettingsModal();
+    });
+
     document.addEventListener('click', () => {
-      tokenModal.hidden = true;
+      closeSettingsModal();
       hideContextMenu();
     });
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
-        tokenModal.hidden = true;
+        closeSettingsModal();
         hideContextMenu();
       }
     });
@@ -457,6 +561,19 @@
       document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
       homeView.classList.add('active');
       libraryView.classList.remove('active');
+      activateMobileTab('download');
+    }
+
+    function openSettingsModal() {
+      tokenModal.hidden = false;
+      document.body.classList.add('modal-open');
+      settingsClose.focus();
+    }
+
+    function closeSettingsModal() {
+      if (tokenModal.hidden) return;
+      tokenModal.hidden = true;
+      document.body.classList.remove('modal-open');
     }
 
     function switchToLibrary(path) {
@@ -467,6 +584,27 @@
       homeView.classList.remove('active');
       libraryView.classList.add('active');
       renderLibrary();
+      if (isMobileLayout()) {
+        activateMobileTab('library');
+      }
+    }
+
+    function activateMobileTab(tab) {
+      activeMobileTab = tab;
+      if (tab === 'library' && activeLibraryPath === null) {
+        activeLibraryPath = '';
+        renderLibrary();
+      }
+      mobileTabs.forEach(button => {
+        button.classList.toggle('active', button.dataset.mobileTab === tab);
+      });
+      mobilePanels.forEach(panel => {
+        panel.classList.toggle('is-mobile-panel-active', panel.dataset.mobilePanel === tab);
+      });
+    }
+
+    function isMobileLayout() {
+      return window.matchMedia('(max-width: 700px)').matches;
     }
 
     function renderJobs(jobs) {
@@ -477,14 +615,14 @@
           ? `<div class="progress"><div style="width:${pct}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
           : escapeHtml(job.progress_human || '');
         return `<tr>
-          <td>${job.id}</td>
-          <td><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
-          <td>${renderModelInfo(job)}</td>
-          <td>${escapeHtml(job.source || '-')}</td>
-          <td class="input-cell">${escapeHtml(job.input_text || '')}</td>
-          <td>${escapeHtml(job.filename || '-')}</td>
-          <td>${progress}</td>
-          <td><a href="#">보기</a></td>
+          <td data-label="ID">${job.id}</td>
+          <td data-label="상태"><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+          <td data-label="정보">${renderModelInfo(job)}</td>
+          <td data-label="소스">${escapeHtml(job.source || '-')}</td>
+          <td data-label="입력" class="input-cell">${escapeHtml(job.input_text || '')}</td>
+          <td data-label="파일">${escapeHtml(job.filename || '-')}</td>
+          <td data-label="진행률">${progress}</td>
+          <td data-label="로그"><a href="#">보기</a></td>
         </tr>`;
       }).join('');
     }

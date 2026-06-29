@@ -31,7 +31,7 @@
   {% endmacro %}
 
   <div class="app-frame">
-    <aside class="sidebar">
+    <aside class="sidebar mobile-panel" data-mobile-panel="folders">
       <button type="button" class="brand-button" id="home-button">
         <span class="brand-title">Model Archiver</span>
         <span class="brand-subtitle">저장소로 모델 파일을 보관합니다</span>
@@ -77,7 +77,7 @@
         </svg>
       </button>
 
-      <section class="hero" aria-label="다운로드 입력">
+      <section class="hero mobile-panel is-mobile-panel-active" data-mobile-panel="download" aria-label="다운로드 입력">
         <h1>civitai - Hugging Face</h1>
         <form class="download-form" id="command-form" method="post" action="/add">
           <input id="target_subdir" name="target_subdir" type="hidden">
@@ -95,7 +95,7 @@
         </form>
       </section>
 
-      <section class="view active" id="home-view" aria-label="작업 목록">
+      <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
         <section class="jobs-section">
           <h2>작업 목록</h2>
           <div class="table-shell">
@@ -153,7 +153,7 @@
         </section>
       </section>
 
-      <section class="view" id="library-view" aria-label="라이브러리">
+      <section class="view mobile-panel" id="library-view" data-mobile-panel="library" aria-label="라이브러리">
         <section class="library-section">
           <div class="library-meta">
             <span id="library-path">/data</span>
@@ -164,6 +164,14 @@
       </section>
     </main>
   </div>
+
+  <nav class="mobile-tabbar" aria-label="모바일 탭">
+    <button type="button" class="active" data-mobile-tab="download">입력</button>
+    <button type="button" data-mobile-tab="jobs">작업</button>
+    <button type="button" data-mobile-tab="library">보관함</button>
+    <button type="button" data-mobile-tab="folders">폴더</button>
+    <button type="button" data-mobile-action="settings">설정</button>
+  </nav>
 
   <section class="token-modal" id="token-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
     <div class="settings-panel">
@@ -335,6 +343,9 @@
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
     const settingsCancel = document.getElementById('settings-cancel');
+    const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
+    const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
+    const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const refreshButton = document.getElementById('refresh-button');
     const commandInput = document.getElementById('input_text');
     const contextMenu = document.getElementById('context-menu');
@@ -348,6 +359,7 @@
     let downloadQueueId = 1;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeLibraryPath = null;
+    let activeMobileTab = 'download';
 
     document.getElementById('home-button').addEventListener('click', () => {
       switchToHome();
@@ -392,6 +404,15 @@
     });
     settingsClose.addEventListener('click', closeSettingsModal);
     settingsCancel.addEventListener('click', closeSettingsModal);
+    mobileTabs.forEach(button => {
+      button.addEventListener('click', () => {
+        activateMobileTab(button.dataset.mobileTab || 'download');
+      });
+    });
+    mobileSettingsButton.addEventListener('click', event => {
+      event.stopPropagation();
+      openSettingsModal();
+    });
 
     document.addEventListener('click', () => {
       closeSettingsModal();
@@ -437,6 +458,7 @@
       document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
       homeView.classList.add('active');
       libraryView.classList.remove('active');
+      activateMobileTab('download');
     }
 
     function openSettingsModal() {
@@ -460,6 +482,27 @@
       homeView.classList.remove('active');
       libraryView.classList.add('active');
       renderLibrary();
+      if (isMobileLayout()) {
+        activateMobileTab('library');
+      }
+    }
+
+    function activateMobileTab(tab) {
+      activeMobileTab = tab;
+      if (tab === 'library' && activeLibraryPath === null) {
+        activeLibraryPath = '';
+        renderLibrary();
+      }
+      mobileTabs.forEach(button => {
+        button.classList.toggle('active', button.dataset.mobileTab === tab);
+      });
+      mobilePanels.forEach(panel => {
+        panel.classList.toggle('is-mobile-panel-active', panel.dataset.mobilePanel === tab);
+      });
+    }
+
+    function isMobileLayout() {
+      return window.matchMedia('(max-width: 700px)').matches;
     }
 
     async function refreshJobs() {
