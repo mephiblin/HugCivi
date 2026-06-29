@@ -1231,16 +1231,86 @@ a:hover {
 }
 
 @media (max-width: 700px) {
+  .app-frame {
+    display: flex;
+    flex-direction: column;
+  }
+
   .content {
-    padding: 0 12px 42px;
+    order: 1;
+    min-height: auto;
+    padding: 0 12px 92px;
+  }
+
+  .sidebar {
+    order: 2;
+    width: auto;
+    margin: 0 12px 18px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  .brand-button {
+    padding: 10px 12px 8px;
+  }
+
+  .brand-title {
+    font-size: 19px;
+    line-height: 24px;
+  }
+
+  .brand-subtitle {
+    font-size: 12px;
+    line-height: 17px;
+  }
+
+  .folder-section {
+    padding: 0 10px 10px;
+  }
+
+  .folder-tree {
+    height: 176px;
+    min-height: 176px;
+  }
+
+  .new-folder-form {
+    padding: 10px;
+  }
+
+  .account-button {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 75;
+    width: min(220px, calc(100vw - 24px));
+    min-height: 48px;
+    border: 1px solid #d7dde8;
+    border-radius: 999px;
+    padding: 7px 12px;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.18);
+  }
+
+  .refresh-corner {
+    top: 12px;
+    right: 12px;
   }
 
   .hero {
-    padding-top: 50px;
+    align-items: stretch;
+    padding-top: 58px;
+    text-align: left;
   }
 
   .hero h1 {
-    font-size: 34px;
+    padding-right: 38px;
+    font-size: 30px;
+    line-height: 1.08;
+  }
+
+  .download-form {
+    width: 100%;
+    margin-top: 18px;
   }
 
   .token-modal {
@@ -1294,15 +1364,127 @@ a:hover {
     grid-template-columns: 1fr;
   }
 
+  .settings-footer {
+    gap: 10px;
+  }
+
+  .settings-save,
+  .settings-cancel {
+    flex: 1;
+  }
+
   .download-bar {
     min-height: 52px;
-    gap: 2px;
+    gap: 6px;
+    border-radius: 14px;
     padding-right: 7px;
     padding-left: 16px;
   }
 
+  .download-input {
+    font-size: 15px;
+  }
+
+  .selected-folder-line {
+    padding-left: 3px;
+  }
+
   .jobs-section {
-    margin-top: 42px;
+    margin-top: 34px;
+  }
+
+  .table-shell {
+    overflow: visible;
+  }
+
+  .jobs-table {
+    min-width: 0;
+    border-collapse: separate;
+    border-spacing: 0 10px;
+  }
+
+  .jobs-table thead {
+    display: none;
+  }
+
+  .jobs-table tbody,
+  .jobs-table tr,
+  .jobs-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .jobs-table tr {
+    overflow: hidden;
+    border: 1px solid #e3e8ef;
+    border-radius: 10px;
+    background: #ffffff;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
+  }
+
+  .jobs-table td {
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    border-bottom: 0;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .jobs-table td::before {
+    content: attr(data-label);
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 20px;
+  }
+
+  .jobs-table td:first-child {
+    padding-top: 12px;
+  }
+
+  .jobs-table td:last-child {
+    padding-bottom: 12px;
+  }
+
+  .jobs-table td[data-label="정보"] {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .jobs-table td[data-label="정보"]::before {
+    line-height: 16px;
+  }
+
+  .jobs-table .empty-row {
+    display: flex;
+    min-height: 120px;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed #cbd5e1;
+    border-radius: 10px;
+  }
+
+  .jobs-table .empty-row::before {
+    content: none;
+  }
+
+  .model-card {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
+  .model-card img {
+    width: 46px;
+    height: 46px;
+  }
+
+  .progress {
+    width: 100%;
+  }
+
+  .library-section {
+    margin-top: 28px;
   }
 
   .library-grid {
@@ -1312,5 +1494,19 @@ a:hover {
 
   .asset-card {
     min-height: 198px;
+  }
+
+  .context-menu {
+    width: min(240px, calc(100vw - 20px));
+  }
+
+  .context-menu button {
+    min-height: 42px;
+  }
+
+  .download-queue {
+    right: 10px;
+    bottom: 74px;
+    width: calc(100vw - 20px);
   }
 }

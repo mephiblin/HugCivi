@@ -115,9 +115,9 @@
               <tbody id="jobs-body">
                 {% for job in jobs %}
                 <tr>
-                  <td>{{ job.id }}</td>
-                  <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
-                  <td>
+                  <td data-label="ID">{{ job.id }}</td>
+                  <td data-label="상태"><span class="status {{ job.status }}">{{ job.status }}</span></td>
+                  <td data-label="정보">
                     <div class="model-card {% if not job.thumbnail_url %}no-thumb{% endif %}">
                       {% if job.thumbnail_url %}
                         <img src="{{ job.thumbnail_url }}" alt="">
@@ -133,10 +133,10 @@
                       </div>
                     </div>
                   </td>
-                  <td>{{ job.source }}</td>
-                  <td class="input-cell">{{ job.input_text }}</td>
-                  <td>{{ job.filename or '-' }}</td>
-                  <td>
+                  <td data-label="소스">{{ job.source }}</td>
+                  <td data-label="입력" class="input-cell">{{ job.input_text }}</td>
+                  <td data-label="파일">{{ job.filename or '-' }}</td>
+                  <td data-label="진행률">
                     {% if job.percent is not none %}
                       <div class="progress"><div style="width: {{ job.percent }}%"></div></div>
                       {{ job.percent }}% · {{ job.progress_human }} / {{ job.total_human }}
@@ -144,7 +144,7 @@
                       {{ job.progress_human }}
                     {% endif %}
                   </td>
-                  <td><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
+                  <td data-label="로그"><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -486,14 +486,14 @@
           ? `<div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
           : escapeHtml(job.progress_human || '');
         return `<tr>
-          <td>${job.id}</td>
-          <td><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
-          <td>${renderModelInfo(job)}</td>
-          <td>${escapeHtml(job.source || '-')}</td>
-          <td class="input-cell">${escapeHtml(job.input_text || '')}</td>
-          <td>${escapeHtml(job.filename || '-')}</td>
-          <td>${progress}</td>
-          <td><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
+          <td data-label="ID">${job.id}</td>
+          <td data-label="상태"><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+          <td data-label="정보">${renderModelInfo(job)}</td>
+          <td data-label="소스">${escapeHtml(job.source || '-')}</td>
+          <td data-label="입력" class="input-cell">${escapeHtml(job.input_text || '')}</td>
+          <td data-label="파일">${escapeHtml(job.filename || '-')}</td>
+          <td data-label="진행률">${progress}</td>
+          <td data-label="로그"><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
         </tr>`;
       }).join('');
     }

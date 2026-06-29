@@ -59,7 +59,7 @@ def start_workers() -> None:
     with _WORKERS_LOCK:
         if _WORKERS_STARTED:
             return
-        max_workers = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 1)
+        max_workers = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 2)
         enqueue_existing_jobs()
         for index in range(max_workers):
             thread = threading.Thread(target=worker_loop, name=f"download-worker-{index+1}", daemon=True)
