@@ -1,14 +1,15 @@
 # NAS Model Archiver
 
-Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일을 내려받아 보관하는 웹 앱입니다.
+Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
-브라우저에서 URL을 붙여넣으면 모델 정보를 읽고, LLM, LoRA, Checkpoint, Embedding 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다.
+브라우저에서 URL을 붙여넣으면 모델 정보를 읽고, LLM, LoRA, Checkpoint, Embedding 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
 ## 이런 용도입니다
 
 - NAS에 AI 모델 파일을 모아두고 싶을 때
 - Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
 - ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
+- ComfyUI 워크플로우 공유 PNG 또는 JSON을 NAS에 저장하고 나중에 다시 보고 싶을 때
 - 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
 
 ## 주요 기능
@@ -16,12 +17,20 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일을 내려받�
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
+- ComfyUI 워크플로우 `.json` URL 다운로드
+- ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
+- 홈 화면 드래그 앤 드롭으로 ComfyUI 워크플로우 PNG/JSON 저장
+- ComfyUI 워크플로우 노드 그래프 뷰어, 모델 목록, 원본 JSON 보기
 - Civitai 썸네일, 모델 타입, 베이스 모델, 포맷, 정밀도 표시
 - Hugging Face 메타데이터 기반 LLM, Embedding, Image 모델 분류
 - 폴더 트리에서 저장 위치 선택
 - 자동 폴더 분류와 사용자 지정 기본 폴더
 - 라이브러리 카드 보기
-- 폴더 또는 카드 우클릭으로 다운로드, 이름 변경, 이동, 삭제
+- 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
+- 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
+- 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
+- 작업 목록에서 다운로드 정지, 재개, 취소, 삭제
+- 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
 - HF 토큰, Civitai 토큰을 웹 UI에서 저장
 - 요청 간격, 재시도, 낮은 병렬도 기본값으로 rate limit 위험 완화
@@ -38,9 +47,11 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일을 내려받�
 예시 경로:
 
 ```text
-/volume1/AI_MODELS
+/volume1/docker/nas-model-archiver/models
 /volume1/docker/nas-model-archiver/config
 ```
+
+권장 Portainer stack은 위 두 폴더를 각각 컨테이너의 `/data`, `/config`에 연결합니다. 기존에 `/volume1/AI_MODELS` 같은 별도 모델 폴더를 쓰고 있다면 `portainer-stack.yml`의 `source` 값만 그 경로로 바꾸면 됩니다.
 
 ## 가장 쉬운 설치: Portainer + GitHub
 
@@ -48,7 +59,7 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일을 내려받�
 2. NAS에 모델 저장 폴더를 만듭니다.
 
 ```text
-/volume1/AI_MODELS
+/volume1/docker/nas-model-archiver/models
 ```
 
 3. NAS에 설정 저장 폴더를 만듭니다.
@@ -110,7 +121,7 @@ Portainer가 `pull access denied for nas-model-archiver` 오류를 내면 스택
 
 ```yaml
 volumes:
-  - /volume1/AI_MODELS:/data
+  - /volume1/docker/nas-model-archiver/models:/data
   - /volume1/docker/nas-model-archiver/config:/config
 ```
 
@@ -122,6 +133,44 @@ volumes:
 source: /volume1/my-models
 target: /data
 ```
+
+## Synology에서 필요한 폴더
+
+Portainer 권장 설정 기준으로 NAS에 직접 만들어야 하는 폴더는 두 개입니다.
+
+```text
+/volume1/docker/nas-model-archiver/models
+/volume1/docker/nas-model-archiver/config
+```
+
+역할:
+
+- `/volume1/docker/nas-model-archiver/models`: 모델 파일, ComfyUI 워크플로우, 일반 다운로드 파일이 저장됩니다. 컨테이너 안에서는 `/data`입니다.
+- `/volume1/docker/nas-model-archiver/config`: 작업 DB, UI에서 저장한 HF/Civitai 토큰, 설정값, 메모가 저장됩니다. 컨테이너 안에서는 `/config`입니다.
+
+Synology SSH에서 만들 때 예:
+
+```bash
+mkdir -p /volume1/docker/nas-model-archiver/models
+mkdir -p /volume1/docker/nas-model-archiver/config
+```
+
+앱이 `/data` 아래에 자동으로 만들거나 사용하는 주요 하위 폴더:
+
+```text
+/data/huggingface/llm
+/data/stable-diffusion/checkpoints
+/data/stable-diffusion/loras
+/data/stable-diffusion/diffusion_models
+/data/stable-diffusion/embeddings
+/data/stable-diffusion/vae
+/data/stable-diffusion/controlnet
+/data/stable-diffusion/upscalers
+/data/comfyui/workflows
+/data/generic
+```
+
+이 하위 폴더들은 미리 만들 필요는 없습니다. 앱이 필요한 시점에 생성합니다.
 
 ## 첫 사용 방법
 
@@ -157,6 +206,33 @@ https://civitai.com/api/download/models/456789
 
 숫자만 입력하면 Civitai model version ID로 처리합니다.
 
+### ComfyUI 워크플로우
+
+ComfyUI 워크플로우 JSON 또는 워크플로우가 내장된 PNG를 저장할 수 있습니다.
+
+```text
+workflow https://example.com/workflow.json
+workflow https://example.com/share.png
+comfyui https://example.com/share.png
+```
+
+일반 PNG와 워크플로우 PNG를 오인하지 않도록, URL 입력에서는 `workflow` 또는 `comfyui` 접두어를 붙이는 방식을 권장합니다.
+
+로컬 파일은 홈 화면 입력 영역에 드래그 앤 드롭하면 됩니다.
+
+지원 파일:
+
+```text
+.json
+.png
+```
+
+저장 기본 경로:
+
+```text
+/data/comfyui/workflows/파일이름
+```
+
 ## 폴더 자동 분류
 
 저장 폴더를 직접 선택하지 않으면 모델 정보를 보고 자동으로 경로를 정합니다.
@@ -169,6 +245,7 @@ https://civitai.com/api/download/models/456789
 /data/stable-diffusion/loras/sd-1.5/...
 /data/stable-diffusion/embeddings/...
 /data/stable-diffusion/diffusion_models/...
+/data/comfyui/workflows/...
 ```
 
 왼쪽 폴더 트리에서 폴더를 클릭한 뒤 다운로드하면 자동 분류보다 선택한 폴더가 우선입니다.
@@ -197,11 +274,14 @@ Upscaler: stable-diffusion/upscalers
 폴더 트리 또는 라이브러리 카드에서 마우스 오른쪽 버튼을 누르면 메뉴가 나옵니다.
 
 - 다운로드
+- 속성
 - 이름 변경
 - 이동
 - 삭제
 
 폴더 다운로드는 ZIP 파일로 준비됩니다. 모델 카드가 가리키는 저장 폴더에 파일이 여러 개 있으면 하나의 ZIP으로 내려받습니다.
+
+워크플로우 카드에는 `워크플로 보기`가 추가로 표시됩니다. 속성에서는 용량, 확장자, 날짜, 원본 URL, 메모를 확인할 수 있고 메모를 저장할 수 있습니다.
 
 안전 장치:
 
@@ -311,3 +391,31 @@ python -m venv .venv
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
+
+## 패치내역
+
+### 2026-06-30
+
+- ComfyUI 워크플로우 기능 추가
+  - `.json` 워크플로우 URL 저장 지원
+  - 워크플로우 metadata가 내장된 `.png` 저장 지원
+  - 홈 화면 드래그 앤 드롭으로 ComfyUI PNG/JSON 저장
+  - `/data/comfyui/workflows` 기본 저장 경로 추가
+  - 워크플로우 노드 그래프 뷰어, 모델 목록, 원본 JSON 보기 추가
+  - 라이브러리 카드와 우클릭 메뉴에서 `워크플로 보기` 지원
+- 속성 메모 기능 추가
+  - 카드/폴더 우클릭 `속성`에서 메모 작성과 저장 지원
+  - 이름 변경/이동 시 메모 경로 자동 갱신
+  - 삭제 시 관련 메모 자동 삭제
+- 작업 목록 제어 기능 추가
+  - 다운로드 정지, 재개, 취소, 삭제 버튼 추가
+  - 스트리밍 다운로드는 취소/삭제 시 `.part` 파일 정리
+- 라이브러리 카드 기능 개선
+  - 즐겨찾기 버튼 추가
+  - URL 바로가기 버튼 추가
+  - A-Z, Z-A, 날짜순, 즐겨찾기 정렬 추가
+  - 썸네일 블러 토글 추가
+- 배포 설정 최신화
+  - 다운로드 워커 기본값 `MAX_CONCURRENT_DOWNLOADS=3`
+  - Portainer 권장 Synology 기본 폴더를 `/volume1/docker/nas-model-archiver/models`, `/volume1/docker/nas-model-archiver/config`로 정리
+  - Portainer stack은 Git 저장소에서 Dockerfile을 직접 빌드하도록 유지
