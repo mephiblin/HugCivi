@@ -70,6 +70,14 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS favorites (
+                path TEXT PRIMARY KEY,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -137,6 +145,29 @@ def clear_job_history() -> int:
         return int(cur.rowcount or 0)
 
 
+def favorite_paths() -> set[str]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT path FROM favorites").fetchall()
+    return {str(row["path"]) for row in rows}
+
+
+def set_favorite(path: str, enabled: bool) -> None:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        if enabled:
+            conn.execute(
+                """
+                INSERT INTO favorites (path, updated_at)
+                VALUES (?, ?)
+                ON CONFLICT(path) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (path, now),
+            )
+        else:
+            conn.execute("DELETE FROM favorites WHERE path = ?", (path,))
+        conn.commit()
+
+
 def get_next_queued_job() -> dict[str, Any] | None:
     with _DB_LOCK, connect() as conn:
         row = conn.execute(
@@ -179,6 +210,33 @@ def update_target_dir_prefix(old_dir: str | Path, new_dir: str | Path) -> None:
         conn.commit()
 
 
+def update_favorite_path_prefix(old_path: str, new_path: str) -> None:
+    old_text = old_path.strip("/")
+    new_text = new_path.strip("/")
+    old_prefix = old_text.rstrip("/") + "/"
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT path FROM favorites").fetchall()
+        for row in rows:
+            path = str(row["path"])
+            if path == old_text:
+                updated = new_text
+            elif path.startswith(old_prefix):
+                updated = new_text.rstrip("/") + "/" + path[len(old_prefix) :]
+            else:
+                continue
+            conn.execute("DELETE FROM favorites WHERE path = ?", (path,))
+            conn.execute(
+                """
+                INSERT INTO favorites (path, updated_at)
+                VALUES (?, ?)
+                ON CONFLICT(path) DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (updated, now),
+            )
+        conn.commit()
+
+
 def clear_target_dir_prefix(target_root: str | Path) -> None:
     root_text = str(target_root)
     root_prefix = root_text.rstrip("\\/") + os.sep
@@ -189,6 +247,14 @@ def clear_target_dir_prefix(target_root: str | Path) -> None:
             target_dir = str(row["target_dir"])
             if target_dir == root_text or target_dir.startswith(root_prefix):
                 conn.execute("UPDATE jobs SET target_dir = NULL, updated_at = ? WHERE id = ?", (now, row["id"]))
+        conn.commit()
+
+
+def clear_favorite_path_prefix(target_path: str) -> None:
+    root_text = target_path.strip("/")
+    root_prefix = root_text.rstrip("/") + "/"
+    with _DB_LOCK, connect() as conn:
+        conn.execute("DELETE FROM favorites WHERE path = ? OR path LIKE ?", (root_text, root_prefix + "%"))
         conn.commit()
 
 

@@ -984,6 +984,30 @@ a:hover {
   font-size: 13px;
 }
 
+.library-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.library-controls label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.library-controls select {
+  min-height: 30px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .library-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
@@ -1035,6 +1059,52 @@ a:hover {
   border-radius: 3px;
   padding: 2px 5px;
   background: rgba(0, 0, 0, 0.48);
+}
+
+.asset-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.asset-action {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #e600cf;
+  box-shadow: 0 5px 14px rgba(95, 0, 86, 0.24);
+}
+
+.asset-action:hover {
+  background: #c900b7;
+}
+
+.asset-action svg {
+  width: 17px;
+  height: 17px;
+}
+
+.asset-action.favorite svg path {
+  fill-rule: evenodd;
+}
+
+.asset-action.favorite.active {
+  background: #e600cf;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.88), 0 5px 14px rgba(95, 0, 86, 0.24);
+}
+
+.asset-action:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.asset-action:disabled:hover {
+  background: #e600cf;
 }
 
 .asset-dots,
@@ -1733,6 +1803,20 @@ a:hover {
 
   .library-section {
     margin-top: 28px;
+  }
+
+  .library-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .library-controls select {
+    flex: 1;
   }
 
   .library-grid {

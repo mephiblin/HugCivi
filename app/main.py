@@ -9,6 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -19,6 +20,7 @@ from starlette.background import BackgroundTask
 
 from . import db
 from .downloader import enqueue_job, start_workers
+from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
 
@@ -162,8 +164,11 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     target = safe_join(DATA_ROOT, source.parent.relative_to(DATA_ROOT.resolve()).as_posix(), new_name)
     if target.exists():
         raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
+    old_relative = relative_data_path(source)
+    new_relative = relative_data_path(target)
     source.rename(target)
     db.update_target_dir_prefix(source, target)
+    db.update_favorite_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -185,8 +190,11 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     if target.exists():
         raise HTTPException(status_code=409, detail="이동 대상에 같은 이름의 폴더가 이미 있습니다.")
 
+    old_relative = relative_data_path(source)
+    new_relative = relative_data_path(target)
     shutil.move(str(source), str(target))
     db.update_target_dir_prefix(source, target)
+    db.update_favorite_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -196,13 +204,27 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     source = existing_data_path(str(payload.get("path") or ""))
     ensure_mutable_path(source)
     ensure_no_active_jobs(source)
+    relative_path = relative_data_path(source)
 
     if source.is_dir():
         shutil.rmtree(source)
     else:
         source.unlink()
     db.clear_target_dir_prefix(source)
+    db.clear_favorite_path_prefix(relative_path)
     return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
+
+
+@app.post("/api/favorites")
+async def api_set_favorite(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(source)
+    relative_path = relative_data_path(source)
+    requested = payload.get("favorite")
+    enabled = bool(requested) if requested is not None else relative_path not in db.favorite_paths()
+    db.set_favorite(relative_path, enabled)
+    return JSONResponse({"ok": True, "path": relative_path, "favorite": enabled})
 
 
 @app.get("/api/fs/download-info")
@@ -273,21 +295,80 @@ def job_log(job_id: int, _: str = Depends(require_auth)) -> PlainTextResponse:
 
 
 def decorate_jobs(jobs: list[dict]) -> list[dict]:
-    return [decorate_job(job) for job in jobs]
+    favorites = db.favorite_paths()
+    return [decorate_job(job, favorites) for job in jobs]
 
 
-def decorate_job(job: dict) -> dict:
+def decorate_job(job: dict, favorites: set[str] | None = None) -> dict:
     progress = job.get("progress_bytes") or 0
     total = job.get("total_bytes")
     percent = None
     if total:
         percent = min(100, round(progress * 100 / total, 1))
+    parsed = parse_job_for_display(job)
+    target_path = display_target_path(job)
     job = dict(job)
     job.pop("parsed_json", None)
     job["progress_human"] = human_bytes(progress)
     job["total_human"] = human_bytes(total)
     job["percent"] = percent
+    job["target_path"] = target_path
+    favorite_paths = favorites if favorites is not None else db.favorite_paths()
+    job["favorite"] = bool(target_path and target_path in favorite_paths)
+    job["source_url"] = source_url_for_job(job, parsed)
     return job
+
+
+def parse_job_for_display(job: dict) -> ParsedDownload | None:
+    payload = job.get("parsed_json")
+    if not payload:
+        return None
+    try:
+        return ParsedDownload.from_dict(json.loads(str(payload)))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def display_target_path(job: dict) -> str:
+    value = str(job.get("target_dir") or "").strip()
+    if not value:
+        return ""
+    normalized = value.replace("\\", "/").strip("/")
+    data_root = DATA_ROOT.as_posix().strip("/")
+    if normalized == data_root:
+        return ""
+    data_prefix = f"{data_root}/"
+    if normalized.startswith(data_prefix):
+        return normalized[len(data_prefix) :].strip("/")
+    return normalized.removeprefix("data/").strip("/")
+
+
+def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
+    raw_input = str(job.get("input_text") or "").strip()
+    if is_http_url(raw_input):
+        return raw_input
+    if not parsed:
+        return ""
+    if parsed.source == "huggingface" and parsed.repo_id:
+        repo = quote(parsed.repo_id, safe="/")
+        if parsed.repo_type == "dataset":
+            return f"https://huggingface.co/datasets/{repo}"
+        if parsed.repo_type == "space":
+            return f"https://huggingface.co/spaces/{repo}"
+        return f"https://huggingface.co/{repo}"
+    if parsed.source == "civitai":
+        if parsed.civitai_model_id:
+            return f"https://civitai.com/models/{quote(parsed.civitai_model_id)}"
+        if is_http_url(parsed.civitai_download_url or ""):
+            return parsed.civitai_download_url or ""
+    if parsed.source == "generic" and is_http_url(parsed.url or ""):
+        return parsed.url or ""
+    return ""
+
+
+def is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def build_folder_tree(root: Path, max_depth: int = 4, max_entries: int = 300) -> dict[str, Any]:

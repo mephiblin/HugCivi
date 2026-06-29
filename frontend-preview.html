@@ -214,7 +214,16 @@
         <section class="library-section">
           <div class="library-meta">
             <span id="library-path">/data</span>
-            <span id="library-count">0개</span>
+            <div class="library-controls">
+              <label for="library-sort">정렬</label>
+              <select id="library-sort">
+                <option value="az" selected>A-Z</option>
+                <option value="za">Z-A</option>
+                <option value="date">날짜순</option>
+                <option value="favorite">즐겨찾기</option>
+              </select>
+              <span id="library-count">0개</span>
+            </div>
           </div>
           <div class="library-grid" id="library-grid"></div>
         </section>
@@ -400,7 +409,10 @@
         precision: 'fp16',
         file_format: 'SafeTensor',
         thumbnail_url: sampleThumb,
-        target_dir: '/data/stable-diffusion/checkpoints'
+        target_dir: '/data/stable-diffusion/checkpoints',
+        source_url: 'https://civitai.com/models/123456/name',
+        favorite: true,
+        updated_at: '2026-06-29T09:55:00+00:00'
       },
       {
         id: 2,
@@ -417,7 +429,10 @@
         precision: 'F32',
         file_format: 'SafeTensor',
         thumbnail_url: '',
-        target_dir: '/data/huggingface/llm/openai-community/gpt2'
+        target_dir: '/data/huggingface/llm/openai-community/gpt2',
+        source_url: 'https://huggingface.co/openai-community/gpt2',
+        favorite: false,
+        updated_at: '2026-06-28T09:55:00+00:00'
       },
       {
         id: 1,
@@ -434,7 +449,10 @@
         precision: '',
         file_format: '',
         thumbnail_url: '',
-        target_dir: '/data'
+        target_dir: '/data',
+        source_url: 'https://example.com/model.bin',
+        favorite: false,
+        updated_at: '2026-06-27T09:55:00+00:00'
       }
     ];
 
@@ -454,7 +472,10 @@
         precision: 'fp16',
         file_format: 'SafeTensor',
         thumbnail_url: sampleThumb,
-        target_dir: i % 2 === 0 ? '/data/stable-diffusion/loras' : '/data/civitai'
+        target_dir: i % 2 === 0 ? '/data/stable-diffusion/loras' : '/data/civitai',
+        source_url: 'https://civitai.com/models/example',
+        favorite: i === 3,
+        updated_at: `2026-06-${String(10 + i).padStart(2, '0')}T09:55:00+00:00`
       });
     }
 
@@ -465,6 +486,7 @@
     const libraryGrid = document.getElementById('library-grid');
     const libraryPath = document.getElementById('library-path');
     const libraryCount = document.getElementById('library-count');
+    const librarySort = document.getElementById('library-sort');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
@@ -563,6 +585,7 @@
         hideContextMenu();
       }
     });
+    librarySort.addEventListener('change', renderLibrary);
     clearJobsButton.addEventListener('click', clearJobHistory);
     propertiesClose.addEventListener('click', closePropertiesModal);
     propertiesModal.addEventListener('click', event => {
@@ -579,6 +602,20 @@
         path: card.dataset.path || '',
         name: card.dataset.name || card.dataset.path || 'model',
       });
+    });
+    libraryGrid.addEventListener('click', event => {
+      const actionButton = event.target.closest('[data-card-action]');
+      if (!actionButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const card = actionButton.closest('.asset-card');
+      const path = card?.dataset.path || '';
+      const action = actionButton.dataset.cardAction;
+      if (action === 'open') {
+        if (actionButton.dataset.url) window.open(actionButton.dataset.url, '_blank', 'noopener');
+      } else if (action === 'favorite') {
+        togglePreviewFavorite(path, actionButton.getAttribute('aria-pressed') !== 'true');
+      }
     });
 
     contextMenu.addEventListener('click', event => {
@@ -703,7 +740,7 @@
 
     function renderLibrary() {
       const folder = activeLibraryPath || '';
-      const matches = currentJobs.filter(job => jobMatchesFolder(job, folder));
+      const matches = sortLibraryJobs(currentJobs.filter(job => jobMatchesFolder(job, folder)));
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
       libraryCount.textContent = `${matches.length}개`;
       if (!matches.length) {
@@ -714,15 +751,29 @@
         const title = job.model_title || job.filename || job.input_text || 'Model';
         const category = job.model_category || job.source || 'Model';
         const meta = [job.base_model, job.precision, job.file_format].filter(Boolean).join(' · ');
+        const sourceUrl = job.source_url || '';
+        const favorite = Boolean(job.favorite);
         const image = job.thumbnail_url
           ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
           : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
-        const targetPath = normalizePath(job.target_dir || '');
+        const targetPath = normalizePath(job.target_path || job.target_dir || '');
         return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}">
           ${image}
           <div class="asset-topline">
             <span>${escapeHtml(shortSource(job.source))}</span>
-            <span class="asset-dots" aria-hidden="true"></span>
+            <div class="asset-actions">
+              <button type="button" class="asset-action" data-card-action="open" data-url="${escapeHtml(sourceUrl)}" title="URL 바로가기" aria-label="URL 바로가기" ${sourceUrl ? '' : 'disabled'}>
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm2 3V18.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-10H6Zm.5-3.5a.5.5 0 0 0-.5.5V7h12V5.5a.5.5 0 0 0-.5-.5h-11Z"/>
+                  <path d="M8 12h8v2H8v-2Zm0 3h5v2H8v-2Z"/>
+                </svg>
+              </button>
+              <button type="button" class="asset-action favorite ${favorite ? 'active' : ''}" data-card-action="favorite" aria-pressed="${favorite ? 'true' : 'false'}" title="즐겨찾기" aria-label="즐겨찾기">
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Zm0 4.5-1.4 2.8-3.1.5 2.2 2.2-.5 3.1 2.8-1.5 2.8 1.5-.5-3.1 2.2-2.2-3.1-.5L12 7.5Z"/>
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="asset-overlay">
             <strong>${escapeHtml(title)}</strong>
@@ -733,9 +784,49 @@
       }).join('');
     }
 
+    function sortLibraryJobs(jobs) {
+      const mode = librarySort.value || 'az';
+      return [...jobs].sort((left, right) => {
+        if (mode === 'date') {
+          return jobTime(right) - jobTime(left) || compareJobTitle(left, right);
+        }
+        if (mode === 'za') {
+          return compareJobTitle(right, left);
+        }
+        if (mode === 'favorite') {
+          const favoriteDiff = Number(Boolean(right.favorite)) - Number(Boolean(left.favorite));
+          return favoriteDiff || compareJobTitle(left, right);
+        }
+        return compareJobTitle(left, right);
+      });
+    }
+
+    function compareJobTitle(left, right) {
+      return jobTitle(left).localeCompare(jobTitle(right), 'ko', {numeric: true, sensitivity: 'base'});
+    }
+
+    function jobTitle(job) {
+      return String(job.model_title || job.filename || job.input_text || '').trim();
+    }
+
+    function jobTime(job) {
+      const value = Date.parse(job.updated_at || job.created_at || '');
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function togglePreviewFavorite(path, favorite) {
+      currentJobs.forEach(job => {
+        const target = normalizePath(job.target_path || job.target_dir || '');
+        if (target === path) {
+          job.favorite = favorite;
+        }
+      });
+      renderLibrary();
+    }
+
     function jobMatchesFolder(job, folder) {
       if (!folder) return true;
-      const target = normalizePath(job.target_dir || '');
+      const target = normalizePath(job.target_path || job.target_dir || '');
       return target === folder || target.startsWith(`${folder}/`);
     }
 
