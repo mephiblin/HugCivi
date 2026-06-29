@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .models import ParsedDownload
+from .utils import redact_sensitive_text
+
+DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
+_DB_LOCK = threading.RLock()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                input_text TEXT NOT NULL,
+                parsed_json TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                target_dir TEXT,
+                filename TEXT,
+                progress_bytes INTEGER DEFAULT 0,
+                total_bytes INTEGER,
+                error TEXT,
+                log TEXT DEFAULT ''
+            )
+            """
+        )
+        ensure_job_columns(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def ensure_job_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    columns = {
+        "model_title": "TEXT",
+        "model_category": "TEXT",
+        "model_type": "TEXT",
+        "base_model": "TEXT",
+        "file_format": "TEXT",
+        "precision": "TEXT",
+        "thumbnail_url": "TEXT",
+        "metadata_json": "TEXT",
+    }
+    for name, sql_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {sql_type}")
+
+
+def create_job(parsed: ParsedDownload) -> int:
+    now = utc_now()
+    parsed_payload = parsed.to_dict()
+    parsed_payload["raw_input"] = redact_sensitive_text(parsed.raw_input)
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO jobs
+            (created_at, updated_at, input_text, parsed_json, source, status, log)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?)
+            """,
+            (
+                now,
+                now,
+                redact_sensitive_text(parsed.raw_input),
+                json.dumps(parsed_payload, ensure_ascii=False),
+                parsed.source,
+                f"[{now}] queued\n",
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [redact_job_row(dict(row)) for row in rows]
+
+
+def get_job(job_id: int) -> dict[str, Any] | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return redact_job_row(dict(row)) if row else None
+
+
+def get_next_queued_job() -> dict[str, Any] | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def update_job(job_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    fields["updated_at"] = utc_now()
+    for key in ("error", "log", "input_text"):
+        if key in fields and fields[key] is not None:
+            fields[key] = redact_sensitive_text(str(fields[key]))
+    keys = list(fields.keys())
+    values = [fields[k] for k in keys]
+    set_clause = ", ".join([f"{k} = ?" for k in keys])
+    with _DB_LOCK, connect() as conn:
+        conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", values + [job_id])
+        conn.commit()
+
+
+def append_log(job_id: int, message: str) -> None:
+    stamp = utc_now()
+    line = f"[{stamp}] {redact_sensitive_text(message)}\n"
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET log = COALESCE(log, '') || ?, updated_at = ? WHERE id = ?",
+            (line, stamp, job_id),
+        )
+        conn.commit()
+
+
+def parse_job_payload(job: dict[str, Any]) -> ParsedDownload:
+    return ParsedDownload.from_dict(json.loads(job["parsed_json"]))
+
+
+def redact_job_row(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("input_text", "error", "log"):
+        if row.get(key) is not None:
+            row[key] = redact_sensitive_text(str(row[key]))
+    return row
+
+
+def set_setting(key: str, value: str) -> None:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        conn.commit()
+
+
+def get_setting(key: str) -> str | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else None
+
+
+def get_secret(name: str) -> str | None:
+    return get_setting(name) or os.getenv(name) or None
+
+
+def settings_status() -> dict[str, dict[str, bool | str | None]]:
+    status: dict[str, dict[str, bool | str | None]] = {}
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT key, updated_at FROM settings").fetchall()
+    db_settings = {str(row["key"]): str(row["updated_at"]) for row in rows}
+    for key in ("HF_TOKEN", "CIVITAI_TOKEN"):
+        env_value = os.getenv(key)
+        status[key] = {
+            "configured": bool(env_value or db_settings.get(key)),
+            "source": "ui" if key in db_settings else ("environment" if env_value else None),
+            "updated_at": db_settings.get(key),
+        }
+    return status

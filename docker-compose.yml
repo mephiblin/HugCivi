@@ -1,0 +1,16 @@
+services:
+  nas-model-archiver:
+    build: .
+    container_name: nas-model-archiver
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      APP_USERNAME: "admin"
+      APP_PASSWORD: "replace-with-a-strong-password"
+      HF_TOKEN: ""
+      CIVITAI_TOKEN: ""
+      MAX_CONCURRENT_DOWNLOADS: "1"
+    volumes:
+      - /volume1/AI_MODELS:/data
+      - /volume1/docker/nas-model-archiver/config:/config

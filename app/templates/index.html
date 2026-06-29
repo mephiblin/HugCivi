@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NAS Model Archiver</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% macro folder_node(node) %}
+    <li class="folder-node {% if node.children %}has-children expanded{% endif %}">
+      <div class="folder-row">
+        {% if node.children %}
+          <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
+        {% else %}
+          <span class="folder-toggle-spacer"></span>
+        {% endif %}
+        <button type="button" class="folder-picker" data-path="{{ node.path }}" data-name="{{ node.name }}">
+          <span class="folder-icon" aria-hidden="true"></span>
+          <span class="folder-name">{{ node.name }}</span>
+        </button>
+      </div>
+      {% if node.children %}
+        <ul class="folder-children">
+          {% for child in node.children %}
+            {{ folder_node(child) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {% endmacro %}
+
+  <div class="app-frame">
+    <aside class="sidebar">
+      <button type="button" class="brand-button" id="home-button">
+        <span class="brand-title">Model Archiver</span>
+        <span class="brand-subtitle">저장소로 모델 파일을 보관합니다</span>
+      </button>
+
+      <section class="folder-section" aria-label="저장 폴더">
+        <div class="sidebar-heading">
+          <h2>저장 폴더</h2>
+          <span class="path-badge">/data</span>
+        </div>
+        <div class="folder-tree">
+          <ul>
+            {{ folder_node(folder_tree) }}
+          </ul>
+        </div>
+      </section>
+
+      <form class="new-folder-form" method="post" action="/folders">
+        <label for="folder_path">새 폴더</label>
+        <input id="folder_path" name="folder_path" placeholder="stable-diffusion/checkpoints" required>
+        <button type="submit">폴더 생성</button>
+      </form>
+
+      <section class="token-modal" id="token-modal" aria-label="API 토큰 입력" hidden>
+        <form method="post" action="/settings">
+          <h2>Hugging Face Token</h2>
+          <label class="sr-only" for="hf_token">Hugging Face Token</label>
+          <input id="hf_token" name="hf_token" type="password" autocomplete="off"
+                 placeholder="{% if settings.HF_TOKEN.configured %}설정됨 · {{ settings.HF_TOKEN.source }}{% else %}hf_...{% endif %}">
+
+          <h2>Civitai Token</h2>
+          <label class="sr-only" for="civitai_token">Civitai Token</label>
+          <input id="civitai_token" name="civitai_token" type="password" autocomplete="off"
+                 placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
+
+          <button type="submit">저장</button>
+        </form>
+      </section>
+
+      <button type="button" class="account-button" id="token-button" aria-haspopup="dialog" aria-controls="token-modal">
+        <span class="avatar">GB</span>
+        <span class="account-copy">
+          <strong>go blin</strong>
+          <small>Pro</small>
+        </span>
+        <span class="account-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M9 7.5A2.5 2.5 0 0 1 11.5 5h1A2.5 2.5 0 0 1 15 7.5V9h1a3 3 0 0 1 3 3v3.5A3.5 3.5 0 0 1 15.5 19h-7A3.5 3.5 0 0 1 5 15.5V12a3 3 0 0 1 3-3h1V7.5Zm2 1.5h2V7.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5V9Zm-3 2a1 1 0 0 0-1 1v3.5A1.5 1.5 0 0 0 8.5 17h7a1.5 1.5 0 0 0 1.5-1.5V12a1 1 0 0 0-1-1H8Z"/>
+          </svg>
+        </span>
+      </button>
+    </aside>
+
+    <main class="content">
+      <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
+          <path d="M18.3 3.7V8h-4.3l4.3-4.3ZM5.7 20.3V16H10l-4.3 4.3Z"/>
+        </svg>
+      </button>
+
+      <section class="hero" aria-label="다운로드 입력">
+        <h1>civitai - Hugging Face</h1>
+        <form class="download-form" id="command-form" method="post" action="/add">
+          <input id="target_subdir" name="target_subdir" type="hidden">
+          <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
+          <div class="download-bar">
+            <button type="button" class="bar-icon" title="추가" aria-label="추가">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M11 5h2v14h-2V5Zm-6 6h14v2H5v-2Z"/>
+              </svg>
+            </button>
+            <input id="input_text" name="input_text" class="download-input"
+                   placeholder="무엇이든 물어보세요" autocomplete="off" required>
+            <button type="button" class="extension-button">Pro 확장
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="m7 9 5 5 5-5H7Z"/>
+              </svg>
+            </button>
+            <button type="button" class="bar-icon" title="음성 입력" aria-label="음성 입력">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Zm-1 13.9V21h2v-3.1a6 6 0 0 0 5-5.9h-2a4 4 0 0 1-8 0H6a6 6 0 0 0 5 5.9Z"/>
+              </svg>
+            </button>
+            <button type="submit" class="submit-orb" title="다운로드 시작" aria-label="다운로드 시작">
+              <span></span><span></span><span></span>
+            </button>
+          </div>
+          <div class="selected-folder-line">
+            <span id="selected-folder">자동 분류</span>
+          </div>
+        </form>
+      </section>
+
+      <section class="view active" id="home-view" aria-label="작업 목록">
+        <section class="jobs-section">
+          <h2>작업 목록</h2>
+          <div class="table-shell">
+            <table class="jobs-table">
+              <thead>
+                <tr>
+                  <th class="col-id">ID</th>
+                  <th class="col-status">상태</th>
+                  <th class="col-info">정보</th>
+                  <th class="col-source">소스</th>
+                  <th class="col-input">입력</th>
+                  <th class="col-file">파일</th>
+                  <th class="col-progress">진행률</th>
+                  <th class="col-log">로그</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-body">
+                {% for job in jobs %}
+                <tr>
+                  <td>{{ job.id }}</td>
+                  <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+                  <td>
+                    <div class="model-card {% if not job.thumbnail_url %}no-thumb{% endif %}">
+                      {% if job.thumbnail_url %}
+                        <img src="{{ job.thumbnail_url }}" alt="">
+                      {% endif %}
+                      <div>
+                        <strong>{{ job.model_title or '-' }}</strong>
+                        <span>{{ job.model_category or job.model_type or '-' }}</span>
+                        <small>
+                          {% if job.base_model %}{{ job.base_model }}{% endif %}
+                          {% if job.precision %} · {{ job.precision }}{% endif %}
+                          {% if job.file_format %} · {{ job.file_format }}{% endif %}
+                        </small>
+                      </div>
+                    </div>
+                  </td>
+                  <td>{{ job.source }}</td>
+                  <td class="input-cell">{{ job.input_text }}</td>
+                  <td>{{ job.filename or '-' }}</td>
+                  <td>
+                    {% if job.percent is not none %}
+                      <div class="progress"><div style="width: {{ job.percent }}%"></div></div>
+                      {{ job.percent }}% · {{ job.progress_human }} / {{ job.total_human }}
+                    {% else %}
+                      {{ job.progress_human }}
+                    {% endif %}
+                  </td>
+                  <td><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="library-view" aria-label="라이브러리">
+        <section class="library-section">
+          <div class="library-meta">
+            <span id="library-path">/data</span>
+            <span id="library-count">0개</span>
+          </div>
+          <div class="library-grid" id="library-grid"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const initialJobs = {{ jobs|tojson }};
+    const targetInput = document.getElementById('target_subdir');
+    const selectedFolder = document.getElementById('selected-folder');
+    const homeView = document.getElementById('home-view');
+    const libraryView = document.getElementById('library-view');
+    const libraryGrid = document.getElementById('library-grid');
+    const libraryPath = document.getElementById('library-path');
+    const libraryCount = document.getElementById('library-count');
+    const tokenButton = document.getElementById('token-button');
+    const tokenModal = document.getElementById('token-modal');
+    const refreshButton = document.getElementById('refresh-button');
+    const commandForm = document.getElementById('command-form');
+    const commandInput = document.getElementById('input_text');
+    let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
+    let activeLibraryPath = null;
+
+    document.getElementById('home-button').addEventListener('click', () => {
+      switchToHome();
+    });
+
+    document.querySelectorAll('.folder-picker').forEach(button => {
+      button.addEventListener('click', () => {
+        const path = button.dataset.path || '';
+        targetInput.value = path;
+        selectedFolder.textContent = path ? `/data/${path}` : '/data';
+        document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
+        button.classList.add('selected');
+        switchToLibrary(path);
+      });
+    });
+
+    document.querySelectorAll('.folder-toggle').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        button.closest('.folder-node').classList.toggle('expanded');
+      });
+    });
+
+    tokenButton.addEventListener('click', event => {
+      event.stopPropagation();
+      tokenModal.hidden = !tokenModal.hidden;
+    });
+
+    tokenModal.addEventListener('click', event => {
+      event.stopPropagation();
+    });
+
+    document.addEventListener('click', () => {
+      tokenModal.hidden = true;
+    });
+
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') tokenModal.hidden = true;
+    });
+
+    refreshButton.addEventListener('click', refreshJobs);
+
+    commandForm.addEventListener('submit', event => {
+      if (activeLibraryPath !== null) {
+        event.preventDefault();
+        renderLibrary();
+      }
+    });
+
+    commandInput.addEventListener('input', () => {
+      if (activeLibraryPath !== null) renderLibrary();
+    });
+
+    function switchToHome() {
+      activeLibraryPath = null;
+      targetInput.value = '';
+      commandForm.classList.remove('search-mode');
+      commandInput.value = '';
+      commandInput.required = true;
+      commandInput.placeholder = '무엇이든 물어보세요';
+      commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
+      selectedFolder.textContent = '자동 분류';
+      document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
+      homeView.classList.add('active');
+      libraryView.classList.remove('active');
+    }
+
+    function switchToLibrary(path) {
+      activeLibraryPath = path || '';
+      commandForm.classList.add('search-mode');
+      commandInput.value = '';
+      commandInput.required = false;
+      commandInput.placeholder = '라이브러리 검색';
+      commandInput.setAttribute('aria-label', '현재 폴더 내부 검색');
+      homeView.classList.remove('active');
+      libraryView.classList.add('active');
+      renderLibrary();
+    }
+
+    async function refreshJobs() {
+      try {
+        const response = await fetch('/api/jobs');
+        if (!response.ok) return;
+        currentJobs = await response.json();
+        renderJobs(currentJobs);
+        if (activeLibraryPath !== null) renderLibrary();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderJobs(jobs) {
+      const body = document.getElementById('jobs-body');
+      if (!jobs.length) {
+        body.innerHTML = '<tr><td colspan="8" class="empty-row">아직 작업이 없습니다.</td></tr>';
+        return;
+      }
+      body.innerHTML = jobs.map(job => {
+        const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
+        const progress = pct !== null && Number.isFinite(pct)
+          ? `<div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
+          : escapeHtml(job.progress_human || '');
+        return `<tr>
+          <td>${job.id}</td>
+          <td><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+          <td>${renderModelInfo(job)}</td>
+          <td>${escapeHtml(job.source || '-')}</td>
+          <td class="input-cell">${escapeHtml(job.input_text || '')}</td>
+          <td>${escapeHtml(job.filename || '-')}</td>
+          <td>${progress}</td>
+          <td><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderModelInfo(job) {
+      const image = job.thumbnail_url ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">` : '';
+      const details = [job.base_model, job.precision, job.file_format].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div class="model-card ${job.thumbnail_url ? '' : 'no-thumb'}">
+        ${image}
+        <div>
+          <strong>${escapeHtml(job.model_title || job.filename || job.input_text || '-')}</strong>
+          <span>${escapeHtml(job.model_category || job.model_type || job.source || '-')}</span>
+          <small>${details}</small>
+        </div>
+      </div>`;
+    }
+
+    function renderLibrary() {
+      const folder = activeLibraryPath || '';
+      const folderMatches = currentJobs.filter(job => jobMatchesFolder(job, folder));
+      const query = commandInput.value.trim().toLowerCase();
+      const matches = folderMatches.filter(job => jobMatchesQuery(job, query));
+      libraryPath.textContent = folder ? `/data/${folder}` : '/data';
+      libraryCount.textContent = query ? `${matches.length} / ${folderMatches.length}개` : `${matches.length}개`;
+      if (!matches.length) {
+        libraryGrid.innerHTML = `<div class="library-empty">${query ? '검색 결과가 없습니다.' : '이 폴더에 표시할 모델 카드가 없습니다.'}</div>`;
+        return;
+      }
+      libraryGrid.innerHTML = matches.map(job => {
+        const title = job.model_title || job.filename || job.input_text || 'Model';
+        const category = job.model_category || job.model_type || job.source || 'Model';
+        const meta = [job.base_model, job.precision, job.file_format].filter(Boolean).join(' · ');
+        const image = job.thumbnail_url
+          ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
+          : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
+        return `<article class="asset-card">
+          ${image}
+          <div class="asset-topline">
+            <span>${escapeHtml(shortSource(job.source))}</span>
+            <span class="asset-dots" aria-hidden="true"></span>
+          </div>
+          <div class="asset-overlay">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(category)}</span>
+            <small>${escapeHtml(meta)}</small>
+          </div>
+        </article>`;
+      }).join('');
+    }
+
+    function jobMatchesQuery(job, query) {
+      if (!query) return true;
+      const values = [
+        job.model_title,
+        job.model_category,
+        job.model_type,
+        job.base_model,
+        job.precision,
+        job.file_format,
+        job.filename,
+        job.source,
+      ];
+      return values.some(value => String(value || '').toLowerCase().includes(query));
+    }
+
+    function jobMatchesFolder(job, folder) {
+      if (!folder) return true;
+      const target = normalizePath(job.target_dir || '');
+      return target === folder || target.startsWith(`${folder}/`);
+    }
+
+    function normalizePath(value) {
+      return String(value)
+        .replace(/\\/g, '/')
+        .replace(/^\/data\/?/, '')
+        .replace(/^data\/?/, '')
+        .replace(/^\/+|\/+$/g, '');
+    }
+
+    function shortSource(source) {
+      if (source === 'huggingface') return 'HF';
+      if (source === 'civitai') return 'NAI';
+      return 'URL';
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    }
+
+    renderJobs(currentJobs);
+    setInterval(refreshJobs, 2500);
+  </script>
+</body>
+</html>

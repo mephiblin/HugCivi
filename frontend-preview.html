@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NAS Model Archiver Preview</title>
+  <link rel="stylesheet" href="app/static/style.css">
+</head>
+<body>
+  <div class="app-frame">
+    <aside class="sidebar">
+      <button type="button" class="brand-button" id="home-button">
+        <span class="brand-title">Model Archiver</span>
+        <span class="brand-subtitle">저장소로 모델 파일을 보관합니다</span>
+      </button>
+
+      <section class="folder-section" aria-label="저장 폴더">
+        <div class="sidebar-heading">
+          <h2>저장 폴더</h2>
+          <span class="path-badge">/data</span>
+        </div>
+        <div class="folder-tree">
+          <ul>
+            <li class="folder-node has-children expanded">
+              <div class="folder-row">
+                <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
+                <button type="button" class="folder-picker selected" data-path="" data-name="data">
+                  <span class="folder-icon" aria-hidden="true"></span>
+                  <span class="folder-name">data</span>
+                </button>
+              </div>
+              <ul class="folder-children">
+                <li class="folder-node has-children expanded">
+                  <div class="folder-row">
+                    <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
+                    <button type="button" class="folder-picker" data-path="stable-diffusion" data-name="stable-diffusion">
+                      <span class="folder-icon" aria-hidden="true"></span>
+                      <span class="folder-name">stable-diffusion</span>
+                    </button>
+                  </div>
+                  <ul class="folder-children">
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/checkpoints" data-name="checkpoints">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">checkpoints</span>
+                        </button>
+                      </div>
+                    </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/loras" data-name="loras">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">loras</span>
+                        </button>
+                      </div>
+                    </li>
+                  </ul>
+                </li>
+                <li class="folder-node">
+                  <div class="folder-row">
+                    <span class="folder-toggle-spacer"></span>
+                    <button type="button" class="folder-picker" data-path="huggingface" data-name="huggingface">
+                      <span class="folder-icon" aria-hidden="true"></span>
+                      <span class="folder-name">huggingface</span>
+                    </button>
+                  </div>
+                </li>
+                <li class="folder-node">
+                  <div class="folder-row">
+                    <span class="folder-toggle-spacer"></span>
+                    <button type="button" class="folder-picker" data-path="civitai" data-name="civitai">
+                      <span class="folder-icon" aria-hidden="true"></span>
+                      <span class="folder-name">civitai</span>
+                    </button>
+                  </div>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <form class="new-folder-form" onsubmit="event.preventDefault()">
+        <label for="folder_path">새 폴더</label>
+        <input id="folder_path" name="folder_path" placeholder="stable-diffusion/checkpoints">
+        <button type="submit">폴더 생성</button>
+      </form>
+
+      <section class="token-modal" id="token-modal" aria-label="API 토큰 입력" hidden>
+        <form onsubmit="event.preventDefault()">
+          <h2>Hugging Face Token</h2>
+          <label class="sr-only" for="hf_token">Hugging Face Token</label>
+          <input id="hf_token" name="hf_token" type="password" placeholder="설정됨 · ui">
+
+          <h2>Civitai Token</h2>
+          <label class="sr-only" for="civitai_token">Civitai Token</label>
+          <input id="civitai_token" name="civitai_token" type="password" placeholder="설정됨 · ui">
+
+          <button type="submit">저장</button>
+        </form>
+      </section>
+
+      <button type="button" class="account-button" id="token-button" aria-haspopup="dialog" aria-controls="token-modal">
+        <span class="avatar">GB</span>
+        <span class="account-copy">
+          <strong>go blin</strong>
+          <small>Pro</small>
+        </span>
+        <span class="account-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M9 7.5A2.5 2.5 0 0 1 11.5 5h1A2.5 2.5 0 0 1 15 7.5V9h1a3 3 0 0 1 3 3v3.5A3.5 3.5 0 0 1 15.5 19h-7A3.5 3.5 0 0 1 5 15.5V12a3 3 0 0 1 3-3h1V7.5Zm2 1.5h2V7.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5V9Zm-3 2a1 1 0 0 0-1 1v3.5A1.5 1.5 0 0 0 8.5 17h7a1.5 1.5 0 0 0 1.5-1.5V12a1 1 0 0 0-1-1H8Z"/>
+          </svg>
+        </span>
+      </button>
+    </aside>
+
+    <main class="content">
+      <button type="button" class="refresh-corner" title="새로고침" aria-label="새로고침">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
+          <path d="M18.3 3.7V8h-4.3l4.3-4.3ZM5.7 20.3V16H10l-4.3 4.3Z"/>
+        </svg>
+      </button>
+
+      <section class="hero" aria-label="다운로드 입력">
+        <h1>civitai - Hugging Face</h1>
+        <form class="download-form" id="command-form" onsubmit="event.preventDefault()">
+          <input id="target_subdir" name="target_subdir" type="hidden">
+          <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
+          <div class="download-bar">
+            <button type="button" class="bar-icon" title="추가" aria-label="추가">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M11 5h2v14h-2V5Zm-6 6h14v2H5v-2Z"/>
+              </svg>
+            </button>
+            <input id="input_text" name="input_text" class="download-input" placeholder="무엇이든 물어보세요" autocomplete="off">
+            <button type="button" class="extension-button">Pro 확장
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="m7 9 5 5 5-5H7Z"/>
+              </svg>
+            </button>
+            <button type="button" class="bar-icon" title="음성 입력" aria-label="음성 입력">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 4a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V7a3 3 0 0 0-3-3Zm-1 13.9V21h2v-3.1a6 6 0 0 0 5-5.9h-2a4 4 0 0 1-8 0H6a6 6 0 0 0 5 5.9Z"/>
+              </svg>
+            </button>
+            <button type="submit" class="submit-orb" title="다운로드 시작" aria-label="다운로드 시작">
+              <span></span><span></span><span></span>
+            </button>
+          </div>
+          <div class="selected-folder-line">
+            <span id="selected-folder">자동 분류</span>
+          </div>
+        </form>
+      </section>
+
+      <section class="view active" id="home-view" aria-label="작업 목록">
+        <section class="jobs-section">
+          <h2>작업 목록</h2>
+          <div class="table-shell">
+            <table class="jobs-table">
+              <thead>
+                <tr>
+                  <th class="col-id">ID</th>
+                  <th class="col-status">상태</th>
+                  <th class="col-info">정보</th>
+                  <th class="col-source">소스</th>
+                  <th class="col-input">입력</th>
+                  <th class="col-file">파일</th>
+                  <th class="col-progress">진행률</th>
+                  <th class="col-log">로그</th>
+                </tr>
+              </thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="library-view" aria-label="라이브러리">
+        <section class="library-section">
+          <div class="library-meta">
+            <span id="library-path">/data</span>
+            <span id="library-count">0개</span>
+          </div>
+          <div class="library-grid" id="library-grid"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const sampleThumb = 'https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/b50708a9-a0a2-4a62-a688-cbd15abb65e4/width=450/8301359.jpeg';
+    const currentJobs = [
+      {
+        id: 3,
+        status: 'running',
+        source: 'civitai',
+        input_text: 'https://civitai.com/models/123456/name?modelVersionId=456789',
+        filename: 'model.safetensors',
+        progress_human: '2.8 GB',
+        total_human: '4.4 GB',
+        percent: 64,
+        model_title: 'Animagine XL V3.1',
+        model_category: 'Image Checkpoint',
+        base_model: 'SDXL 1.0',
+        precision: 'fp16',
+        file_format: 'SafeTensor',
+        thumbnail_url: sampleThumb,
+        target_dir: '/data/stable-diffusion/checkpoints'
+      },
+      {
+        id: 2,
+        status: 'done',
+        source: 'huggingface',
+        input_text: 'hf download openai-community/gpt2 --include *.json',
+        filename: 'snapshot',
+        progress_human: '548.0 MB',
+        total_human: '548.0 MB',
+        percent: 100,
+        model_title: 'openai-community/gpt2',
+        model_category: 'LLM',
+        base_model: 'gpt2',
+        precision: 'F32',
+        file_format: 'SafeTensor',
+        thumbnail_url: '',
+        target_dir: '/data/huggingface/llm/openai-community/gpt2'
+      },
+      {
+        id: 1,
+        status: 'failed',
+        source: 'generic',
+        input_text: 'https://example.com/model.bin',
+        filename: '-',
+        progress_human: '0.0 B',
+        total_human: '',
+        percent: null,
+        model_title: 'https://example.com/model.bin',
+        model_category: 'Generic URL',
+        base_model: '',
+        precision: '',
+        file_format: '',
+        thumbnail_url: '',
+        target_dir: '/data'
+      }
+    ];
+
+    for (let i = 0; i < 14; i += 1) {
+      currentJobs.push({
+        id: 10 + i,
+        status: 'done',
+        source: 'civitai',
+        input_text: 'https://civitai.com/models/example',
+        filename: `lora-${i + 1}.safetensors`,
+        progress_human: '144.0 MB',
+        total_human: '144.0 MB',
+        percent: 100,
+        model_title: 'Add Micro Details - Concept',
+        model_category: 'LoRA',
+        base_model: 'Pony',
+        precision: 'fp16',
+        file_format: 'SafeTensor',
+        thumbnail_url: sampleThumb,
+        target_dir: i % 2 === 0 ? '/data/stable-diffusion/loras' : '/data/civitai'
+      });
+    }
+
+    const targetInput = document.getElementById('target_subdir');
+    const selectedFolder = document.getElementById('selected-folder');
+    const homeView = document.getElementById('home-view');
+    const libraryView = document.getElementById('library-view');
+    const libraryGrid = document.getElementById('library-grid');
+    const libraryPath = document.getElementById('library-path');
+    const libraryCount = document.getElementById('library-count');
+    const tokenButton = document.getElementById('token-button');
+    const tokenModal = document.getElementById('token-modal');
+    const commandForm = document.getElementById('command-form');
+    const commandInput = document.getElementById('input_text');
+    let activeLibraryPath = null;
+
+    document.getElementById('home-button').addEventListener('click', switchToHome);
+
+    document.querySelectorAll('.folder-picker').forEach(button => {
+      button.addEventListener('click', () => {
+        const path = button.dataset.path || '';
+        targetInput.value = path;
+        selectedFolder.textContent = path ? `/data/${path}` : '/data';
+        document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
+        button.classList.add('selected');
+        switchToLibrary(path);
+      });
+    });
+
+    document.querySelectorAll('.folder-toggle').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        button.closest('.folder-node').classList.toggle('expanded');
+      });
+    });
+
+    tokenButton.addEventListener('click', event => {
+      event.stopPropagation();
+      tokenModal.hidden = !tokenModal.hidden;
+    });
+
+    tokenModal.addEventListener('click', event => event.stopPropagation());
+    document.addEventListener('click', () => { tokenModal.hidden = true; });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') tokenModal.hidden = true;
+    });
+
+    commandForm.addEventListener('submit', event => {
+      if (activeLibraryPath !== null) {
+        event.preventDefault();
+        renderLibrary();
+      }
+    });
+
+    commandInput.addEventListener('input', () => {
+      if (activeLibraryPath !== null) renderLibrary();
+    });
+
+    function switchToHome() {
+      activeLibraryPath = null;
+      targetInput.value = '';
+      commandForm.classList.remove('search-mode');
+      commandInput.value = '';
+      commandInput.placeholder = '무엇이든 물어보세요';
+      commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
+      selectedFolder.textContent = '자동 분류';
+      document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
+      homeView.classList.add('active');
+      libraryView.classList.remove('active');
+    }
+
+    function switchToLibrary(path) {
+      activeLibraryPath = path || '';
+      commandForm.classList.add('search-mode');
+      commandInput.value = '';
+      commandInput.placeholder = '라이브러리 검색';
+      commandInput.setAttribute('aria-label', '현재 폴더 내부 검색');
+      homeView.classList.remove('active');
+      libraryView.classList.add('active');
+      renderLibrary();
+    }
+
+    function renderJobs(jobs) {
+      const body = document.getElementById('jobs-body');
+      body.innerHTML = jobs.slice(0, 5).map(job => {
+        const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
+        const progress = pct !== null && Number.isFinite(pct)
+          ? `<div class="progress"><div style="width:${pct}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
+          : escapeHtml(job.progress_human || '');
+        return `<tr>
+          <td>${job.id}</td>
+          <td><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
+          <td>${renderModelInfo(job)}</td>
+          <td>${escapeHtml(job.source || '-')}</td>
+          <td class="input-cell">${escapeHtml(job.input_text || '')}</td>
+          <td>${escapeHtml(job.filename || '-')}</td>
+          <td>${progress}</td>
+          <td><a href="#">보기</a></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderModelInfo(job) {
+      const image = job.thumbnail_url ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">` : '';
+      const details = [job.base_model, job.precision, job.file_format].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div class="model-card ${job.thumbnail_url ? '' : 'no-thumb'}">
+        ${image}
+        <div>
+          <strong>${escapeHtml(job.model_title || job.filename || job.input_text || '-')}</strong>
+          <span>${escapeHtml(job.model_category || job.source || '-')}</span>
+          <small>${details}</small>
+        </div>
+      </div>`;
+    }
+
+    function renderLibrary() {
+      const folder = activeLibraryPath || '';
+      const folderMatches = currentJobs.filter(job => jobMatchesFolder(job, folder));
+      const query = commandInput.value.trim().toLowerCase();
+      const matches = folderMatches.filter(job => jobMatchesQuery(job, query));
+      libraryPath.textContent = folder ? `/data/${folder}` : '/data';
+      libraryCount.textContent = query ? `${matches.length} / ${folderMatches.length}개` : `${matches.length}개`;
+      if (!matches.length) {
+        libraryGrid.innerHTML = `<div class="library-empty">${query ? '검색 결과가 없습니다.' : '이 폴더에 표시할 모델 카드가 없습니다.'}</div>`;
+        return;
+      }
+      libraryGrid.innerHTML = matches.map(job => {
+        const title = job.model_title || job.filename || job.input_text || 'Model';
+        const category = job.model_category || job.source || 'Model';
+        const meta = [job.base_model, job.precision, job.file_format].filter(Boolean).join(' · ');
+        const image = job.thumbnail_url
+          ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
+          : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
+        return `<article class="asset-card">
+          ${image}
+          <div class="asset-topline">
+            <span>${escapeHtml(shortSource(job.source))}</span>
+            <span class="asset-dots" aria-hidden="true"></span>
+          </div>
+          <div class="asset-overlay">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(category)}</span>
+            <small>${escapeHtml(meta)}</small>
+          </div>
+        </article>`;
+      }).join('');
+    }
+
+    function jobMatchesQuery(job, query) {
+      if (!query) return true;
+      const values = [
+        job.model_title,
+        job.model_category,
+        job.base_model,
+        job.precision,
+        job.file_format,
+        job.filename,
+        job.source,
+      ];
+      return values.some(value => String(value || '').toLowerCase().includes(query));
+    }
+
+    function jobMatchesFolder(job, folder) {
+      if (!folder) return true;
+      const target = normalizePath(job.target_dir || '');
+      return target === folder || target.startsWith(`${folder}/`);
+    }
+
+    function normalizePath(value) {
+      return String(value)
+        .replace(/\\/g, '/')
+        .replace(/^\/data\/?/, '')
+        .replace(/^data\/?/, '')
+        .replace(/^\/+|\/+$/g, '');
+    }
+
+    function shortSource(source) {
+      if (source === 'huggingface') return 'HF';
+      if (source === 'civitai') return 'NAI';
+      return 'URL';
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    }
+
+    renderJobs(currentJobs);
+  </script>
+</body>
+</html>
