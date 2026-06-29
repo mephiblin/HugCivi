@@ -101,6 +101,9 @@ admin
 
 비밀번호는 `APP_PASSWORD`에 넣은 값입니다.
 
+Portainer가 `pull access denied for nas-model-archiver` 오류를 내면 스택이 원격 이미지를 받으려는 상태입니다.
+이 저장소의 [portainer-stack.yml](portainer-stack.yml)은 Git 저장소에서 Dockerfile을 직접 빌드하도록 `build`만 사용합니다.
+
 ## Portainer에서 꼭 확인할 값
 
 [portainer-stack.yml](portainer-stack.yml)은 기본적으로 아래 NAS 경로를 사용합니다.

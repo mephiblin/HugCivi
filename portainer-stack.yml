@@ -7,7 +7,6 @@
 
 services:
   nas-model-archiver:
-    image: nas-model-archiver:portainer
     build:
       context: .
       dockerfile: Dockerfile
