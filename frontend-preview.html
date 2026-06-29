@@ -186,7 +186,10 @@
 
       <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
         <section class="jobs-section">
-          <h2>작업 목록</h2>
+          <div class="jobs-heading">
+            <h2>작업 목록</h2>
+            <button type="button" class="clear-history-button" id="clear-jobs-button">기록 지우기</button>
+          </div>
           <div class="table-shell">
             <table class="jobs-table">
               <thead>
@@ -351,6 +354,7 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
@@ -363,6 +367,19 @@
       <button type="button" id="download-queue-close" aria-label="다운로드 대기열 닫기">×</button>
     </div>
     <div class="download-queue-list" id="download-queue-list"></div>
+  </section>
+
+  <section class="properties-modal" id="properties-modal" role="dialog" aria-modal="true" aria-labelledby="properties-title" hidden>
+    <div class="properties-panel">
+      <header class="properties-head">
+        <div>
+          <h2 id="properties-title">속성</h2>
+          <p id="properties-path">/data</p>
+        </div>
+        <button type="button" id="properties-close" aria-label="속성 닫기">×</button>
+      </header>
+      <dl class="properties-list" id="properties-list"></dl>
+    </div>
   </section>
 
   <script>
@@ -466,6 +483,12 @@
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
+    const clearJobsButton = document.getElementById('clear-jobs-button');
+    const propertiesModal = document.getElementById('properties-modal');
+    const propertiesClose = document.getElementById('properties-close');
+    const propertiesTitle = document.getElementById('properties-title');
+    const propertiesPath = document.getElementById('properties-path');
+    const propertiesList = document.getElementById('properties-list');
     let contextTarget = null;
     let downloadQueue = [];
     let downloadQueueId = 1;
@@ -530,13 +553,21 @@
 
     document.addEventListener('click', () => {
       closeSettingsModal();
+      closePropertiesModal();
       hideContextMenu();
     });
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         closeSettingsModal();
+        closePropertiesModal();
         hideContextMenu();
       }
+    });
+    clearJobsButton.addEventListener('click', clearJobHistory);
+    propertiesClose.addEventListener('click', closePropertiesModal);
+    propertiesModal.addEventListener('click', event => {
+      if (event.target === propertiesModal) closePropertiesModal();
+      event.stopPropagation();
     });
 
     libraryGrid.addEventListener('contextmenu', event => {
@@ -551,6 +582,7 @@
     });
 
     contextMenu.addEventListener('click', event => {
+      event.stopPropagation();
       const button = event.target.closest('button[data-action]');
       if (!button || button.disabled) return;
       handleContextAction(button.dataset.action);
@@ -641,16 +673,16 @@
       body.innerHTML = jobs.slice(0, 5).map(job => {
         const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
         const progress = pct !== null && Number.isFinite(pct)
-          ? `<div class="progress"><div style="width:${pct}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
-          : escapeHtml(job.progress_human || '');
+          ? `<div class="progress"><div style="width:${pct}%"></div></div><span>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}</span>`
+          : `<span>${escapeHtml(job.progress_human || '')}</span>`;
         return `<tr>
           <td data-label="ID">${job.id}</td>
           <td data-label="상태"><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
           <td data-label="정보">${renderModelInfo(job)}</td>
           <td data-label="소스">${escapeHtml(job.source || '-')}</td>
           <td data-label="입력" class="input-cell">${escapeHtml(job.input_text || '')}</td>
-          <td data-label="파일">${escapeHtml(job.filename || '-')}</td>
-          <td data-label="진행률">${progress}</td>
+          <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
+          <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
           <td data-label="로그"><a href="#">보기</a></td>
         </tr>`;
       }).join('');
@@ -738,6 +770,11 @@
 
     function handleContextAction(action) {
       if (!contextTarget || !contextTarget.path) return;
+      if (action === 'properties') {
+        showPreviewProperties(contextTarget);
+        hideContextMenu();
+        return;
+      }
       if (action === 'download') {
         enqueueLocalDownload(contextTarget);
         hideContextMenu();
@@ -746,6 +783,36 @@
       const label = `/data/${contextTarget.path}`;
       hideContextMenu();
       window.alert(`${label}\n\n실제 앱에서는 ${actionLabel(action)} 작업을 실행합니다.`);
+    }
+
+    function clearJobHistory() {
+      for (let index = currentJobs.length - 1; index >= 0; index -= 1) {
+        if (!['queued', 'running'].includes(currentJobs[index].status)) {
+          currentJobs.splice(index, 1);
+        }
+      }
+      renderJobs(currentJobs);
+      renderLibrary();
+    }
+
+    function showPreviewProperties(target) {
+      propertiesTitle.textContent = target.name || '속성';
+      propertiesPath.textContent = target.path ? `/data/${target.path}` : '/data';
+      propertiesList.innerHTML = `
+        <div class="properties-row"><dt>종류</dt><dd>폴더</dd></div>
+        <div class="properties-row"><dt>용량</dt><dd>548.0 MB</dd></div>
+        <div class="properties-row"><dt>확장자</dt><dd>.json, .safetensors</dd></div>
+        <div class="properties-row"><dt>날짜</dt><dd>${escapeHtml(new Date().toLocaleString())}</dd></div>
+        <div class="properties-row"><dt>URL</dt><dd><a href="https://huggingface.co/openai-community/gpt2" target="_blank" rel="noopener">https://huggingface.co/openai-community/gpt2</a></dd></div>
+      `;
+      propertiesModal.hidden = false;
+      document.body.classList.add('modal-open');
+    }
+
+    function closePropertiesModal() {
+      if (propertiesModal.hidden) return;
+      propertiesModal.hidden = true;
+      document.body.classList.remove('modal-open');
     }
 
     function enqueueLocalDownload(target) {
@@ -778,6 +845,7 @@
 
     function actionLabel(action) {
       if (action === 'download') return '다운로드';
+      if (action === 'properties') return '속성';
       if (action === 'rename') return '이름 변경';
       if (action === 'move') return '이동';
       if (action === 'delete') return '삭제';

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +140,12 @@ def api_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(decorate_jobs(db.list_jobs()))
 
 
+@app.post("/api/jobs/clear")
+def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
+    deleted = db.clear_job_history()
+    return JSONResponse({"ok": True, "deleted": deleted, "jobs": decorate_jobs(db.list_jobs())})
+
+
 @app.get("/api/folders")
 def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(build_folder_tree(DATA_ROOT))
@@ -208,6 +216,27 @@ def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse
             "name": source.name,
             "kind": "folder" if source.is_dir() else "file",
             "filename": download_filename(source),
+        }
+    )
+
+
+@app.get("/api/fs/properties")
+def api_path_properties(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    source = existing_data_path(path)
+    stat = source.stat()
+    size = path_size(source)
+    urls = source_input_values(source)
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": relative_data_path(source),
+            "name": source.name,
+            "kind": "folder" if source.is_dir() else "file",
+            "size_bytes": size,
+            "size_human": human_bytes(size),
+            "extensions": path_extensions(source),
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+            "urls": urls,
         }
     )
 
@@ -341,6 +370,96 @@ def relative_data_path(path: Path) -> str:
 def download_filename(path: Path) -> str:
     name = sanitize_segment(path.name, "download")
     return f"{name}.zip" if path.is_dir() else path.name
+
+
+def path_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def path_extensions(path: Path, limit: int = 8) -> list[str]:
+    if path.is_file():
+        return [path.suffix.lower() or "없음"]
+    extensions: set[str] = set()
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                extensions.add(item.suffix.lower() or "없음")
+        except OSError:
+            continue
+    values = sorted(extensions)
+    if len(values) > limit:
+        return values[:limit] + [f"+{len(values) - limit}개"]
+    return values
+
+
+def source_input_values(source: Path) -> list[str]:
+    values: list[str] = []
+
+    def append(value: str | None) -> None:
+        if value and value not in values:
+            values.append(value)
+
+    for value in metadata_input_values(source):
+        append(value)
+
+    source_resolved = source.resolve()
+    for job in db.list_jobs(limit=500):
+        target_dir = job.get("target_dir")
+        if not target_dir:
+            continue
+        try:
+            target_resolved = Path(str(target_dir)).resolve()
+        except OSError:
+            continue
+        if paths_overlap(source_resolved, target_resolved):
+            append(str(job.get("input_text") or ""))
+
+    return values
+
+
+def metadata_input_values(source: Path) -> list[str]:
+    values: list[str] = []
+    root = DATA_ROOT.resolve()
+    current = source if source.is_dir() else source.parent
+    while True:
+        try:
+            current_resolved = current.resolve()
+        except OSError:
+            break
+        if current_resolved != root and root not in current_resolved.parents:
+            break
+
+        metadata_path = current / "_archive_metadata.json"
+        if metadata_path.exists():
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            raw_input = payload.get("raw_input")
+            if isinstance(raw_input, str) and raw_input:
+                values.append(raw_input)
+
+        if current_resolved == root:
+            break
+        current = current.parent
+    return values
+
+
+def paths_overlap(first: Path, second: Path) -> bool:
+    return (
+        first == second
+        or first in second.parents
+        or second in first.parents
+    )
 
 
 def create_zip_archive(source: Path) -> Path:

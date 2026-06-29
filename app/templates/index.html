@@ -97,7 +97,10 @@
 
       <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
         <section class="jobs-section">
-          <h2>작업 목록</h2>
+          <div class="jobs-heading">
+            <h2>작업 목록</h2>
+            <button type="button" class="clear-history-button" id="clear-jobs-button">기록 지우기</button>
+          </div>
           <div class="table-shell">
             <table class="jobs-table">
               <thead>
@@ -135,14 +138,16 @@
                   </td>
                   <td data-label="소스">{{ job.source }}</td>
                   <td data-label="입력" class="input-cell">{{ job.input_text }}</td>
-                  <td data-label="파일">{{ job.filename or '-' }}</td>
-                  <td data-label="진행률">
-                    {% if job.percent is not none %}
-                      <div class="progress"><div style="width: {{ job.percent }}%"></div></div>
-                      {{ job.percent }}% · {{ job.progress_human }} / {{ job.total_human }}
-                    {% else %}
-                      {{ job.progress_human }}
-                    {% endif %}
+                  <td data-label="파일" class="file-cell">{{ job.filename or '-' }}</td>
+                  <td data-label="진행률" class="progress-cell">
+                    <div class="progress-readout">
+                      {% if job.percent is not none %}
+                        <div class="progress"><div style="width: {{ job.percent }}%"></div></div>
+                        <span>{{ job.percent }}% · {{ job.progress_human }} / {{ job.total_human }}</span>
+                      {% else %}
+                        <span>{{ job.progress_human }}</span>
+                      {% endif %}
+                    </div>
                   </td>
                   <td data-label="로그"><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
                 </tr>
@@ -316,6 +321,7 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
@@ -328,6 +334,19 @@
       <button type="button" id="download-queue-close" aria-label="다운로드 대기열 닫기">×</button>
     </div>
     <div class="download-queue-list" id="download-queue-list"></div>
+  </section>
+
+  <section class="properties-modal" id="properties-modal" role="dialog" aria-modal="true" aria-labelledby="properties-title" hidden>
+    <div class="properties-panel">
+      <header class="properties-head">
+        <div>
+          <h2 id="properties-title">속성</h2>
+          <p id="properties-path">/data</p>
+        </div>
+        <button type="button" id="properties-close" aria-label="속성 닫기">×</button>
+      </header>
+      <dl class="properties-list" id="properties-list"></dl>
+    </div>
   </section>
 
   <script>
@@ -358,6 +377,12 @@
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
+    const clearJobsButton = document.getElementById('clear-jobs-button');
+    const propertiesModal = document.getElementById('properties-modal');
+    const propertiesClose = document.getElementById('properties-close');
+    const propertiesTitle = document.getElementById('properties-title');
+    const propertiesPath = document.getElementById('properties-path');
+    const propertiesList = document.getElementById('properties-list');
     let contextTarget = null;
     let downloadQueue = [];
     let downloadQueueActive = false;
@@ -426,17 +451,27 @@
 
     document.addEventListener('click', () => {
       closeSettingsModal();
+      closePropertiesModal();
       hideContextMenu();
     });
 
     document.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         closeSettingsModal();
+        closePropertiesModal();
         hideContextMenu();
       }
     });
 
     refreshButton.addEventListener('click', refreshJobs);
+    clearJobsButton.addEventListener('click', clearJobHistory);
+    propertiesClose.addEventListener('click', closePropertiesModal);
+    propertiesModal.addEventListener('click', event => {
+      if (event.target === propertiesModal) {
+        closePropertiesModal();
+      }
+      event.stopPropagation();
+    });
     libraryGrid.addEventListener('contextmenu', event => {
       const card = event.target.closest('.asset-card');
       if (!card) return;
@@ -449,6 +484,7 @@
     });
 
     contextMenu.addEventListener('click', event => {
+      event.stopPropagation();
       const button = event.target.closest('button[data-action]');
       if (!button || button.disabled) return;
       handleContextAction(button.dataset.action);
@@ -548,6 +584,28 @@
       }
     }
 
+    async function clearJobHistory() {
+      const removable = currentJobs.filter(job => !['queued', 'running'].includes(job.status));
+      if (!removable.length) {
+        window.alert('지울 완료 기록이 없습니다.');
+        return;
+      }
+      if (!window.confirm('완료되었거나 실패한 작업 기록을 지울까요?')) return;
+      try {
+        const response = await fetch('/api/jobs/clear', {method: 'POST'});
+        if (!response.ok) {
+          window.alert('작업 기록을 지우지 못했습니다.');
+          return;
+        }
+        const data = await response.json();
+        currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        renderJobs(currentJobs);
+        if (activeLibraryPath !== null) renderLibrary();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+      }
+    }
+
     function renderJobs(jobs) {
       const body = document.getElementById('jobs-body');
       if (!jobs.length) {
@@ -557,16 +615,16 @@
       body.innerHTML = jobs.map(job => {
         const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
         const progress = pct !== null && Number.isFinite(pct)
-          ? `<div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}`
-          : escapeHtml(job.progress_human || '');
+          ? `<div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div><span>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}</span>`
+          : `<span>${escapeHtml(job.progress_human || '')}</span>`;
         return `<tr>
           <td data-label="ID">${job.id}</td>
           <td data-label="상태"><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
           <td data-label="정보">${renderModelInfo(job)}</td>
           <td data-label="소스">${escapeHtml(job.source || '-')}</td>
           <td data-label="입력" class="input-cell">${escapeHtml(job.input_text || '')}</td>
-          <td data-label="파일">${escapeHtml(job.filename || '-')}</td>
-          <td data-label="진행률">${progress}</td>
+          <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
+          <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
           <td data-label="로그"><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
         </tr>`;
       }).join('');
@@ -657,6 +715,11 @@
       const target = contextTarget;
       hideContextMenu();
 
+      if (action === 'properties') {
+        await showProperties(target);
+        return;
+      }
+
       if (action === 'download') {
         enqueueLocalDownload(target);
         return;
@@ -682,6 +745,87 @@
         if (!window.confirm(`${label}\n\n이 폴더와 내부 파일을 삭제할까요?`)) return;
         await postFileAction('/api/fs/delete', {path: target.path});
       }
+    }
+
+    async function showProperties(target) {
+      propertiesTitle.textContent = target.name || '속성';
+      propertiesPath.textContent = target.path ? `/data/${target.path}` : '/data';
+      propertiesList.innerHTML = '<div class="properties-loading">불러오는 중</div>';
+      propertiesModal.hidden = false;
+      document.body.classList.add('modal-open');
+      try {
+        const response = await fetch(`/api/fs/properties?path=${encodeURIComponent(target.path)}`);
+        if (!response.ok) {
+          let message = '속성을 불러오지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          propertiesList.innerHTML = `<div class="properties-loading">${escapeHtml(message)}</div>`;
+          return;
+        }
+        const data = await response.json();
+        propertiesTitle.textContent = data.name || target.name || '속성';
+        propertiesPath.textContent = data.path ? `/data/${data.path}` : '/data';
+        propertiesList.innerHTML = renderProperties(data);
+      } catch (err) {
+        propertiesList.innerHTML = '<div class="properties-loading">네트워크 요청을 완료하지 못했습니다.</div>';
+      }
+    }
+
+    function closePropertiesModal() {
+      if (propertiesModal.hidden) return;
+      propertiesModal.hidden = true;
+      document.body.classList.remove('modal-open');
+    }
+
+    function renderProperties(data) {
+      const rows = [
+        ['종류', escapeHtml(data.kind === 'folder' ? '폴더' : '파일')],
+        ['용량', escapeHtml(data.size_human || formatFileSize(data.size_bytes))],
+        ['확장자', escapeHtml(Array.isArray(data.extensions) && data.extensions.length ? data.extensions.join(', ') : '-')],
+        ['날짜', escapeHtml(formatDate(data.modified_at))],
+        ['URL', renderUrlValues(data.urls)],
+      ];
+      return rows.map(([label, value]) => `
+        <div class="properties-row">
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${value}</dd>
+        </div>
+      `).join('');
+    }
+
+    function renderUrlValues(urls) {
+      if (!Array.isArray(urls) || !urls.length) return '-';
+      return urls.map(value => {
+        const text = String(value);
+        if (/^https?:\/\//i.test(text)) {
+          return `<a href="${escapeHtml(text)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
+        }
+        return `<span>${escapeHtml(text)}</span>`;
+      }).join('<br>');
+    }
+
+    function formatDate(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleString();
+    }
+
+    function formatFileSize(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0.0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let size = bytes;
+      let unitIndex = 0;
+      while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+      }
+      return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
     }
 
     function enqueueLocalDownload(target) {

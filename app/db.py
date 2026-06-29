@@ -130,6 +130,13 @@ def get_job(job_id: int) -> dict[str, Any] | None:
         return redact_job_row(dict(row)) if row else None
 
 
+def clear_job_history() -> int:
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute("DELETE FROM jobs WHERE status NOT IN ('queued', 'running')")
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
 def get_next_queued_job() -> dict[str, Any] | None:
     with _DB_LOCK, connect() as conn:
         row = conn.execute(
