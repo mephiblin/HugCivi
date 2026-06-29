@@ -220,12 +220,12 @@
           <div class="settings-grid two-cols">
             <label class="setting-field" for="hf_token">
               <span>Hugging Face Token</span>
-              <input id="hf_token" name="hf_token" type="password" autocomplete="off"
+              <input id="hf_token" name="hf_token" type="text" autocomplete="off"
                      placeholder="{% if settings.HF_TOKEN.configured %}설정됨 · {{ settings.HF_TOKEN.source }}{% else %}hf_...{% endif %}">
             </label>
             <label class="setting-field" for="civitai_token">
               <span>Civitai Token</span>
-              <input id="civitai_token" name="civitai_token" type="password" autocomplete="off"
+              <input id="civitai_token" name="civitai_token" type="text" autocomplete="off"
                      placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
             </label>
           </div>
