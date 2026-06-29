@@ -950,6 +950,104 @@ a:hover {
   background: transparent;
 }
 
+.download-queue {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 70;
+  width: min(360px, calc(100vw - 28px));
+  overflow: hidden;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+}
+
+.download-queue[hidden] {
+  display: none;
+}
+
+.download-queue-head {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #eef2f7;
+  padding: 9px 10px;
+}
+
+.download-queue-head strong {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.download-queue-head button {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: #64748b;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.download-queue-head button:hover {
+  background: #f1f5f9;
+}
+
+.download-queue-list {
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+}
+
+.download-queue-item {
+  display: grid;
+  gap: 3px;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 8px 9px;
+}
+
+.download-queue-item + .download-queue-item {
+  margin-top: 5px;
+}
+
+.download-queue-item span {
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-queue-item small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.download-queue-item.preparing,
+.download-queue-item.started {
+  border-left-color: var(--blue);
+  background: #f7faff;
+}
+
+.download-queue-item.done {
+  border-left-color: var(--green);
+  background: #f7fcf9;
+}
+
+.download-queue-item.failed {
+  border-left-color: var(--red);
+  background: #fff8f7;
+}
+
 @media (max-width: 1040px) {
   .app-frame {
     grid-template-columns: 1fr;

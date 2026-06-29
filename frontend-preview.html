@@ -272,10 +272,19 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
     <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
   </div>
+
+  <section class="download-queue" id="download-queue" aria-live="polite" hidden>
+    <div class="download-queue-head">
+      <strong>다운로드 대기열</strong>
+      <button type="button" id="download-queue-close" aria-label="다운로드 대기열 닫기">×</button>
+    </div>
+    <div class="download-queue-list" id="download-queue-list"></div>
+  </section>
 
   <script>
     const sampleThumb = 'https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/b50708a9-a0a2-4a62-a688-cbd15abb65e4/width=450/8301359.jpeg';
@@ -365,7 +374,12 @@
     const commandInput = document.getElementById('input_text');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
+    const downloadQueuePanel = document.getElementById('download-queue');
+    const downloadQueueList = document.getElementById('download-queue-list');
+    const downloadQueueClose = document.getElementById('download-queue-close');
     let contextTarget = null;
+    let downloadQueue = [];
+    let downloadQueueId = 1;
     let activeLibraryPath = null;
 
     document.getElementById('home-button').addEventListener('click', switchToHome);
@@ -428,6 +442,9 @@
       const button = event.target.closest('button[data-action]');
       if (!button || button.disabled) return;
       handleContextAction(button.dataset.action);
+    });
+    downloadQueueClose.addEventListener('click', () => {
+      downloadQueuePanel.hidden = true;
     });
 
     function switchToHome() {
@@ -554,12 +571,46 @@
 
     function handleContextAction(action) {
       if (!contextTarget || !contextTarget.path) return;
+      if (action === 'download') {
+        enqueueLocalDownload(contextTarget);
+        hideContextMenu();
+        return;
+      }
       const label = `/data/${contextTarget.path}`;
       hideContextMenu();
       window.alert(`${label}\n\n실제 앱에서는 ${actionLabel(action)} 작업을 실행합니다.`);
     }
 
+    function enqueueLocalDownload(target) {
+      downloadQueue.push({
+        id: downloadQueueId++,
+        label: target.path ? `/data/${target.path}` : target.name,
+        status: 'started',
+        message: '브라우저 다운로드 시작',
+      });
+      renderDownloadQueue();
+      setTimeout(() => {
+        const item = downloadQueue[downloadQueue.length - 1];
+        if (item) {
+          item.status = 'done';
+          item.message = '요청 완료';
+          renderDownloadQueue();
+        }
+      }, 1200);
+    }
+
+    function renderDownloadQueue() {
+      downloadQueuePanel.hidden = false;
+      downloadQueueList.innerHTML = downloadQueue.map(item => `
+        <div class="download-queue-item ${escapeHtml(item.status)}">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${escapeHtml(item.message)}</small>
+        </div>
+      `).join('');
+    }
+
     function actionLabel(action) {
+      if (action === 'download') return '다운로드';
       if (action === 'rename') return '이름 변경';
       if (action === 'move') return '이동';
       if (action === 'delete') return '삭제';

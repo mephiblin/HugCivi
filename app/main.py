@@ -3,14 +3,17 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
 from . import db
 from .downloader import enqueue_job, start_workers
@@ -20,6 +23,7 @@ from .utils import human_bytes, safe_join, sanitize_segment
 app = FastAPI(title="NAS Model Archiver", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
+DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
@@ -193,6 +197,36 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
 
 
+@app.get("/api/fs/download-info")
+def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    source = existing_data_path(path)
+    ensure_downloadable_path(source)
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": relative_data_path(source),
+            "name": source.name,
+            "kind": "folder" if source.is_dir() else "file",
+            "filename": download_filename(source),
+        }
+    )
+
+
+@app.get("/api/fs/download")
+def api_download_path(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    ensure_downloadable_path(source)
+    if source.is_dir():
+        archive_path = create_zip_archive(source)
+        return FileResponse(
+            archive_path,
+            media_type="application/zip",
+            filename=download_filename(source),
+            background=BackgroundTask(cleanup_file, archive_path),
+        )
+    return FileResponse(source, media_type="application/octet-stream", filename=source.name)
+
+
 @app.get("/api/jobs/{job_id}")
 def api_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = db.get_job(job_id)
@@ -276,6 +310,11 @@ def ensure_mutable_path(path: Path) -> None:
         raise HTTPException(status_code=400, detail="/data 루트는 이름변경, 이동, 삭제할 수 없습니다.")
 
 
+def ensure_downloadable_path(path: Path) -> None:
+    if path.resolve() == DATA_ROOT.resolve():
+        raise HTTPException(status_code=400, detail="/data 전체 다운로드는 지원하지 않습니다. 모델 폴더를 선택하세요.")
+
+
 def ensure_no_active_jobs(path: Path) -> None:
     if db.has_active_jobs_under(path):
         raise HTTPException(status_code=409, detail="실행 중이거나 대기 중인 다운로드가 있는 폴더입니다.")
@@ -297,3 +336,33 @@ def relative_data_path(path: Path) -> str:
     if resolved == root:
         return ""
     return resolved.relative_to(root).as_posix()
+
+
+def download_filename(path: Path) -> str:
+    name = sanitize_segment(path.name, "download")
+    return f"{name}.zip" if path.is_dir() else path.name
+
+
+def create_zip_archive(source: Path) -> Path:
+    DOWNLOAD_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    prefix = f"{sanitize_segment(source.name, 'download')}_"
+    fd, temp_name = tempfile.mkstemp(prefix=prefix, suffix=".zip", dir=DOWNLOAD_ARCHIVE_DIR)
+    os.close(fd)
+    archive_path = Path(temp_name)
+    source_root = source.resolve()
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
+        for item in sorted(source.rglob("*")):
+            if not item.is_file() or item.is_symlink():
+                continue
+            resolved = item.resolve()
+            if source_root not in resolved.parents and resolved != source_root:
+                continue
+            archive.write(resolved, resolved.relative_to(source_root).as_posix())
+    return archive_path
+
+
+def cleanup_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass

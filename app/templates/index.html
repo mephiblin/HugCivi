@@ -228,10 +228,19 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
     <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
   </div>
+
+  <section class="download-queue" id="download-queue" aria-live="polite" hidden>
+    <div class="download-queue-head">
+      <strong>다운로드 대기열</strong>
+      <button type="button" id="download-queue-close" aria-label="다운로드 대기열 닫기">×</button>
+    </div>
+    <div class="download-queue-list" id="download-queue-list"></div>
+  </section>
 
   <script>
     const initialJobs = {{ jobs|tojson }};
@@ -248,7 +257,13 @@
     const commandInput = document.getElementById('input_text');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
+    const downloadQueuePanel = document.getElementById('download-queue');
+    const downloadQueueList = document.getElementById('download-queue-list');
+    const downloadQueueClose = document.getElementById('download-queue-close');
     let contextTarget = null;
+    let downloadQueue = [];
+    let downloadQueueActive = false;
+    let downloadQueueId = 1;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeLibraryPath = null;
 
@@ -319,6 +334,9 @@
       const button = event.target.closest('button[data-action]');
       if (!button || button.disabled) return;
       handleContextAction(button.dataset.action);
+    });
+    downloadQueueClose.addEventListener('click', () => {
+      downloadQueuePanel.hidden = true;
     });
 
     function switchToHome() {
@@ -466,6 +484,11 @@
       const target = contextTarget;
       hideContextMenu();
 
+      if (action === 'download') {
+        enqueueLocalDownload(target);
+        return;
+      }
+
       if (action === 'rename') {
         const currentName = target.path.split('/').filter(Boolean).pop() || target.name;
         const newName = window.prompt('새 이름을 입력하세요.', currentName);
@@ -486,6 +509,93 @@
         if (!window.confirm(`${label}\n\n이 폴더와 내부 파일을 삭제할까요?`)) return;
         await postFileAction('/api/fs/delete', {path: target.path});
       }
+    }
+
+    function enqueueLocalDownload(target) {
+      const label = target.path ? `/data/${target.path}` : target.name;
+      downloadQueue.push({
+        id: downloadQueueId++,
+        path: target.path,
+        label,
+        status: 'queued',
+        message: '대기 중',
+      });
+      renderDownloadQueue();
+      processDownloadQueue();
+    }
+
+    async function processDownloadQueue() {
+      if (downloadQueueActive) return;
+      const item = downloadQueue.find(entry => entry.status === 'queued');
+      if (!item) return;
+      downloadQueueActive = true;
+      item.status = 'preparing';
+      item.message = '파일 준비 중';
+      renderDownloadQueue();
+
+      try {
+        const infoResponse = await fetch(`/api/fs/download-info?path=${encodeURIComponent(item.path)}`);
+        if (!infoResponse.ok) {
+          let message = '다운로드를 준비하지 못했습니다.';
+          try {
+            const data = await infoResponse.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          item.status = 'failed';
+          item.message = message;
+          renderDownloadQueue();
+          downloadQueueActive = false;
+          processDownloadQueue();
+          return;
+        }
+
+        const frame = document.createElement('iframe');
+        frame.hidden = true;
+        frame.src = `/api/fs/download?path=${encodeURIComponent(item.path)}`;
+        document.body.appendChild(frame);
+        setTimeout(() => frame.remove(), 120000);
+
+        item.status = 'started';
+        item.message = '브라우저 다운로드 시작';
+        renderDownloadQueue();
+        setTimeout(() => {
+          item.status = 'done';
+          item.message = '요청 완료';
+          renderDownloadQueue();
+          downloadQueueActive = false;
+          processDownloadQueue();
+          pruneDownloadQueue();
+        }, 1200);
+      } catch (err) {
+        item.status = 'failed';
+        item.message = '네트워크 요청 실패';
+        renderDownloadQueue();
+        downloadQueueActive = false;
+        processDownloadQueue();
+      }
+    }
+
+    function renderDownloadQueue(showPanel = true) {
+      if (showPanel) {
+        downloadQueuePanel.hidden = false;
+      }
+      downloadQueueList.innerHTML = downloadQueue.map(item => `
+        <div class="download-queue-item ${escapeHtml(item.status)}">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${escapeHtml(item.message)}</small>
+        </div>
+      `).join('');
+    }
+
+    function pruneDownloadQueue() {
+      setTimeout(() => {
+        const hasActive = downloadQueue.some(item => ['queued', 'preparing', 'started'].includes(item.status));
+        if (hasActive) return;
+        downloadQueue = downloadQueue.slice(-3);
+        renderDownloadQueue(false);
+      }, 5000);
     }
 
     async function postFileAction(url, payload) {
