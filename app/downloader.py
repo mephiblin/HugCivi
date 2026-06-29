@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import queue
+import random
 import re
 import threading
 import time
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse, unquote
@@ -22,11 +24,13 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
-HF_DEFAULT_SNAPSHOT_WORKERS = 8
+HF_DEFAULT_SNAPSHOT_WORKERS = 2
 
 JOB_QUEUE: queue.Queue[int] = queue.Queue()
 _WORKERS_STARTED = False
 _WORKERS_LOCK = threading.Lock()
+_HOST_THROTTLE_LOCK = threading.Lock()
+_HOST_NEXT_REQUEST_AT: dict[str, float] = {}
 
 
 def enqueue_existing_jobs() -> None:
@@ -129,11 +133,112 @@ def positive_int_env(name: str, default: int) -> int:
         return default
 
 
+def float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return default
+
+
+def bool_env(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def request_interval_for_url(url: str) -> float:
+    host = urlparse(url).netloc.lower()
+    default = float_env("DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS", 1.5)
+    if "huggingface.co" in host or host.endswith("hf.co"):
+        return float_env("HF_REQUEST_MIN_INTERVAL_SECONDS", default)
+    if "civitai." in host or "image.civitai.com" in host:
+        return float_env("CIVITAI_REQUEST_MIN_INTERVAL_SECONDS", default)
+    return default
+
+
+def wait_for_request_slot(url: str) -> None:
+    interval = request_interval_for_url(url)
+    if interval <= 0:
+        return
+    host = urlparse(url).netloc.lower()
+    with _HOST_THROTTLE_LOCK:
+        now = time.monotonic()
+        next_at = _HOST_NEXT_REQUEST_AT.get(host, now)
+        sleep_for = max(0.0, next_at - now)
+        _HOST_NEXT_REQUEST_AT[host] = max(now, next_at) + interval
+    if sleep_for > 0:
+        time.sleep(sleep_for)
+
+
+def retry_after_seconds(response: requests.Response) -> float | None:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        if retry_after.isdigit():
+            return float(retry_after)
+        try:
+            retry_at = parsedate_to_datetime(retry_after)
+            return max(0.0, retry_at.timestamp() - time.time())
+        except (TypeError, ValueError, OSError):
+            pass
+
+    rate_limit = response.headers.get("RateLimit")
+    if rate_limit:
+        match = re.search(r"(?:^|[;,])\s*t=(\d+)", rate_limit)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+def retry_delay(response: requests.Response, attempt: int) -> float:
+    header_delay = retry_after_seconds(response)
+    if header_delay is not None:
+        delay = header_delay
+    else:
+        base = float_env("DOWNLOAD_RETRY_BACKOFF_SECONDS", 5.0)
+        delay = base * (2 ** attempt) + random.uniform(0, min(base, 3.0))
+    return min(delay, float_env("DOWNLOAD_MAX_RETRY_SLEEP_SECONDS", 300.0))
+
+
+def request_with_safety(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    job_id: int | None = None,
+    **kwargs: Any,
+) -> requests.Response:
+    max_retries = positive_int_env("DOWNLOAD_HTTP_MAX_RETRIES", 3)
+    retry_statuses = {429, 500, 502, 503, 504}
+    response: requests.Response | None = None
+    for attempt in range(max_retries + 1):
+        wait_for_request_slot(url)
+        response = session.request(method, url, **kwargs)
+        if response.status_code not in retry_statuses or attempt >= max_retries:
+            return response
+
+        delay = retry_delay(response, attempt)
+        if job_id is not None:
+            db.append_log(
+                job_id,
+                f"HTTP {response.status_code}; retrying in {delay:.1f}s ({attempt + 1}/{max_retries})",
+            )
+        response.close()
+        time.sleep(delay)
+    if response is None:
+        raise RuntimeError("HTTP request was not attempted")
+    return response
+
+
 def configure_huggingface_runtime(token: str | None) -> None:
     if token:
         os.environ["HF_TOKEN"] = token
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
-    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "0")
+    os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "4")
     os.environ.setdefault("HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY", "1")
 
 
@@ -141,8 +246,12 @@ def verify_huggingface_token(job_id: int, token: str | None) -> None:
     if not token:
         return
     try:
-        response = requests.get(
+        session = requests.Session()
+        response = request_with_safety(
+            session,
+            "GET",
             "https://huggingface.co/api/whoami-v2",
+            job_id=job_id,
             headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
             timeout=(10, 30),
         )
@@ -170,7 +279,7 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         db.append_log(job_id, "HF token not configured: anonymous public Hub access")
 
     verify_huggingface_token(job_id, token)
-    metadata = fetch_huggingface_metadata(parsed, token)
+    metadata = fetch_huggingface_metadata(parsed, token, job_id)
     archive_info = classify_huggingface(metadata, parsed.repo_type, parsed.repo_id)
     target = base_target(parsed, *archive_info["target_parts"])
     target.mkdir(parents=True, exist_ok=True)
@@ -309,14 +418,14 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     if version_id:
         meta_url = f"{CIVITAI_API_BASE}/model-versions/{version_id}"
         db.append_log(job_id, f"Civitai metadata: {meta_url}")
-        metadata = fetch_json(session, meta_url)
+        metadata = fetch_json(session, meta_url, job_id=job_id)
         raw_model = metadata.get("model")
         model_info = raw_model if isinstance(raw_model, dict) else {}
         model_name = model_info.get("name") or metadata.get("modelName") or metadata.get("name")
     elif parsed.civitai_hash:
         meta_url = f"{CIVITAI_API_BASE}/model-versions/by-hash/{parsed.civitai_hash}"
         db.append_log(job_id, f"Civitai metadata by hash: {meta_url}")
-        metadata = fetch_json(session, meta_url)
+        metadata = fetch_json(session, meta_url, job_id=job_id)
         version_id = str(metadata.get("id") or "")
         raw_model = metadata.get("model")
         model_info = raw_model if isinstance(raw_model, dict) else {}
@@ -324,7 +433,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     elif parsed.civitai_model_id:
         meta_url = f"{CIVITAI_API_BASE}/models/{parsed.civitai_model_id}"
         db.append_log(job_id, f"Civitai metadata: {meta_url}")
-        metadata = fetch_json(session, meta_url)
+        metadata = fetch_json(session, meta_url, job_id=job_id)
         model_name = metadata.get("name")
         model_type = metadata.get("type")
         versions = metadata.get("modelVersions") or []
@@ -407,13 +516,13 @@ def download_generic(job_id: int, parsed: ParsedDownload) -> None:
     db.update_job(job_id, filename=saved.name)
 
 
-def fetch_json(session: requests.Session, url: str) -> dict[str, Any]:
-    response = session.get(url, timeout=(20, 60))
+def fetch_json(session: requests.Session, url: str, job_id: int | None = None) -> dict[str, Any]:
+    response = request_with_safety(session, "GET", url, job_id=job_id, timeout=(20, 60))
     response.raise_for_status()
     return response.json()
 
 
-def fetch_huggingface_metadata(parsed: ParsedDownload, token: str | None) -> dict[str, Any]:
+def fetch_huggingface_metadata(parsed: ParsedDownload, token: str | None, job_id: int) -> dict[str, Any]:
     endpoint = {
         "model": "models",
         "dataset": "datasets",
@@ -423,8 +532,9 @@ def fetch_huggingface_metadata(parsed: ParsedDownload, token: str | None) -> dic
     headers = {"User-Agent": USER_AGENT}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    session = requests.Session()
     try:
-        response = requests.get(url, headers=headers, timeout=(20, 60))
+        response = request_with_safety(session, "GET", url, job_id=job_id, headers=headers, timeout=(20, 60))
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
@@ -484,7 +594,7 @@ def auth_headers(token: str | None) -> dict[str, str]:
 
 def stream_download(job_id: int, session: requests.Session, url: str, target_dir: Path) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
-    filename, total_from_head = resolve_remote_filename(session, url)
+    filename, total_from_head = resolve_remote_filename(session, url, job_id)
     filename = sanitize_segment(filename, default=f"job_{job_id}.bin")
     final_path = target_dir / filename
     part_path = target_dir / f"{filename}.part"
@@ -495,7 +605,16 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
         headers["Range"] = f"bytes={existing}-"
         db.append_log(job_id, f"resume from {human_bytes(existing)}")
 
-    with session.get(url, stream=True, timeout=(20, 120), allow_redirects=True, headers=headers) as response:
+    with request_with_safety(
+        session,
+        "GET",
+        url,
+        job_id=job_id,
+        stream=True,
+        timeout=(20, 120),
+        allow_redirects=True,
+        headers=headers,
+    ) as response:
         if response.status_code == 416 and final_path.exists():
             db.append_log(job_id, "server says range already complete")
             return final_path
@@ -549,11 +668,21 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
     return final_path
 
 
-def resolve_remote_filename(session: requests.Session, url: str) -> tuple[str, int | None]:
+def resolve_remote_filename(session: requests.Session, url: str, job_id: int | None = None) -> tuple[str, int | None]:
     filename = url_basename(url)
     total = None
+    if not bool_env("DOWNLOAD_ENABLE_HEAD_REQUESTS", True):
+        return filename, total
     try:
-        response = session.head(url, timeout=(10, 30), allow_redirects=True, headers={"Accept-Encoding": "identity"})
+        response = request_with_safety(
+            session,
+            "HEAD",
+            url,
+            job_id=job_id,
+            timeout=(10, 30),
+            allow_redirects=True,
+            headers={"Accept-Encoding": "identity"},
+        )
         if response.ok:
             cd_filename = filename_from_content_disposition(response.headers.get("content-disposition"))
             if cd_filename:

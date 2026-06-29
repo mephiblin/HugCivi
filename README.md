@@ -14,7 +14,7 @@ Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용
 - SQLite 기반 작업 기록
 - 다운로드 진행률 표시
 - 토큰은 환경변수 또는 웹 UI에서 설정: `HF_TOKEN`, `CIVITAI_TOKEN`
-- Hugging Face 토큰은 인증/게이트 모델/rate limit 완화에 사용하고, `hf_xet` 고성능 전송 모드로 대용량 파일 다운로드를 가속
+- Hugging Face 토큰은 인증/게이트 모델/rate limit 완화에 사용하고, 요청 간격/재시도 backoff/낮은 병렬도로 과도한 요청을 방지
 - 웹 UI Basic Auth 지원
 
 ## Synology 설치 개요
@@ -41,9 +41,15 @@ services:
       CIVITAI_TOKEN: ""
       MAX_CONCURRENT_DOWNLOADS: "1"
       HF_HUB_DOWNLOAD_TIMEOUT: "120"
-      HF_XET_HIGH_PERFORMANCE: "1"
+      HF_XET_HIGH_PERFORMANCE: "0"
+      HF_XET_NUM_CONCURRENT_RANGE_GETS: "4"
       HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY: "1"
-      HF_SNAPSHOT_MAX_WORKERS: "8"
+      HF_SNAPSHOT_MAX_WORKERS: "2"
+      DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS: "1.5"
+      DOWNLOAD_HTTP_MAX_RETRIES: "3"
+      DOWNLOAD_RETRY_BACKOFF_SECONDS: "5"
+      DOWNLOAD_MAX_RETRY_SLEEP_SECONDS: "300"
+      DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
     volumes:
       - /volume1/AI_MODELS:/data
       - /volume1/docker/nas-model-archiver/config:/config
@@ -85,6 +91,20 @@ https://civitai.com/api/download/models/456789
 ```
 
 직접 폴더를 선택하거나 입력하면 해당 경로를 우선 사용합니다.
+
+## 다운로드 안전장치
+
+기본 설정은 요청 폭주를 피하도록 보수적으로 잡혀 있습니다.
+
+- `MAX_CONCURRENT_DOWNLOADS=1`: 동시에 실행되는 다운로드 작업 수
+- `HF_SNAPSHOT_MAX_WORKERS=2`: Hugging Face snapshot 내부 병렬 다운로드 수
+- `DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5`: 같은 호스트로 보내는 직접 HTTP 요청 사이 최소 간격
+- `DOWNLOAD_HTTP_MAX_RETRIES=3`: `429`, `500`, `502`, `503`, `504` 응답의 최대 재시도 횟수
+- `DOWNLOAD_RETRY_BACKOFF_SECONDS=5`: `Retry-After` 헤더가 없을 때 쓰는 지수 backoff 기준값
+- `DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300`: 한 번의 재시도 대기 최대값
+- `DOWNLOAD_ENABLE_HEAD_REQUESTS=1`: 파일명/크기 확인용 `HEAD` 요청 사용 여부
+
+더 빠르게 받고 싶으면 위 값을 올릴 수 있지만, NAS/IP/계정 단위 rate limit을 피하려면 기본값을 권장합니다.
 
 ## 보안 주의
 
