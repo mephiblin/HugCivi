@@ -819,27 +819,31 @@ a:hover {
 }
 
 .col-info {
-  width: 22%;
+  width: 20%;
 }
 
 .col-source {
-  width: 10%;
+  width: 9%;
 }
 
 .col-input {
-  width: 19%;
+  width: 17%;
 }
 
 .col-file {
-  width: 14%;
+  width: 12%;
 }
 
 .col-progress {
-  width: 18%;
+  width: 16%;
 }
 
 .col-log {
   width: 5%;
+}
+
+.col-actions {
+  width: 9%;
 }
 
 .input-cell {
@@ -930,6 +934,48 @@ a:hover {
 .status.queued {
   color: #475569;
   background: #edf2f7;
+}
+
+.status.paused {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.status.pausing,
+.status.canceling,
+.status.deleting {
+  color: #7c2d12;
+  background: #ffedd5;
+}
+
+.status.canceled {
+  color: #64748b;
+  background: #f1f5f9;
+}
+
+.job-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.job-action-buttons button {
+  min-height: 27px;
+  border: 1px solid #d8dee8;
+  border-radius: 5px;
+  padding: 4px 7px;
+  color: #34435a;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.job-action-buttons button:hover {
+  background: #f8fafc;
+}
+
+.job-action-buttons button.danger {
+  color: #b42318;
 }
 
 .progress {

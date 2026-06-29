@@ -43,9 +43,23 @@ _HOST_THROTTLE_LOCK = threading.Lock()
 _HOST_NEXT_REQUEST_AT: dict[str, float] = {}
 
 
+class JobControlStop(Exception):
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
 def enqueue_existing_jobs() -> None:
     for job in reversed(db.list_jobs(limit=500)):
-        if job["status"] in {"queued", "running"}:
+        if job["status"] == "deleting":
+            db.delete_job(int(job["id"]))
+        elif job["status"] == "canceling":
+            db.update_job(int(job["id"]), status="canceled", error=None)
+            db.append_log(int(job["id"]), "canceled after restart")
+        elif job["status"] == "pausing":
+            db.update_job(int(job["id"]), status="paused", error=None)
+            db.append_log(int(job["id"]), "paused after restart")
+        elif job["status"] in {"queued", "running"}:
             db.update_job(job["id"], status="queued", error=None)
             JOB_QUEUE.put(int(job["id"]))
 
@@ -72,20 +86,31 @@ def worker_loop() -> None:
         job_id = JOB_QUEUE.get()
         try:
             run_job(job_id)
+        except JobControlStop as exc:
+            handle_control_stop(job_id, exc.status)
         except Exception as exc:  # noqa: BLE001 - log everything for a downloader daemon
-            db.append_log(job_id, f"FAILED: {exc}")
-            db.update_job(job_id, status="failed", error=str(exc))
+            status = current_job_status(job_id)
+            if status in {"pausing", "paused"}:
+                handle_control_stop(job_id, "paused")
+            elif status in {"canceling", "canceled"}:
+                handle_control_stop(job_id, "canceled")
+            elif status == "deleting":
+                handle_control_stop(job_id, "deleted")
+            else:
+                db.append_log(job_id, f"FAILED: {exc}")
+                db.update_job(job_id, status="failed", error=str(exc))
         finally:
             JOB_QUEUE.task_done()
 
 
 def run_job(job_id: int) -> None:
     job = db.get_job(job_id)
-    if not job:
+    if not job or job.get("status") not in {"queued", "running"}:
         return
     parsed = db.parse_job_payload(job)
     db.update_job(job_id, status="running", error=None, progress_bytes=0, total_bytes=None)
     db.append_log(job_id, f"started source={parsed.source}")
+    check_job_control(job_id)
 
     if parsed.source == "huggingface":
         download_huggingface(job_id, parsed)
@@ -96,8 +121,36 @@ def run_job(job_id: int) -> None:
     else:
         raise ValueError(f"Unsupported source: {parsed.source}")
 
+    check_job_control(job_id)
     db.update_job(job_id, status="done")
     db.append_log(job_id, "done")
+
+
+def current_job_status(job_id: int) -> str | None:
+    job = db.get_job(job_id)
+    return str(job.get("status")) if job else None
+
+
+def check_job_control(job_id: int) -> None:
+    status = current_job_status(job_id)
+    if status is None or status == "deleting":
+        raise JobControlStop("deleted")
+    if status in {"pausing", "paused"}:
+        raise JobControlStop("paused")
+    if status in {"canceling", "canceled"}:
+        raise JobControlStop("canceled")
+
+
+def handle_control_stop(job_id: int, status: str) -> None:
+    if status == "deleted":
+        db.delete_job(job_id)
+        return
+    if status == "canceled":
+        db.update_job(job_id, status="canceled", error=None)
+        db.append_log(job_id, "canceled")
+        return
+    db.update_job(job_id, status="paused", error=None)
+    db.append_log(job_id, "paused")
 
 
 def base_target(parsed: ParsedDownload, *fallback_parts: str, archive_info: dict[str, Any] | None = None) -> Path:
@@ -257,6 +310,8 @@ def request_with_safety(
     retry_statuses = {429, 500, 502, 503, 504}
     response: requests.Response | None = None
     for attempt in range(max_retries + 1):
+        if job_id is not None:
+            check_job_control(job_id)
         wait_for_request_slot(url)
         response = session.request(method, url, **kwargs)
         if response.status_code not in retry_statuses or attempt >= max_retries:
@@ -269,10 +324,23 @@ def request_with_safety(
                 f"HTTP {response.status_code}; retrying in {delay:.1f}s ({attempt + 1}/{max_retries})",
             )
         response.close()
-        time.sleep(delay)
+        sleep_with_job_control(job_id, delay)
     if response is None:
         raise RuntimeError("HTTP request was not attempted")
     return response
+
+
+def sleep_with_job_control(job_id: int | None, seconds: float) -> None:
+    if job_id is None:
+        time.sleep(seconds)
+        return
+    deadline = time.time() + seconds
+    while True:
+        check_job_control(job_id)
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 1.0))
 
 
 def configure_huggingface_runtime(token: str | None) -> None:
@@ -321,11 +389,14 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         db.append_log(job_id, "HF token not configured: anonymous public Hub access")
 
     verify_huggingface_token(job_id, token)
+    check_job_control(job_id)
     metadata = fetch_huggingface_metadata(parsed, token, job_id)
+    check_job_control(job_id)
     archive_info = classify_huggingface(metadata, parsed.repo_type, parsed.repo_id)
     target = base_target(parsed, *archive_info["target_parts"], archive_info=archive_info)
     target.mkdir(parents=True, exist_ok=True)
     update_job_archive_info(job_id, target, archive_info, metadata)
+    check_job_control(job_id)
 
     common = {
         "repo_id": parsed.repo_id,
@@ -355,11 +426,14 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
 
     if parsed.filenames:
         for filename in parsed.filenames:
+            check_job_control(job_id)
             db.append_log(job_id, f"HF file download: {parsed.repo_id}/{filename}")
             local_path = hf_hub_download(filename=filename, **common)
+            check_job_control(job_id)
             db.append_log(job_id, f"saved: {local_path}")
             db.update_job(job_id, filename=str(Path(local_path).name))
     else:
+        check_job_control(job_id)
         db.append_log(job_id, f"HF snapshot download: {parsed.repo_id}")
         local_path = snapshot_download(
             allow_patterns=parsed.include_patterns or None,
@@ -367,6 +441,7 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
             max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
             **common,
         )
+        check_job_control(job_id)
         saved_size = directory_size(Path(local_path))
         db.append_log(job_id, f"saved snapshot: {local_path} ({human_bytes(saved_size)})")
         db.update_job(job_id, filename="snapshot", progress_bytes=saved_size, total_bytes=saved_size)
@@ -492,6 +567,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     if not version_id:
         raise ValueError("Civitai modelVersionId를 결정하지 못했습니다.")
 
+    check_job_control(job_id)
     archive_info = classify_civitai(metadata, version_id, model_name, file_selector)
     raw_primary_file = archive_info.get("primary_file")
     primary_file = raw_primary_file if isinstance(raw_primary_file, dict) else {}
@@ -526,6 +602,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     last_error: Exception | None = None
     for index, download_url in enumerate(download_urls, start=1):
         try:
+            check_job_control(job_id)
             db.append_log(
                 job_id,
                 f"Civitai file download: version={version_id} url={redact_sensitive_text(download_url)}",
@@ -549,6 +626,7 @@ def download_generic(job_id: int, parsed: ParsedDownload) -> None:
     session.headers.update({"User-Agent": USER_AGENT})
     target = base_target(parsed, "generic")
     target.mkdir(parents=True, exist_ok=True)
+    check_job_control(job_id)
     db.update_job(job_id, target_dir=str(target), model_category="Generic URL", model_title=parsed.url)
     write_metadata(
         target,
@@ -636,6 +714,7 @@ def auth_headers(token: str | None) -> dict[str, str]:
 
 
 def stream_download(job_id: int, session: requests.Session, url: str, target_dir: Path) -> Path:
+    check_job_control(job_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     filename, total_from_head = resolve_remote_filename(session, url, job_id)
     filename = sanitize_segment(filename, default=f"job_{job_id}.bin")
@@ -648,59 +727,65 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
         headers["Range"] = f"bytes={existing}-"
         db.append_log(job_id, f"resume from {human_bytes(existing)}")
 
-    with request_with_safety(
-        session,
-        "GET",
-        url,
-        job_id=job_id,
-        stream=True,
-        timeout=(20, 120),
-        allow_redirects=True,
-        headers=headers,
-    ) as response:
-        if response.status_code == 416 and final_path.exists():
-            db.append_log(job_id, "server says range already complete")
-            return final_path
-        response.raise_for_status()
+    try:
+        with request_with_safety(
+            session,
+            "GET",
+            url,
+            job_id=job_id,
+            stream=True,
+            timeout=(20, 120),
+            allow_redirects=True,
+            headers=headers,
+        ) as response:
+            if response.status_code == 416 and final_path.exists():
+                db.append_log(job_id, "server says range already complete")
+                return final_path
+            response.raise_for_status()
 
-        if existing > 0 and response.status_code != 206:
-            db.append_log(job_id, "server did not accept resume; restarting partial file")
-            existing = 0
+            if existing > 0 and response.status_code != 206:
+                db.append_log(job_id, "server did not accept resume; restarting partial file")
+                existing = 0
+                part_path.unlink(missing_ok=True)
+
+            cd_filename = filename_from_content_disposition(response.headers.get("content-disposition"))
+            if cd_filename:
+                new_filename = sanitize_segment(cd_filename, default=filename)
+                if new_filename != filename and existing == 0:
+                    filename = new_filename
+                    final_path = target_dir / filename
+                    part_path = target_dir / f"{filename}.part"
+
+            content_length = response.headers.get("content-length")
+            total = None
+            if response.status_code == 206:
+                total = parse_content_range_total(response.headers.get("content-range"))
+            if total is None and content_length and content_length.isdigit():
+                total = int(content_length) + existing
+            if total is None:
+                total = total_from_head
+
+            db.update_job(job_id, filename=filename, total_bytes=total, progress_bytes=existing)
+            db.append_log(job_id, f"saving to {final_path}")
+
+            downloaded = existing
+            mode = "ab" if existing > 0 else "wb"
+            last_update = 0.0
+            with part_path.open(mode) as file:
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    check_job_control(job_id)
+                    if not chunk:
+                        continue
+                    file.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.time()
+                    if now - last_update >= 1.0:
+                        db.update_job(job_id, progress_bytes=downloaded, total_bytes=total)
+                        last_update = now
+    except JobControlStop as exc:
+        if exc.status in {"canceled", "deleted"}:
             part_path.unlink(missing_ok=True)
-
-        cd_filename = filename_from_content_disposition(response.headers.get("content-disposition"))
-        if cd_filename:
-            new_filename = sanitize_segment(cd_filename, default=filename)
-            if new_filename != filename and existing == 0:
-                filename = new_filename
-                final_path = target_dir / filename
-                part_path = target_dir / f"{filename}.part"
-
-        content_length = response.headers.get("content-length")
-        total = None
-        if response.status_code == 206:
-            total = parse_content_range_total(response.headers.get("content-range"))
-        if total is None and content_length and content_length.isdigit():
-            total = int(content_length) + existing
-        if total is None:
-            total = total_from_head
-
-        db.update_job(job_id, filename=filename, total_bytes=total, progress_bytes=existing)
-        db.append_log(job_id, f"saving to {final_path}")
-
-        downloaded = existing
-        mode = "ab" if existing > 0 else "wb"
-        last_update = 0.0
-        with part_path.open(mode) as file:
-            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                if not chunk:
-                    continue
-                file.write(chunk)
-                downloaded += len(chunk)
-                now = time.time()
-                if now - last_update >= 1.0:
-                    db.update_job(job_id, progress_bytes=downloaded, total_bytes=total)
-                    last_update = now
+        raise
 
     if total is not None and downloaded < total:
         raise requests.ConnectionError(f"incomplete download: {human_bytes(downloaded)} / {human_bytes(total)}")

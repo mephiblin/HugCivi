@@ -13,6 +13,7 @@ from .utils import redact_sensitive_text
 
 DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
 _DB_LOCK = threading.RLock()
+ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "canceling", "deleting")
 
 ROUTE_DEFAULTS = {
     "LIBRARY_ACTIVE": "ComfyUI",
@@ -139,10 +140,18 @@ def get_job(job_id: int) -> dict[str, Any] | None:
 
 
 def clear_job_history() -> int:
+    placeholders = ", ".join("?" for _ in ACTIVE_JOB_STATUSES)
     with _DB_LOCK, connect() as conn:
-        cur = conn.execute("DELETE FROM jobs WHERE status NOT IN ('queued', 'running')")
+        cur = conn.execute(f"DELETE FROM jobs WHERE status NOT IN ({placeholders})", ACTIVE_JOB_STATUSES)
         conn.commit()
         return int(cur.rowcount or 0)
+
+
+def delete_job(job_id: int) -> bool:
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+        return bool(cur.rowcount)
 
 
 def favorite_paths() -> set[str]:
@@ -261,9 +270,11 @@ def clear_favorite_path_prefix(target_path: str) -> None:
 def has_active_jobs_under(target_root: str | Path) -> bool:
     root_text = str(target_root)
     root_prefix = root_text.rstrip("\\/") + os.sep
+    placeholders = ", ".join("?" for _ in ACTIVE_JOB_STATUSES)
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
-            "SELECT target_dir FROM jobs WHERE status IN ('queued', 'running') AND target_dir IS NOT NULL"
+            f"SELECT target_dir FROM jobs WHERE status IN ({placeholders}) AND target_dir IS NOT NULL",
+            ACTIVE_JOB_STATUSES,
         ).fetchall()
     for row in rows:
         target_dir = str(row["target_dir"])

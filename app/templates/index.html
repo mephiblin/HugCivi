@@ -113,6 +113,7 @@
                   <th class="col-file">파일</th>
                   <th class="col-progress">진행률</th>
                   <th class="col-log">로그</th>
+                  <th class="col-actions">제어</th>
                 </tr>
               </thead>
               <tbody id="jobs-body">
@@ -150,6 +151,20 @@
                     </div>
                   </td>
                   <td data-label="로그"><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
+                  <td data-label="제어" class="job-actions-cell">
+                    <div class="job-action-buttons">
+                      {% if job.status in ['queued', 'running', 'pausing'] %}
+                        <button type="button" data-job-action="pause" data-job-id="{{ job.id }}">정지</button>
+                      {% endif %}
+                      {% if job.status == 'paused' %}
+                        <button type="button" data-job-action="resume" data-job-id="{{ job.id }}">재개</button>
+                      {% endif %}
+                      {% if job.status in ['queued', 'running', 'paused', 'pausing', 'canceling'] %}
+                        <button type="button" data-job-action="cancel" data-job-id="{{ job.id }}">취소</button>
+                      {% endif %}
+                      <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger">삭제</button>
+                    </div>
+                  </td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -475,6 +490,12 @@
 
     refreshButton.addEventListener('click', refreshJobs);
     clearJobsButton.addEventListener('click', clearJobHistory);
+    document.getElementById('jobs-body').addEventListener('click', event => {
+      const button = event.target.closest('[data-job-action]');
+      if (!button) return;
+      event.preventDefault();
+      handleJobAction(Number(button.dataset.jobId), button.dataset.jobAction || '');
+    });
     librarySort.addEventListener('change', renderLibrary);
     propertiesClose.addEventListener('click', closePropertiesModal);
     propertiesModal.addEventListener('click', event => {
@@ -610,7 +631,7 @@
     }
 
     async function clearJobHistory() {
-      const removable = currentJobs.filter(job => !['queued', 'running'].includes(job.status));
+      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'canceling', 'deleting'].includes(job.status));
       if (!removable.length) {
         window.alert('지울 완료 기록이 없습니다.');
         return;
@@ -634,7 +655,7 @@
     function renderJobs(jobs) {
       const body = document.getElementById('jobs-body');
       if (!jobs.length) {
-        body.innerHTML = '<tr><td colspan="8" class="empty-row">아직 작업이 없습니다.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="empty-row">아직 작업이 없습니다.</td></tr>';
         return;
       }
       body.innerHTML = jobs.map(job => {
@@ -651,8 +672,58 @@
           <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
           <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
           <td data-label="로그"><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
+          <td data-label="제어" class="job-actions-cell">${renderJobActions(job)}</td>
         </tr>`;
       }).join('');
+    }
+
+    function renderJobActions(job) {
+      const status = job.status || '';
+      const buttons = [];
+      if (['queued', 'running', 'pausing'].includes(status)) {
+        buttons.push(jobActionButton(job.id, 'pause', '정지'));
+      }
+      if (status === 'paused') {
+        buttons.push(jobActionButton(job.id, 'resume', '재개'));
+      }
+      if (['queued', 'running', 'paused', 'pausing', 'canceling'].includes(status)) {
+        buttons.push(jobActionButton(job.id, 'cancel', '취소'));
+      }
+      buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger'));
+      return `<div class="job-action-buttons">${buttons.join('')}</div>`;
+    }
+
+    function jobActionButton(id, action, label, className = '') {
+      return `<button type="button" data-job-action="${escapeHtml(action)}" data-job-id="${escapeHtml(id)}" class="${escapeHtml(className)}">${escapeHtml(label)}</button>`;
+    }
+
+    async function handleJobAction(jobId, action) {
+      if (!jobId || !action) return;
+      if (action === 'cancel' && !window.confirm('이 다운로드 작업을 취소할까요?')) return;
+      if (action === 'delete' && !window.confirm('이 작업 기록을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
+
+      const method = action === 'delete' ? 'DELETE' : 'POST';
+      const url = action === 'delete' ? `/api/jobs/${jobId}` : `/api/jobs/${jobId}/${action}`;
+      try {
+        const response = await fetch(url, {method});
+        if (!response.ok) {
+          let message = '작업 요청을 완료하지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          window.alert(message);
+          return;
+        }
+        const data = await response.json();
+        currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        renderJobs(currentJobs);
+        if (activeLibraryPath !== null) renderLibrary();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+      }
     }
 
     function renderModelInfo(job) {

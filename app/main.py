@@ -142,10 +142,79 @@ def api_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(decorate_jobs(db.list_jobs()))
 
 
+def jobs_response() -> JSONResponse:
+    return JSONResponse({"ok": True, "jobs": decorate_jobs(db.list_jobs())})
+
+
+def require_job(job_id: int) -> dict[str, Any]:
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
 @app.post("/api/jobs/clear")
 def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     deleted = db.clear_job_history()
     return JSONResponse({"ok": True, "deleted": deleted, "jobs": decorate_jobs(db.list_jobs())})
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def api_pause_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_job(job_id)
+    status = str(job.get("status"))
+    if status == "queued":
+        db.update_job(job_id, status="paused", error=None)
+        db.append_log(job_id, "pause requested")
+    elif status == "running":
+        db.update_job(job_id, status="pausing", error=None)
+        db.append_log(job_id, "pause requested")
+    elif status in {"paused", "pausing"}:
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="정지할 수 있는 작업 상태가 아닙니다.")
+    return jobs_response()
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def api_resume_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_job(job_id)
+    status = str(job.get("status"))
+    if status != "paused":
+        raise HTTPException(status_code=400, detail="재개할 수 있는 작업 상태가 아닙니다.")
+    db.update_job(job_id, status="queued", error=None)
+    db.append_log(job_id, "resume requested")
+    enqueue_job(job_id)
+    return jobs_response()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def api_cancel_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_job(job_id)
+    status = str(job.get("status"))
+    if status in {"queued", "paused"}:
+        db.update_job(job_id, status="canceled", error=None)
+        db.append_log(job_id, "cancel requested")
+    elif status in {"running", "pausing"}:
+        db.update_job(job_id, status="canceling", error=None)
+        db.append_log(job_id, "cancel requested")
+    elif status in {"canceling", "canceled"}:
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="취소할 수 있는 작업 상태가 아닙니다.")
+    return jobs_response()
+
+
+@app.delete("/api/jobs/{job_id}")
+def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_job(job_id)
+    status = str(job.get("status"))
+    if status in {"running", "pausing", "canceling"}:
+        db.update_job(job_id, status="deleting", error=None)
+        db.append_log(job_id, "delete requested")
+    else:
+        db.delete_job(job_id)
+    return jobs_response()
 
 
 @app.get("/api/folders")

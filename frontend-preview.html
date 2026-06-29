@@ -202,6 +202,7 @@
                   <th class="col-file">파일</th>
                   <th class="col-progress">진행률</th>
                   <th class="col-log">로그</th>
+                  <th class="col-actions">제어</th>
                 </tr>
               </thead>
               <tbody id="jobs-body"></tbody>
@@ -587,6 +588,12 @@
     });
     librarySort.addEventListener('change', renderLibrary);
     clearJobsButton.addEventListener('click', clearJobHistory);
+    document.getElementById('jobs-body').addEventListener('click', event => {
+      const button = event.target.closest('[data-job-action]');
+      if (!button) return;
+      event.preventDefault();
+      handlePreviewJobAction(Number(button.dataset.jobId), button.dataset.jobAction || '');
+    });
     propertiesClose.addEventListener('click', closePropertiesModal);
     propertiesModal.addEventListener('click', event => {
       if (event.target === propertiesModal) closePropertiesModal();
@@ -721,8 +728,45 @@
           <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
           <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
           <td data-label="로그"><a href="#">보기</a></td>
+          <td data-label="제어" class="job-actions-cell">${renderJobActions(job)}</td>
         </tr>`;
       }).join('');
+    }
+
+    function renderJobActions(job) {
+      const status = job.status || '';
+      const buttons = [];
+      if (['queued', 'running', 'pausing'].includes(status)) {
+        buttons.push(jobActionButton(job.id, 'pause', '정지'));
+      }
+      if (status === 'paused') {
+        buttons.push(jobActionButton(job.id, 'resume', '재개'));
+      }
+      if (['queued', 'running', 'paused', 'pausing', 'canceling'].includes(status)) {
+        buttons.push(jobActionButton(job.id, 'cancel', '취소'));
+      }
+      buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger'));
+      return `<div class="job-action-buttons">${buttons.join('')}</div>`;
+    }
+
+    function jobActionButton(id, action, label, className = '') {
+      return `<button type="button" data-job-action="${escapeHtml(action)}" data-job-id="${escapeHtml(id)}" class="${escapeHtml(className)}">${escapeHtml(label)}</button>`;
+    }
+
+    function handlePreviewJobAction(jobId, action) {
+      const jobIndex = currentJobs.findIndex(job => job.id === jobId);
+      if (jobIndex < 0) return;
+      if (action === 'delete') {
+        currentJobs.splice(jobIndex, 1);
+      } else if (action === 'pause') {
+        currentJobs[jobIndex].status = 'paused';
+      } else if (action === 'resume') {
+        currentJobs[jobIndex].status = 'queued';
+      } else if (action === 'cancel') {
+        currentJobs[jobIndex].status = 'canceled';
+      }
+      renderJobs(currentJobs);
+      renderLibrary();
     }
 
     function renderModelInfo(job) {
@@ -878,7 +922,7 @@
 
     function clearJobHistory() {
       for (let index = currentJobs.length - 1; index >= 0; index -= 1) {
-        if (!['queued', 'running'].includes(currentJobs[index].status)) {
+        if (!['queued', 'running', 'paused', 'pausing', 'canceling', 'deleting'].includes(currentJobs[index].status)) {
           currentJobs.splice(index, 1);
         }
       }
