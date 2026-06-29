@@ -627,10 +627,18 @@ a:hover {
   background: #ffffff;
 }
 
-.refresh-corner {
-  position: absolute;
+.top-corner-actions {
+  position: fixed;
   top: 19px;
   right: 26px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refresh-corner,
+.thumbnail-blur-toggle {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -642,8 +650,21 @@ a:hover {
   background: transparent;
 }
 
-.refresh-corner:hover {
+.refresh-corner:hover,
+.thumbnail-blur-toggle:hover {
   background: #f1f5f9;
+}
+
+.thumbnail-blur-toggle {
+  border: 1px solid #d8dee8;
+  color: #475569;
+  background: #ffffff;
+}
+
+.thumbnail-blur-toggle[aria-pressed="true"] {
+  border-color: #111827;
+  color: #ffffff;
+  background: #111827;
 }
 
 .hero {
@@ -876,6 +897,7 @@ a:hover {
   border-radius: 6px;
   object-fit: cover;
   background: #edf1f7;
+  transition: filter 0.18s ease, transform 0.18s ease;
 }
 
 .model-card strong,
@@ -1076,6 +1098,16 @@ a:hover {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
+}
+
+.asset-card > img {
+  transition: filter 0.18s ease, transform 0.18s ease;
+}
+
+.thumbnail-blur-enabled .model-card img,
+.thumbnail-blur-enabled .asset-card > img {
+  filter: blur(10px);
+  transform: scale(1.04);
 }
 
 .asset-placeholder {
@@ -1617,7 +1649,7 @@ a:hover {
     display: none;
   }
 
-  .refresh-corner {
+  .top-corner-actions {
     top: 12px;
     right: 12px;
   }

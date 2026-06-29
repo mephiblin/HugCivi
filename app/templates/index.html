@@ -70,12 +70,20 @@
     </aside>
 
     <main class="content">
-      <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
-        <svg viewBox="0 0 24 24" focusable="false">
-          <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
-          <path d="M18.3 3.7V8h-4.3l4.3-4.3ZM5.7 20.3V16H10l-4.3 4.3Z"/>
-        </svg>
-      </button>
+      <div class="top-corner-actions">
+        <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
+          <svg viewBox="0 0 24 24" focusable="false">
+            <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
+            <path d="M18.3 3.7V8h-4.3l4.3-4.3ZM5.7 20.3V16H10l-4.3 4.3Z"/>
+          </svg>
+        </button>
+        <button type="button" class="thumbnail-blur-toggle" id="thumbnail-blur-toggle" title="썸네일 블러 켜기" aria-label="썸네일 블러" aria-pressed="false">
+          <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <path d="M12 5c5 0 8.8 4.4 9.8 6.6a1 1 0 0 1 0 .8C20.8 14.6 17 19 12 19s-8.8-4.4-9.8-6.6a1 1 0 0 1 0-.8C3.2 9.4 7 5 12 5Zm0 2c-3.8 0-6.8 3.1-7.7 5 .9 1.9 3.9 5 7.7 5s6.8-3.1 7.7-5C18.8 10.1 15.8 7 12 7Zm0 2.2A2.8 2.8 0 1 1 12 14.8 2.8 2.8 0 0 1 12 9.2Z"/>
+            <path d="m4.7 3.3 16 16-1.4 1.4-16-16 1.4-1.4Z"/>
+          </svg>
+        </button>
+      </div>
 
       <section class="hero mobile-panel is-mobile-panel-active" data-mobile-panel="download" aria-label="다운로드 입력">
         <h1>civitai - Hugging Face</h1>
@@ -396,6 +404,7 @@
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const refreshButton = document.getElementById('refresh-button');
+    const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
     const commandInput = document.getElementById('input_text');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
@@ -415,6 +424,9 @@
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
+    let thumbnailBlurEnabled = readThumbnailBlurPreference();
+
+    applyThumbnailBlurPreference(thumbnailBlurEnabled);
 
     document.getElementById('home-button').addEventListener('click', () => {
       switchToHome();
@@ -489,6 +501,9 @@
     });
 
     refreshButton.addEventListener('click', refreshJobs);
+    thumbnailBlurToggle.addEventListener('click', () => {
+      applyThumbnailBlurPreference(!thumbnailBlurEnabled, true);
+    });
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -551,6 +566,27 @@
       homeView.classList.add('active');
       libraryView.classList.remove('active');
       activateMobileTab('download');
+    }
+
+    function readThumbnailBlurPreference() {
+      try {
+        return window.localStorage.getItem('nas-model-archiver-thumbnail-blur') === '1';
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function applyThumbnailBlurPreference(enabled, persist = false) {
+      thumbnailBlurEnabled = Boolean(enabled);
+      document.documentElement.classList.toggle('thumbnail-blur-enabled', thumbnailBlurEnabled);
+      thumbnailBlurToggle.setAttribute('aria-pressed', thumbnailBlurEnabled ? 'true' : 'false');
+      thumbnailBlurToggle.title = thumbnailBlurEnabled ? '썸네일 블러 끄기' : '썸네일 블러 켜기';
+      if (!persist) return;
+      try {
+        window.localStorage.setItem('nas-model-archiver-thumbnail-blur', thumbnailBlurEnabled ? '1' : '0');
+      } catch (err) {
+        // The visual state still applies even when browser storage is unavailable.
+      }
     }
 
     function openSettingsModal() {
