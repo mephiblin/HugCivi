@@ -19,6 +19,7 @@ from . import db
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
+from .workflows import WorkflowParseError, save_workflow_bundle, workflow_max_bytes
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
@@ -73,7 +74,7 @@ def start_workers() -> None:
     with _WORKERS_LOCK:
         if _WORKERS_STARTED:
             return
-        max_workers = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 2)
+        max_workers = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 3)
         enqueue_existing_jobs()
         for index in range(max_workers):
             thread = threading.Thread(target=worker_loop, name=f"download-worker-{index+1}", daemon=True)
@@ -118,6 +119,8 @@ def run_job(job_id: int) -> None:
         download_civitai(job_id, parsed)
     elif parsed.source == "generic":
         download_generic(job_id, parsed)
+    elif parsed.source == "comfyui":
+        download_comfyui(job_id, parsed)
     else:
         raise ValueError(f"Unsupported source: {parsed.source}")
 
@@ -637,6 +640,63 @@ def download_generic(job_id: int, parsed: ParsedDownload) -> None:
     db.update_job(job_id, filename=saved.name)
 
 
+def download_comfyui(job_id: int, parsed: ParsedDownload) -> None:
+    if not parsed.comfyui_workflow_url:
+        raise ValueError("ComfyUI workflow URL이 없습니다.")
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    db.append_log(job_id, f"ComfyUI workflow download: {redact_sensitive_text(parsed.comfyui_workflow_url)}")
+    data, filename = fetch_workflow_bytes(session, parsed.comfyui_workflow_url, job_id, parsed.comfyui_workflow_filename)
+    try:
+        result = save_workflow_bundle(
+            data,
+            filename,
+            parsed.raw_input,
+            DATA_ROOT,
+            target_subdir=parsed.target_subdir,
+        )
+    except WorkflowParseError as exc:
+        raise ValueError(str(exc)) from exc
+    update_job_workflow_info(job_id, result, data_size=len(data), source_url=parsed.comfyui_workflow_url)
+    db.append_log(job_id, f"saved workflow: {result['workflow_path']} ({human_bytes(len(data))})")
+
+
+def fetch_workflow_bytes(
+    session: requests.Session,
+    url: str,
+    job_id: int,
+    fallback_filename: str | None = None,
+) -> tuple[bytes, str]:
+    response = request_with_safety(session, "GET", url, job_id=job_id, stream=True, timeout=(20, 120), allow_redirects=True)
+    with response:
+        response.raise_for_status()
+        filename = filename_from_content_disposition(response.headers.get("content-disposition"))
+        if not filename:
+            filename = fallback_filename or url_basename(url)
+        total = response.headers.get("content-length")
+        total_bytes = int(total) if total and total.isdigit() else None
+        if total_bytes and total_bytes > workflow_max_bytes():
+            raise ValueError(f"워크플로우 파일이 너무 큽니다. 최대 {human_bytes(workflow_max_bytes())}까지 지원합니다.")
+        db.update_job(job_id, filename=filename, total_bytes=total_bytes, progress_bytes=0)
+        chunks: list[bytes] = []
+        downloaded = 0
+        last_update = 0.0
+        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+            check_job_control(job_id)
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if downloaded > workflow_max_bytes():
+                raise ValueError(f"워크플로우 파일이 너무 큽니다. 최대 {human_bytes(workflow_max_bytes())}까지 지원합니다.")
+            now = time.time()
+            if now - last_update >= 1.0:
+                db.update_job(job_id, progress_bytes=downloaded, total_bytes=total_bytes)
+                last_update = now
+    db.update_job(job_id, progress_bytes=downloaded, total_bytes=total_bytes or downloaded)
+    return b"".join(chunks), filename or f"workflow_{job_id}.json"
+
+
 def fetch_json(session: requests.Session, url: str, job_id: int | None = None) -> dict[str, Any]:
     response = request_with_safety(session, "GET", url, job_id=job_id, timeout=(20, 60))
     response.raise_for_status()
@@ -681,6 +741,49 @@ def update_job_archive_info(job_id: int, target: Path, archive_info: dict[str, A
         precision=archive_info.get("precision"),
         thumbnail_url=archive_info.get("thumbnail_url"),
         metadata_json=json.dumps(redact_metadata(metadata_summary(metadata)), ensure_ascii=False),
+    )
+
+
+def update_job_workflow_info(
+    job_id: int,
+    result: dict[str, Any],
+    *,
+    data_size: int,
+    source_url: str | None = None,
+) -> None:
+    target = result["target_dir"]
+    target_path = Path(target)
+    thumbnail_path = result.get("thumbnail_path")
+    thumbnail_url = ""
+    if isinstance(thumbnail_path, Path):
+        try:
+            relative = thumbnail_path.relative_to(DATA_ROOT.resolve()).as_posix()
+            thumbnail_url = f"/api/workflows/preview?path={quote(relative, safe='/')}"
+        except ValueError:
+            thumbnail_url = ""
+    metadata = {
+        "source": "comfyui",
+        "source_url": source_url,
+        "source_format": result.get("source_format"),
+        "source_key": result.get("source_key"),
+        "node_count": result.get("node_count"),
+        "link_count": result.get("link_count"),
+        "models": result.get("models"),
+    }
+    db.update_job(
+        job_id,
+        target_dir=str(target_path),
+        filename=str(result.get("filename") or "workflow.json"),
+        progress_bytes=data_size,
+        total_bytes=data_size,
+        model_title=result.get("title") or target_path.name,
+        model_category="ComfyUI Workflow",
+        model_type=f"{result.get('node_count', 0)} nodes",
+        base_model=f"{result.get('link_count', 0)} links",
+        file_format=str(result.get("source_format") or "Workflow"),
+        precision=f"{len(result.get('models') or [])} models",
+        thumbnail_url=thumbnail_url,
+        metadata_json=json.dumps(redact_metadata(metadata), ensure_ascii=False),
     )
 
 

@@ -85,7 +85,7 @@
         </button>
       </div>
 
-      <section class="hero mobile-panel is-mobile-panel-active" data-mobile-panel="download" aria-label="다운로드 입력">
+      <section class="hero mobile-panel is-mobile-panel-active workflow-drop-zone" data-mobile-panel="download" data-workflow-drop-zone aria-label="다운로드 입력">
         <h1>civitai - Hugging Face</h1>
         <form class="download-form" id="command-form" method="post" action="/add">
           <input id="target_subdir" name="target_subdir" type="hidden">
@@ -101,6 +101,12 @@
             <span id="selected-folder">자동 분류</span>
           </div>
         </form>
+        <div class="workflow-drop-overlay" id="workflow-drop-overlay" role="status" aria-live="polite" aria-hidden="true">
+          <div class="workflow-drop-card">
+            <strong id="workflow-drop-message">워크플로 파일을 놓으세요</strong>
+            <span id="workflow-drop-detail">ComfyUI PNG 또는 JSON</span>
+          </div>
+        </div>
       </section>
 
       <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
@@ -353,6 +359,7 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="workflow" data-workflow-only role="menuitem" hidden>워크플로 보기</button>
     <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
@@ -381,6 +388,41 @@
     </div>
   </section>
 
+  <section class="workflow-modal" id="workflow-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-title" hidden>
+    <div class="workflow-panel">
+      <header class="workflow-head">
+        <div>
+          <p class="workflow-kicker">ComfyUI Workflow</p>
+          <h2 id="workflow-title">워크플로</h2>
+          <p id="workflow-path">/data</p>
+        </div>
+        <button type="button" id="workflow-close" aria-label="워크플로 닫기">×</button>
+      </header>
+      <div class="workflow-body">
+        <aside class="workflow-sidebar" aria-label="워크플로 요약">
+          <div class="workflow-stats" id="workflow-stats"></div>
+          <section class="workflow-model-section">
+            <h3>모델</h3>
+            <div class="workflow-model-list" id="workflow-models"></div>
+          </section>
+        </aside>
+        <section class="workflow-canvas-shell" aria-label="워크플로 그래프">
+          <div class="workflow-canvas-head">
+            <div>
+              <strong>Node Graph</strong>
+              <span id="workflow-summary">노드와 링크를 불러오는 중</span>
+            </div>
+          </div>
+          <div class="workflow-graph" id="workflow-graph"></div>
+          <details class="workflow-json">
+            <summary>원본 JSON</summary>
+            <pre id="workflow-json"></pre>
+          </details>
+        </section>
+      </div>
+    </div>
+  </section>
+
   <script>
     const initialJobs = {{ jobs|tojson }};
     const targetInput = document.getElementById('target_subdir');
@@ -406,6 +448,10 @@
     const refreshButton = document.getElementById('refresh-button');
     const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
     const commandInput = document.getElementById('input_text');
+    const workflowDropZone = document.querySelector('[data-workflow-drop-zone]');
+    const workflowDropOverlay = document.getElementById('workflow-drop-overlay');
+    const workflowDropMessage = document.getElementById('workflow-drop-message');
+    const workflowDropDetail = document.getElementById('workflow-drop-detail');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
     const downloadQueuePanel = document.getElementById('download-queue');
@@ -417,6 +463,15 @@
     const propertiesTitle = document.getElementById('properties-title');
     const propertiesPath = document.getElementById('properties-path');
     const propertiesList = document.getElementById('properties-list');
+    const workflowModal = document.getElementById('workflow-modal');
+    const workflowClose = document.getElementById('workflow-close');
+    const workflowTitle = document.getElementById('workflow-title');
+    const workflowPath = document.getElementById('workflow-path');
+    const workflowStats = document.getElementById('workflow-stats');
+    const workflowModels = document.getElementById('workflow-models');
+    const workflowSummary = document.getElementById('workflow-summary');
+    const workflowGraph = document.getElementById('workflow-graph');
+    const workflowJson = document.getElementById('workflow-json');
     let contextTarget = null;
     let downloadQueue = [];
     let downloadQueueActive = false;
@@ -425,8 +480,13 @@
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
+    let workflowRequestId = 0;
+    let workflowDropDepth = 0;
+    let workflowDropTimer = null;
+    let workflowImportActive = false;
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
+    setupWorkflowDropImport();
 
     document.getElementById('home-button').addEventListener('click', () => {
       switchToHome();
@@ -489,6 +549,7 @@
     document.addEventListener('click', () => {
       closeSettingsModal();
       closePropertiesModal();
+      closeWorkflowViewer();
       hideContextMenu();
     });
 
@@ -496,6 +557,7 @@
       if (event.key === 'Escape') {
         closeSettingsModal();
         closePropertiesModal();
+        closeWorkflowViewer();
         hideContextMenu();
       }
     });
@@ -519,6 +581,13 @@
       }
       event.stopPropagation();
     });
+    workflowClose.addEventListener('click', closeWorkflowViewer);
+    workflowModal.addEventListener('click', event => {
+      if (event.target === workflowModal) {
+        closeWorkflowViewer();
+      }
+      event.stopPropagation();
+    });
     libraryGrid.addEventListener('contextmenu', event => {
       const card = event.target.closest('.asset-card');
       if (!card) return;
@@ -527,6 +596,7 @@
       showContextMenu(event.clientX, event.clientY, {
         path: card.dataset.path || '',
         name: card.dataset.name || card.dataset.path || 'model',
+        isWorkflow: card.dataset.workflow === 'true',
       });
     });
     libraryGrid.addEventListener('click', event => {
@@ -541,6 +611,11 @@
         openSourceUrl(actionButton.dataset.url || '');
       } else if (action === 'favorite') {
         toggleFavorite(path, actionButton.getAttribute('aria-pressed') !== 'true');
+      } else if (action === 'workflow') {
+        openWorkflowViewer({
+          path,
+          name: card?.dataset.name || path || '워크플로',
+        });
       }
     });
 
@@ -652,6 +727,155 @@
 
     function isMobileLayout() {
       return window.matchMedia('(max-width: 700px)').matches;
+    }
+
+    function setupWorkflowDropImport() {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      workflowDropZone.addEventListener('dragenter', handleWorkflowDragEnter);
+      workflowDropZone.addEventListener('dragover', handleWorkflowDragOver);
+      workflowDropZone.addEventListener('dragleave', handleWorkflowDragLeave);
+      workflowDropZone.addEventListener('drop', handleWorkflowDrop);
+    }
+
+    function handleWorkflowDragEnter(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (workflowImportActive) {
+        showWorkflowDropOverlay('워크플로 가져오는 중', '현재 업로드가 끝난 뒤 다시 놓아주세요.', true);
+        return;
+      }
+      workflowDropDepth += 1;
+      showWorkflowDropOverlay('워크플로 파일을 놓으세요', 'ComfyUI PNG 또는 JSON');
+    }
+
+    function handleWorkflowDragOver(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = workflowImportActive ? 'none' : 'copy';
+      }
+    }
+
+    function handleWorkflowDragLeave(event) {
+      if (!hasWorkflowDragFiles(event) || workflowImportActive) return;
+      event.preventDefault();
+      event.stopPropagation();
+      workflowDropDepth = Math.max(0, workflowDropDepth - 1);
+      if (workflowDropDepth === 0) {
+        hideWorkflowDropOverlay();
+      }
+    }
+
+    function handleWorkflowDrop(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      workflowDropDepth = 0;
+      if (workflowImportActive) return;
+      importWorkflowFiles(Array.from(event.dataTransfer?.files || []));
+    }
+
+    function hasWorkflowDragFiles(event) {
+      return Array.from(event.dataTransfer?.types || []).includes('Files');
+    }
+
+    function isWorkflowImportFile(file) {
+      return Boolean(file?.name && /\.(png|json)$/i.test(file.name));
+    }
+
+    async function importWorkflowFiles(files) {
+      const workflowFiles = files.filter(isWorkflowImportFile);
+      if (!workflowFiles.length) {
+        showWorkflowDropOverlay('지원하지 않는 파일입니다', 'PNG 또는 JSON 워크플로 파일만 가져올 수 있습니다.');
+        hideWorkflowDropOverlay(1400);
+        return;
+      }
+
+      workflowImportActive = true;
+      try {
+        for (let index = 0; index < workflowFiles.length; index += 1) {
+          const file = workflowFiles[index];
+          const detail = workflowFiles.length > 1
+            ? `${index + 1}/${workflowFiles.length} · ${file.name}`
+            : file.name;
+          showWorkflowDropOverlay('워크플로 가져오는 중', detail, true);
+          const data = await postWorkflowImportFile(file);
+          const jobs = extractJobsFromImportResponse(data);
+          if (jobs) {
+            replaceWorkflowJobs(jobs);
+          }
+        }
+        showWorkflowDropOverlay('가져오기 완료', `${workflowFiles.length}개 파일 처리됨`);
+        hideWorkflowDropOverlay(1200);
+      } catch (err) {
+        const message = err?.message || '워크플로 파일을 가져오지 못했습니다.';
+        console.error(err);
+        showWorkflowDropOverlay('가져오기 실패', message);
+        window.alert(message);
+        hideWorkflowDropOverlay(1800);
+      } finally {
+        workflowImportActive = false;
+        workflowDropZone.classList.remove('workflow-drop-busy');
+      }
+    }
+
+    async function postWorkflowImportFile(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('/api/workflows/import', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        let message = '워크플로 파일을 가져오지 못했습니다.';
+        try {
+          const data = await response.json();
+          message = data.detail || data.message || message;
+        } catch (err) {
+          // Keep the generic message.
+        }
+        throw new Error(message);
+      }
+      try {
+        return await response.json();
+      } catch (err) {
+        return {};
+      }
+    }
+
+    function extractJobsFromImportResponse(data) {
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.jobs)) return data.jobs;
+      return null;
+    }
+
+    function replaceWorkflowJobs(jobs) {
+      currentJobs.splice(0, currentJobs.length, ...jobs);
+      renderJobs(currentJobs);
+      if (activeLibraryPath !== null) {
+        renderLibrary();
+      }
+    }
+
+    function showWorkflowDropOverlay(message, detail, busy = false) {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      window.clearTimeout(workflowDropTimer);
+      workflowDropMessage.textContent = message;
+      workflowDropDetail.textContent = detail || '';
+      workflowDropOverlay.setAttribute('aria-hidden', 'false');
+      workflowDropZone.classList.add('workflow-drop-active');
+      workflowDropZone.classList.toggle('workflow-drop-busy', busy);
+    }
+
+    function hideWorkflowDropOverlay(delay = 0) {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      window.clearTimeout(workflowDropTimer);
+      workflowDropTimer = window.setTimeout(() => {
+        workflowDropZone.classList.remove('workflow-drop-active', 'workflow-drop-busy');
+        workflowDropOverlay.setAttribute('aria-hidden', 'true');
+      }, delay);
     }
 
     async function refreshJobs() {
@@ -794,11 +1018,13 @@
           ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
           : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
         const targetPath = normalizePath(job.target_path || job.target_dir || '');
-        return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}">
+        const workflow = isWorkflowJob(job) && Boolean(targetPath);
+        return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-workflow="${workflow ? 'true' : 'false'}">
           ${image}
           <div class="asset-topline">
             <span>${escapeHtml(shortSource(job.source))}</span>
             <div class="asset-actions">
+              ${workflow ? workflowActionButton() : ''}
               <button type="button" class="asset-action" data-card-action="open" data-url="${escapeHtml(sourceUrl)}" title="URL 바로가기" aria-label="URL 바로가기" ${sourceUrl ? '' : 'disabled'}>
                 <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
                   <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm2 3V18.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-10H6Zm.5-3.5a.5.5 0 0 0-.5.5V7h12V5.5a.5.5 0 0 0-.5-.5h-11Z"/>
@@ -819,6 +1045,14 @@
           </div>
         </article>`;
       }).join('');
+    }
+
+    function workflowActionButton() {
+      return `<button type="button" class="asset-action workflow" data-card-action="workflow" title="워크플로 보기" aria-label="워크플로 보기">
+        <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+          <path d="M7 4a3 3 0 0 1 2.8 2h4.4A3 3 0 1 1 17 10a3 3 0 0 1-2.8-2H9.8A3 3 0 0 1 8 9.8v4.4a3 3 0 1 1-2 0V9.8A3 3 0 0 1 7 4Zm0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2ZM7 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/>
+        </svg>
+      </button>`;
     }
 
     function sortLibraryJobs(jobs) {
@@ -903,6 +1137,11 @@
       contextMenu.querySelectorAll('button[data-action]').forEach(button => {
         button.disabled = disabled;
       });
+      contextMenu.querySelectorAll('[data-workflow-only]').forEach(button => {
+        const visible = Boolean(target.isWorkflow);
+        button.hidden = !visible;
+        button.disabled = disabled || !visible;
+      });
       const rect = contextMenu.getBoundingClientRect();
       const left = Math.min(x, window.innerWidth - rect.width - 8);
       const top = Math.min(y, window.innerHeight - rect.height - 8);
@@ -922,6 +1161,11 @@
 
       if (action === 'properties') {
         await showProperties(target);
+        return;
+      }
+
+      if (action === 'workflow') {
+        await openWorkflowViewer(target);
         return;
       }
 
@@ -984,6 +1228,324 @@
       if (propertiesModal.hidden) return;
       propertiesModal.hidden = true;
       document.body.classList.remove('modal-open');
+    }
+
+    async function openWorkflowViewer(target) {
+      if (!target || !target.path) return;
+      const requestId = workflowRequestId + 1;
+      workflowRequestId = requestId;
+      workflowTitle.textContent = target.name || '워크플로';
+      workflowPath.textContent = target.path ? `/data/${target.path}` : '/data';
+      setWorkflowLoading('워크플로를 불러오는 중');
+      workflowModal.hidden = false;
+      document.body.classList.add('modal-open');
+      workflowClose.focus();
+
+      try {
+        const response = await fetch(`/api/workflows/view?path=${encodeURIComponent(target.path)}`);
+        if (requestId !== workflowRequestId) return;
+        if (!response.ok) {
+          let message = '워크플로를 불러오지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          setWorkflowError(message);
+          return;
+        }
+        const data = await response.json();
+        if (requestId !== workflowRequestId) return;
+        renderWorkflowViewer(data, target);
+      } catch (err) {
+        if (requestId === workflowRequestId) {
+          setWorkflowError('네트워크 요청을 완료하지 못했습니다.');
+        }
+      }
+    }
+
+    function closeWorkflowViewer() {
+      if (workflowModal.hidden) return;
+      workflowModal.hidden = true;
+      workflowRequestId += 1;
+      document.body.classList.remove('modal-open');
+    }
+
+    function setWorkflowLoading(message) {
+      workflowStats.innerHTML = renderWorkflowStats([
+        ['노드', '-'],
+        ['링크', '-'],
+        ['모델', '-'],
+        ['포맷', '-'],
+      ]);
+      workflowModels.innerHTML = `<div class="workflow-empty">${escapeHtml(message)}</div>`;
+      workflowSummary.textContent = message;
+      workflowGraph.innerHTML = `<div class="workflow-loading">${escapeHtml(message)}</div>`;
+      workflowJson.textContent = '';
+    }
+
+    function setWorkflowError(message) {
+      workflowStats.innerHTML = renderWorkflowStats([
+        ['노드', '-'],
+        ['링크', '-'],
+        ['모델', '-'],
+        ['상태', '오류'],
+      ]);
+      workflowModels.innerHTML = `<div class="workflow-empty">${escapeHtml(message)}</div>`;
+      workflowSummary.textContent = message;
+      workflowGraph.innerHTML = `<div class="workflow-loading error">${escapeHtml(message)}</div>`;
+      workflowJson.textContent = '';
+    }
+
+    function renderWorkflowViewer(data, target) {
+      const nodes = normalizeWorkflowNodes(data);
+      const links = normalizeWorkflowLinks(data, nodes);
+      const models = normalizeWorkflowModels(data);
+      const workflow = data && typeof data === 'object' && data.workflow ? data.workflow : data;
+      const format = Array.isArray(workflow?.nodes) ? 'UI JSON' : 'Prompt JSON';
+      workflowTitle.textContent = data?.name || data?.title || target.name || '워크플로';
+      workflowPath.textContent = data?.path ? `/data/${normalizePath(data.path)}` : (target.path ? `/data/${target.path}` : '/data');
+      workflowStats.innerHTML = renderWorkflowStats([
+        ['노드', nodes.length],
+        ['링크', links.length],
+        ['모델', models.length],
+        ['포맷', format],
+      ]);
+      workflowModels.innerHTML = renderWorkflowModels(models);
+      workflowSummary.textContent = `${nodes.length}개 노드 · ${links.length}개 링크`;
+      workflowGraph.innerHTML = renderWorkflowGraph(nodes, links);
+      workflowJson.textContent = JSON.stringify(workflow || {}, null, 2);
+    }
+
+    function renderWorkflowStats(rows) {
+      return rows.map(([label, value]) => `
+        <div class="workflow-stat">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join('');
+    }
+
+    function renderWorkflowModels(models) {
+      if (!models.length) {
+        return '<div class="workflow-empty">감지된 모델이 없습니다.</div>';
+      }
+      return models.map(model => `
+        <div class="workflow-model-item">
+          <strong>${escapeHtml(model.name || '-')}</strong>
+          <span>${escapeHtml([model.type, model.path].filter(Boolean).join(' · ') || '-')}</span>
+        </div>
+      `).join('');
+    }
+
+    function renderWorkflowGraph(nodes, links) {
+      if (!nodes.length) {
+        return '<div class="workflow-loading">표시할 노드가 없습니다.</div>';
+      }
+
+      const positioned = layoutWorkflowNodes(nodes, links);
+      const nodeMap = new Map(positioned.map(node => [String(node.id), node]));
+      const nodeWidth = 178;
+      const nodeHeight = 64;
+      const width = Math.max(680, Math.ceil(Math.max(...positioned.map(node => node.x + nodeWidth + 28))));
+      const height = Math.max(420, Math.ceil(Math.max(...positioned.map(node => node.y + nodeHeight + 28))));
+      const paths = links.map(link => {
+        const source = nodeMap.get(String(link.source));
+        const target = nodeMap.get(String(link.target));
+        if (!source || !target) return '';
+        const startX = source.x + nodeWidth;
+        const startY = source.y + nodeHeight / 2;
+        const endX = target.x;
+        const endY = target.y + nodeHeight / 2;
+        const curve = Math.max(70, Math.abs(endX - startX) * 0.45);
+        return `<path class="workflow-link" d="M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}" marker-end="url(#workflow-arrow)"/>`;
+      }).join('');
+      const nodeMarkup = positioned.map(node => `
+        <g class="workflow-node" transform="translate(${node.x} ${node.y})">
+          <rect width="${nodeWidth}" height="${nodeHeight}" rx="7"></rect>
+          <text class="workflow-node-title" x="12" y="24">${escapeHtml(truncateText(node.title || node.type || node.id, 22))}</text>
+          <text class="workflow-node-type" x="12" y="45">${escapeHtml(truncateText(node.type || 'Node', 26))}</text>
+        </g>
+      `).join('');
+
+      return `<svg class="workflow-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="워크플로 노드 그래프">
+        <defs>
+          <marker id="workflow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z"></path>
+          </marker>
+        </defs>
+        <g class="workflow-links">${paths}</g>
+        <g class="workflow-nodes">${nodeMarkup}</g>
+      </svg>`;
+    }
+
+    function normalizeWorkflowNodes(data) {
+      const workflow = data && typeof data === 'object' && data.workflow ? data.workflow : data;
+      const sourceNodes = Array.isArray(data?.nodes)
+        ? data.nodes
+        : (Array.isArray(workflow?.nodes) ? workflow.nodes : []);
+      if (sourceNodes.length) {
+        return sourceNodes.map((node, index) => normalizeWorkflowNode(node, index));
+      }
+      if (!workflow || typeof workflow !== 'object') return [];
+      return Object.entries(workflow)
+        .filter(([, node]) => node && typeof node === 'object' && (node.class_type || node.inputs))
+        .map(([id, node], index) => normalizeWorkflowNode({...node, id}, index));
+    }
+
+    function normalizeWorkflowNode(node, index) {
+      const id = node.id ?? node.node_id ?? node.key ?? index + 1;
+      const type = node.type || node.class_type || node.name || 'Node';
+      const title = node.title || node._meta?.title || node.label || type;
+      const position = workflowNodePosition(node);
+      return {
+        id: String(id),
+        type: String(type),
+        title: String(title),
+        x: position.x,
+        y: position.y,
+        hasPosition: position.hasPosition,
+        inputs: node.inputs || {},
+      };
+    }
+
+    function workflowNodePosition(node) {
+      const pos = node.pos || node.position || node.location;
+      if (Array.isArray(pos) && pos.length >= 2) {
+        return {x: Number(pos[0]) || 0, y: Number(pos[1]) || 0, hasPosition: true};
+      }
+      if (pos && typeof pos === 'object') {
+        return {x: Number(pos.x) || 0, y: Number(pos.y) || 0, hasPosition: true};
+      }
+      if (node.x !== undefined || node.y !== undefined) {
+        return {x: Number(node.x) || 0, y: Number(node.y) || 0, hasPosition: true};
+      }
+      return {x: 0, y: 0, hasPosition: false};
+    }
+
+    function normalizeWorkflowLinks(data, nodes) {
+      const workflow = data && typeof data === 'object' && data.workflow ? data.workflow : data;
+      const sourceLinks = Array.isArray(data?.links)
+        ? data.links
+        : (Array.isArray(workflow?.links) ? workflow.links : []);
+      const normalized = sourceLinks.map(normalizeWorkflowLink).filter(link => link.source && link.target);
+      if (normalized.length) return normalized;
+      return deriveWorkflowLinks(nodes);
+    }
+
+    function normalizeWorkflowLink(link) {
+      if (Array.isArray(link)) {
+        return {
+          source: String(link[1] ?? ''),
+          target: String(link[3] ?? ''),
+        };
+      }
+      if (!link || typeof link !== 'object') return {source: '', target: ''};
+      return {
+        source: String(link.source ?? link.source_id ?? link.origin_id ?? link.originId ?? link.from ?? ''),
+        target: String(link.target ?? link.target_id ?? link.destination_id ?? link.targetId ?? link.to ?? ''),
+      };
+    }
+
+    function deriveWorkflowLinks(nodes) {
+      const links = [];
+      nodes.forEach(node => {
+        Object.values(node.inputs || {}).forEach(value => {
+          if (Array.isArray(value) && value.length && (typeof value[0] === 'string' || typeof value[0] === 'number')) {
+            links.push({source: String(value[0]), target: String(node.id)});
+          }
+        });
+      });
+      return links;
+    }
+
+    function layoutWorkflowNodes(nodes, links) {
+      const positionedCount = nodes.filter(node => node.hasPosition).length;
+      if (positionedCount >= Math.max(1, Math.ceil(nodes.length * 0.5))) {
+        const minX = Math.min(...nodes.map(node => node.x));
+        const minY = Math.min(...nodes.map(node => node.y));
+        return nodes.map(node => ({
+          ...node,
+          x: Math.round(node.x - minX + 24),
+          y: Math.round(node.y - minY + 24),
+        }));
+      }
+
+      const depths = new Map(nodes.map(node => [String(node.id), 0]));
+      for (let pass = 0; pass < nodes.length; pass += 1) {
+        links.forEach(link => {
+          if (!depths.has(String(link.source)) || !depths.has(String(link.target))) return;
+          const nextDepth = (depths.get(String(link.source)) || 0) + 1;
+          if (nextDepth > (depths.get(String(link.target)) || 0)) {
+            depths.set(String(link.target), nextDepth);
+          }
+        });
+      }
+      const groups = new Map();
+      nodes.forEach(node => {
+        const depth = depths.get(String(node.id)) || 0;
+        if (!groups.has(depth)) groups.set(depth, []);
+        groups.get(depth).push(node);
+      });
+      return nodes.map(node => {
+        const depth = depths.get(String(node.id)) || 0;
+        const group = groups.get(depth) || [];
+        const index = group.findIndex(item => String(item.id) === String(node.id));
+        return {
+          ...node,
+          x: 24 + depth * 230,
+          y: 24 + Math.max(0, index) * 96,
+        };
+      });
+    }
+
+    function normalizeWorkflowModels(data) {
+      const models = data?.models;
+      const values = [];
+      if (Array.isArray(models)) {
+        values.push(...models);
+      } else if (models && typeof models === 'object') {
+        Object.entries(models).forEach(([type, value]) => {
+          if (Array.isArray(value)) {
+            value.forEach(item => {
+              values.push(item && typeof item === 'object' ? {...item, type: item.type || type} : {type, value: item});
+            });
+          } else {
+            values.push({type, value});
+          }
+        });
+      }
+      return values.map(model => {
+        if (typeof model === 'string') {
+          return {name: model, type: '', path: ''};
+        }
+        const value = model.value;
+        if (typeof value === 'string') {
+          return {name: value, type: model.type || '', path: ''};
+        }
+        return {
+          name: model.name || model.model || model.filename || model.path || value?.name || value?.model || value?.filename || '-',
+          type: model.type || model.category || model.kind || value?.type || '',
+          path: model.path || value?.path || '',
+        };
+      }).filter(model => model.name && model.name !== '-');
+    }
+
+    function isWorkflowJob(job) {
+      const values = [
+        job.data_type,
+        job.dataType,
+        job.type,
+        job.kind,
+        job.category,
+        job.asset_type,
+        job.assetType,
+        job.model_category,
+        job.model_type,
+        job.file_format,
+      ].filter(Boolean).map(value => String(value).toLowerCase());
+      return values.some(value => value.includes('workflow') || value.includes('comfyui'));
     }
 
     function renderProperties(data) {
@@ -1147,7 +1709,13 @@
     function shortSource(source) {
       if (source === 'huggingface') return 'HF';
       if (source === 'civitai') return 'NAI';
+      if (source === 'comfyui') return 'WF';
       return 'URL';
+    }
+
+    function truncateText(value, maxLength) {
+      const text = String(value || '');
+      return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1))}…` : text;
     }
 
     function escapeHtml(value) {

@@ -175,7 +175,7 @@
         </button>
       </div>
 
-      <section class="hero mobile-panel is-mobile-panel-active" data-mobile-panel="download" aria-label="다운로드 입력">
+      <section class="hero mobile-panel is-mobile-panel-active workflow-drop-zone" data-mobile-panel="download" data-workflow-drop-zone aria-label="다운로드 입력">
         <h1>civitai - Hugging Face</h1>
         <form class="download-form" id="command-form" onsubmit="event.preventDefault()">
           <input id="target_subdir" name="target_subdir" type="hidden">
@@ -190,6 +190,12 @@
             <span id="selected-folder">자동 분류</span>
           </div>
         </form>
+        <div class="workflow-drop-overlay" id="workflow-drop-overlay" role="status" aria-live="polite" aria-hidden="true">
+          <div class="workflow-drop-card">
+            <strong id="workflow-drop-message">워크플로 파일을 놓으세요</strong>
+            <span id="workflow-drop-detail">ComfyUI PNG 또는 JSON</span>
+          </div>
+        </div>
       </section>
 
       <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
@@ -510,6 +516,10 @@
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
     const commandInput = document.getElementById('input_text');
+    const workflowDropZone = document.querySelector('[data-workflow-drop-zone]');
+    const workflowDropOverlay = document.getElementById('workflow-drop-overlay');
+    const workflowDropMessage = document.getElementById('workflow-drop-message');
+    const workflowDropDetail = document.getElementById('workflow-drop-detail');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
     const downloadQueuePanel = document.getElementById('download-queue');
@@ -527,8 +537,12 @@
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
+    let workflowDropDepth = 0;
+    let workflowDropTimer = null;
+    let workflowImportActive = false;
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
+    setupWorkflowDropImport();
 
     document.getElementById('home-button').addEventListener('click', switchToHome);
 
@@ -746,6 +760,155 @@
 
     function isMobileLayout() {
       return window.matchMedia('(max-width: 700px)').matches;
+    }
+
+    function setupWorkflowDropImport() {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      workflowDropZone.addEventListener('dragenter', handleWorkflowDragEnter);
+      workflowDropZone.addEventListener('dragover', handleWorkflowDragOver);
+      workflowDropZone.addEventListener('dragleave', handleWorkflowDragLeave);
+      workflowDropZone.addEventListener('drop', handleWorkflowDrop);
+    }
+
+    function handleWorkflowDragEnter(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (workflowImportActive) {
+        showWorkflowDropOverlay('워크플로 가져오는 중', '현재 업로드가 끝난 뒤 다시 놓아주세요.', true);
+        return;
+      }
+      workflowDropDepth += 1;
+      showWorkflowDropOverlay('워크플로 파일을 놓으세요', 'ComfyUI PNG 또는 JSON');
+    }
+
+    function handleWorkflowDragOver(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = workflowImportActive ? 'none' : 'copy';
+      }
+    }
+
+    function handleWorkflowDragLeave(event) {
+      if (!hasWorkflowDragFiles(event) || workflowImportActive) return;
+      event.preventDefault();
+      event.stopPropagation();
+      workflowDropDepth = Math.max(0, workflowDropDepth - 1);
+      if (workflowDropDepth === 0) {
+        hideWorkflowDropOverlay();
+      }
+    }
+
+    function handleWorkflowDrop(event) {
+      if (!hasWorkflowDragFiles(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      workflowDropDepth = 0;
+      if (workflowImportActive) return;
+      importWorkflowFiles(Array.from(event.dataTransfer?.files || []));
+    }
+
+    function hasWorkflowDragFiles(event) {
+      return Array.from(event.dataTransfer?.types || []).includes('Files');
+    }
+
+    function isWorkflowImportFile(file) {
+      return Boolean(file?.name && /\.(png|json)$/i.test(file.name));
+    }
+
+    async function importWorkflowFiles(files) {
+      const workflowFiles = files.filter(isWorkflowImportFile);
+      if (!workflowFiles.length) {
+        showWorkflowDropOverlay('지원하지 않는 파일입니다', 'PNG 또는 JSON 워크플로 파일만 가져올 수 있습니다.');
+        hideWorkflowDropOverlay(1400);
+        return;
+      }
+
+      workflowImportActive = true;
+      try {
+        for (let index = 0; index < workflowFiles.length; index += 1) {
+          const file = workflowFiles[index];
+          const detail = workflowFiles.length > 1
+            ? `${index + 1}/${workflowFiles.length} · ${file.name}`
+            : file.name;
+          showWorkflowDropOverlay('워크플로 가져오는 중', detail, true);
+          const data = await postWorkflowImportFile(file);
+          const jobs = extractJobsFromImportResponse(data);
+          if (jobs) {
+            replaceWorkflowJobs(jobs);
+          }
+        }
+        showWorkflowDropOverlay('가져오기 완료', `${workflowFiles.length}개 파일 처리됨`);
+        hideWorkflowDropOverlay(1200);
+      } catch (err) {
+        const message = err?.message || '워크플로 파일을 가져오지 못했습니다.';
+        console.error(err);
+        showWorkflowDropOverlay('가져오기 실패', message);
+        window.alert(message);
+        hideWorkflowDropOverlay(1800);
+      } finally {
+        workflowImportActive = false;
+        workflowDropZone.classList.remove('workflow-drop-busy');
+      }
+    }
+
+    async function postWorkflowImportFile(file) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('/api/workflows/import', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        let message = '워크플로 파일을 가져오지 못했습니다.';
+        try {
+          const data = await response.json();
+          message = data.detail || data.message || message;
+        } catch (err) {
+          // Keep the generic message.
+        }
+        throw new Error(message);
+      }
+      try {
+        return await response.json();
+      } catch (err) {
+        return {};
+      }
+    }
+
+    function extractJobsFromImportResponse(data) {
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.jobs)) return data.jobs;
+      return null;
+    }
+
+    function replaceWorkflowJobs(jobs) {
+      currentJobs.splice(0, currentJobs.length, ...jobs);
+      renderJobs(currentJobs);
+      if (activeLibraryPath !== null) {
+        renderLibrary();
+      }
+    }
+
+    function showWorkflowDropOverlay(message, detail, busy = false) {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      window.clearTimeout(workflowDropTimer);
+      workflowDropMessage.textContent = message;
+      workflowDropDetail.textContent = detail || '';
+      workflowDropOverlay.setAttribute('aria-hidden', 'false');
+      workflowDropZone.classList.add('workflow-drop-active');
+      workflowDropZone.classList.toggle('workflow-drop-busy', busy);
+    }
+
+    function hideWorkflowDropOverlay(delay = 0) {
+      if (!workflowDropZone || !workflowDropOverlay) return;
+      window.clearTimeout(workflowDropTimer);
+      workflowDropTimer = window.setTimeout(() => {
+        workflowDropZone.classList.remove('workflow-drop-active', 'workflow-drop-busy');
+        workflowDropOverlay.setAttribute('aria-hidden', 'true');
+      }, delay);
     }
 
     function renderJobs(jobs) {
@@ -1026,6 +1189,7 @@
     function shortSource(source) {
       if (source === 'huggingface') return 'HF';
       if (source === 'civitai') return 'NAI';
+      if (source === 'comfyui') return 'WF';
       return 'URL';
     }
 

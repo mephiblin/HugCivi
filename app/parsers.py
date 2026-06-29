@@ -5,6 +5,7 @@ import shlex
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .models import ParsedDownload
+from .workflows import COMFYUI_WORKFLOW_EXTENSIONS
 
 CIVITAI_VERSION_ID_RE = re.compile(r"^\d{3,}$")
 CIVITAI_HOSTS = {
@@ -15,6 +16,10 @@ CIVITAI_HOSTS = {
     "civitai.green",
     "www.civitai.green",
 }
+COMFYUI_EXPLICIT_COMMANDS = {"workflow", "workflows", "comfyui", "comfyui-workflow", "comfyui-workflows"}
+COMFYUI_DOWNLOAD_COMMANDS = {"curl", "wget", "aria2c"}
+COMFYUI_SUBCOMMANDS = {"workflow", "workflows", "download"}
+COMFYUI_URL_HINTS = ("comfyui", "comfy-ui", "workflow", "workflows")
 
 
 class InputParseError(ValueError):
@@ -32,6 +37,10 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
     if text.startswith("hf ") or text.startswith("huggingface-cli "):
         return parse_hf_cli(text, target_subdir=target_subdir)
 
+    comfyui_cli = maybe_parse_comfyui_cli(text, target_subdir=target_subdir)
+    if comfyui_cli is not None:
+        return comfyui_cli
+
     if CIVITAI_VERSION_ID_RE.match(text):
         return ParsedDownload(
             source="civitai",
@@ -47,6 +56,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_huggingface_url(text, target_subdir=target_subdir)
         if is_civitai_host(host):
             return parse_civitai_url(text, target_subdir=target_subdir)
+        if is_comfyui_workflow_url(text, require_hint=True):
+            return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
         return ParsedDownload(source="generic", raw_input=text, target_subdir=target_subdir, url=text)
 
     # Convenient shorthand for HF repo IDs: owner/repo
@@ -63,6 +74,108 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
         "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, 일반 다운로드 URL, "
         "또는 안전한 `hf download ...` 형태를 입력하세요."
     )
+
+
+def maybe_parse_comfyui_cli(text: str, target_subdir: str | None = None) -> ParsedDownload | None:
+    match = re.match(r"^\s*([A-Za-z0-9_.-]+)", text)
+    if not match:
+        return None
+
+    command = match.group(1).lower()
+    if command not in COMFYUI_EXPLICIT_COMMANDS and command not in COMFYUI_DOWNLOAD_COMMANDS and command != "comfy":
+        return None
+
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        raise InputParseError(f"CLI 파싱 실패: {exc}") from exc
+    if not tokens:
+        return None
+
+    command = tokens[0].lower()
+    start = 1
+    explicit = command in COMFYUI_EXPLICIT_COMMANDS
+    if command == "comfy":
+        if len(tokens) < 2 or tokens[1].lower() not in COMFYUI_SUBCOMMANDS:
+            return None
+        explicit = True
+        start = 2
+    elif command in COMFYUI_DOWNLOAD_COMMANDS:
+        explicit = False
+
+    for token in tokens[start:]:
+        if token.startswith("-") or token.startswith("@"):
+            continue
+        if is_comfyui_workflow_url(token, require_hint=not explicit):
+            return parse_comfyui_workflow_url(token, raw_input=text, target_subdir=target_subdir)
+
+    if explicit:
+        raise InputParseError("ComfyUI workflow 입력에서 .json 또는 .png URL을 찾지 못했습니다.")
+    return None
+
+
+def parse_comfyui_workflow_url(
+    url: str,
+    raw_input: str | None = None,
+    target_subdir: str | None = None,
+) -> ParsedDownload:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise InputParseError("ComfyUI workflow URL은 HTTP 또는 HTTPS URL이어야 합니다.")
+
+    filename = comfyui_workflow_filename(url)
+    workflow_format = comfyui_workflow_format(filename or "")
+    if workflow_format is None:
+        raise InputParseError("ComfyUI workflow URL은 .json 또는 .png 파일이어야 합니다.")
+
+    return ParsedDownload(
+        source="comfyui",
+        raw_input=raw_input or url,
+        target_subdir=target_subdir,
+        comfyui_workflow_url=url,
+        comfyui_workflow_filename=filename,
+        comfyui_workflow_format=workflow_format,
+    )
+
+
+def is_comfyui_workflow_url(url: str, *, require_hint: bool = True) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    if comfyui_workflow_format(comfyui_workflow_filename(url) or "") is None:
+        return False
+    return not require_hint or has_comfyui_workflow_hint(url)
+
+
+def has_comfyui_workflow_hint(url: str) -> bool:
+    parsed = urlparse(url)
+    haystack = unquote(f"{parsed.netloc} {parsed.path} {parsed.query}").lower()
+    return any(hint in haystack for hint in COMFYUI_URL_HINTS)
+
+
+def comfyui_workflow_filename(url: str) -> str | None:
+    parsed = urlparse(url)
+    path_name = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1])
+    candidates = [path_name] if path_name else []
+
+    query = parse_qs(parsed.query)
+    for key in ("filename", "file", "name", "download"):
+        values = query.get(key)
+        if values:
+            candidates.extend(unquote(value) for value in values if value)
+
+    for candidate in candidates:
+        if comfyui_workflow_format(candidate) is not None:
+            return candidate.rsplit("/", 1)[-1]
+    return path_name or None
+
+
+def comfyui_workflow_format(filename: str) -> str | None:
+    lower = filename.lower().split("?", 1)[0]
+    for extension in COMFYUI_WORKFLOW_EXTENSIONS:
+        if lower.endswith(extension):
+            return extension.removeprefix(".")
+    return None
 
 
 def parse_huggingface_url(url: str, target_subdir: str | None = None) -> ParsedDownload:

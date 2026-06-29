@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -19,10 +19,11 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
-from .downloader import enqueue_job, start_workers
+from .downloader import enqueue_job, start_workers, update_job_workflow_info
 from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
+from .workflows import WorkflowParseError, find_workflow_png, load_workflow_view, save_workflow_bundle, workflow_max_bytes
 
 app = FastAPI(title="NAS Model Archiver", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
@@ -296,6 +297,80 @@ async def api_set_favorite(request: Request, _: str = Depends(require_auth)) -> 
     return JSONResponse({"ok": True, "path": relative_path, "favorite": enabled})
 
 
+@app.post("/api/workflows/import")
+async def api_import_workflow(
+    file: UploadFile = File(...),
+    target_subdir: str = Form(""),
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    filename = sanitize_segment(file.filename or "workflow.json", "workflow.json")
+    data = await file.read(workflow_max_bytes() + 1)
+    if len(data) > workflow_max_bytes():
+        raise HTTPException(status_code=413, detail=f"워크플로우 파일은 최대 {human_bytes(workflow_max_bytes())}까지 지원합니다.")
+
+    parsed = ParsedDownload(
+        source="comfyui",
+        raw_input=f"upload:{filename}",
+        target_subdir=target_subdir.strip() or None,
+        comfyui_workflow_filename=filename,
+        comfyui_workflow_format=Path(filename).suffix.lower().removeprefix(".") or None,
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="running", filename=filename, progress_bytes=0, total_bytes=len(data), error=None)
+    db.append_log(job_id, f"started source=comfyui upload={filename}")
+    try:
+        result = save_workflow_bundle(
+            data,
+            filename,
+            parsed.raw_input,
+            DATA_ROOT,
+            target_subdir=parsed.target_subdir,
+        )
+        update_job_workflow_info(job_id, result, data_size=len(data))
+    except WorkflowParseError as exc:
+        db.append_log(job_id, f"FAILED: {exc}")
+        db.update_job(job_id, status="failed", error=str(exc), progress_bytes=len(data), total_bytes=len(data))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.update_job(job_id, status="done")
+    db.append_log(job_id, "done")
+    return JSONResponse(
+        {
+            "ok": True,
+            "job_id": job_id,
+            "path": display_target_path(db.get_job(job_id) or {}),
+            "jobs": decorate_jobs(db.list_jobs()),
+            "folders": build_folder_tree(DATA_ROOT),
+        }
+    )
+
+
+@app.get("/api/workflows/view")
+def api_workflow_view(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    source = existing_data_path(path)
+    try:
+        payload = load_workflow_view(source)
+    except WorkflowParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": relative_data_path(source),
+            "name": source.name,
+            **payload,
+        }
+    )
+
+
+@app.get("/api/workflows/preview")
+def api_workflow_preview(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    preview = find_workflow_png(source)
+    if not preview:
+        raise HTTPException(status_code=404, detail="워크플로우 PNG를 찾지 못했습니다.")
+    return FileResponse(preview, media_type="image/png", filename=preview.name)
+
+
 @app.get("/api/fs/download-info")
 def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
@@ -432,6 +507,8 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
             return parsed.civitai_download_url or ""
     if parsed.source == "generic" and is_http_url(parsed.url or ""):
         return parsed.url or ""
+    if parsed.source == "comfyui" and is_http_url(parsed.comfyui_workflow_url or ""):
+        return parsed.comfyui_workflow_url or ""
     return ""
 
 
