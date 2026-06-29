@@ -138,6 +138,17 @@ def write_metadata(target_dir: Path, name: str, payload: dict[str, Any]) -> None
     out.write_text(json.dumps(safe_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def directory_size(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def redact_metadata(value: Any) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
@@ -356,8 +367,9 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
             max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
             **common,
         )
-        db.append_log(job_id, f"saved snapshot: {local_path}")
-        db.update_job(job_id, filename="snapshot")
+        saved_size = directory_size(Path(local_path))
+        db.append_log(job_id, f"saved snapshot: {local_path} ({human_bytes(saved_size)})")
+        db.update_job(job_id, filename="snapshot", progress_bytes=saved_size, total_bytes=saved_size)
 
 
 def civitai_file_selector(parsed: ParsedDownload) -> dict[str, Any]:
