@@ -265,14 +265,22 @@ def library_route_settings() -> dict[str, str]:
 def settings_status() -> dict[str, Any]:
     status: dict[str, Any] = {}
     with _DB_LOCK, connect() as conn:
-        rows = conn.execute("SELECT key, updated_at FROM settings").fetchall()
-    db_settings = {str(row["key"]): str(row["updated_at"]) for row in rows}
+        rows = conn.execute("SELECT key, value, updated_at FROM settings").fetchall()
+    db_settings = {
+        str(row["key"]): {
+            "value": str(row["value"]),
+            "updated_at": str(row["updated_at"]),
+        }
+        for row in rows
+    }
     for key in ("HF_TOKEN", "CIVITAI_TOKEN"):
         env_value = os.getenv(key)
+        db_value = db_settings.get(key)
         status[key] = {
-            "configured": bool(env_value or db_settings.get(key)),
-            "source": "ui" if key in db_settings else ("environment" if env_value else None),
-            "updated_at": db_settings.get(key),
+            "configured": bool(env_value or db_value),
+            "source": "ui" if db_value else ("environment" if env_value else None),
+            "updated_at": db_value["updated_at"] if db_value else None,
+            "value": db_value["value"] if db_value else (env_value or ""),
         }
     status["routes"] = library_route_settings()
     return status
