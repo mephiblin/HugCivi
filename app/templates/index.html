@@ -226,6 +226,13 @@
     </main>
   </div>
 
+  <div class="context-menu" id="context-menu" role="menu" hidden>
+    <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="rename" role="menuitem">이름 변경</button>
+    <button type="button" data-action="move" role="menuitem">이동</button>
+    <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
+  </div>
+
   <script>
     const initialJobs = {{ jobs|tojson }};
     const targetInput = document.getElementById('target_subdir');
@@ -239,6 +246,9 @@
     const tokenModal = document.getElementById('token-modal');
     const refreshButton = document.getElementById('refresh-button');
     const commandInput = document.getElementById('input_text');
+    const contextMenu = document.getElementById('context-menu');
+    const contextMenuTitle = document.getElementById('context-menu-title');
+    let contextTarget = null;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeLibraryPath = null;
 
@@ -254,6 +264,14 @@
         document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
         button.classList.add('selected');
         switchToLibrary(path);
+      });
+      button.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        showContextMenu(event.clientX, event.clientY, {
+          path: button.dataset.path || '',
+          name: button.dataset.name || 'data',
+        });
       });
     });
 
@@ -275,13 +293,33 @@
 
     document.addEventListener('click', () => {
       tokenModal.hidden = true;
+      hideContextMenu();
     });
 
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape') tokenModal.hidden = true;
+      if (event.key === 'Escape') {
+        tokenModal.hidden = true;
+        hideContextMenu();
+      }
     });
 
     refreshButton.addEventListener('click', refreshJobs);
+    libraryGrid.addEventListener('contextmenu', event => {
+      const card = event.target.closest('.asset-card');
+      if (!card) return;
+      event.preventDefault();
+      event.stopPropagation();
+      showContextMenu(event.clientX, event.clientY, {
+        path: card.dataset.path || '',
+        name: card.dataset.name || card.dataset.path || 'model',
+      });
+    });
+
+    contextMenu.addEventListener('click', event => {
+      const button = event.target.closest('button[data-action]');
+      if (!button || button.disabled) return;
+      handleContextAction(button.dataset.action);
+    });
 
     function switchToHome() {
       activeLibraryPath = null;
@@ -372,7 +410,8 @@
         const image = job.thumbnail_url
           ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
           : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
-        return `<article class="asset-card">
+        const targetPath = normalizePath(job.target_dir || '');
+        return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}">
           ${image}
           <div class="asset-topline">
             <span>${escapeHtml(shortSource(job.source))}</span>
@@ -399,6 +438,78 @@
         .replace(/^\/data\/?/, '')
         .replace(/^data\/?/, '')
         .replace(/^\/+|\/+$/g, '');
+    }
+
+    function showContextMenu(x, y, target) {
+      contextTarget = target;
+      const label = target.path ? `/data/${target.path}` : '/data';
+      contextMenuTitle.textContent = label;
+      contextMenu.hidden = false;
+      const disabled = !target.path;
+      contextMenu.querySelectorAll('button[data-action]').forEach(button => {
+        button.disabled = disabled;
+      });
+      const rect = contextMenu.getBoundingClientRect();
+      const left = Math.min(x, window.innerWidth - rect.width - 8);
+      const top = Math.min(y, window.innerHeight - rect.height - 8);
+      contextMenu.style.left = `${Math.max(8, left)}px`;
+      contextMenu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function hideContextMenu() {
+      contextMenu.hidden = true;
+      contextTarget = null;
+    }
+
+    async function handleContextAction(action) {
+      if (!contextTarget || !contextTarget.path) return;
+      const target = contextTarget;
+      hideContextMenu();
+
+      if (action === 'rename') {
+        const currentName = target.path.split('/').filter(Boolean).pop() || target.name;
+        const newName = window.prompt('새 이름을 입력하세요.', currentName);
+        if (!newName) return;
+        await postFileAction('/api/fs/rename', {path: target.path, new_name: newName});
+        return;
+      }
+
+      if (action === 'move') {
+        const destination = window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요.', '');
+        if (destination === null) return;
+        await postFileAction('/api/fs/move', {path: target.path, destination});
+        return;
+      }
+
+      if (action === 'delete') {
+        const label = target.path ? `/data/${target.path}` : '/data';
+        if (!window.confirm(`${label}\n\n이 폴더와 내부 파일을 삭제할까요?`)) return;
+        await postFileAction('/api/fs/delete', {path: target.path});
+      }
+    }
+
+    async function postFileAction(url, payload) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          let message = '작업을 완료하지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          window.alert(message);
+          return;
+        }
+        window.location.reload();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+      }
     }
 
     function shortSource(source) {

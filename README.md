@@ -9,6 +9,7 @@ Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 처리
 - 일반 HTTP/HTTPS 파일 URL 다운로드
 - `/data` 폴더 트리 조회와 하위 폴더 생성
+- 폴더/라이브러리 카드 우클릭으로 이름 변경, 이동, 삭제
 - Hugging Face / Civitai 메타데이터 기반 자동 분류
 - LLM / LoRA / Checkpoint / Diffusion Model / Embedding / VAE / ControlNet / Upscaler 기본 저장 루트 지정
 - Civitai 이미지 썸네일, 모델 타입, 베이스 모델, 파일 포맷, 정밀도 정보 표시
@@ -124,6 +125,7 @@ https://civitai.com/api/download/models/456789
 - 웹 UI로 토큰을 저장하면 환경변수보다 UI 저장값을 우선 사용합니다. 입력칸을 비워 저장하면 기존 값은 유지됩니다.
 - 작업 목록, 로그, 메타데이터에는 토큰성 쿼리값을 마스킹해서 저장합니다. 단, 재시작 후 다운로드 재개를 위해 내부 작업 payload에는 실제 다운로드 URL이 남을 수 있으므로 `/config` 폴더 접근 권한도 제한하세요.
 - 모델 라이선스와 각 사이트의 이용약관을 확인하고 보관하세요.
+- 실행 중이거나 대기 중인 다운로드가 들어있는 폴더는 우클릭 이동/이름 변경/삭제를 차단합니다.
 
 ## 진행률 참고
 

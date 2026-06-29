@@ -153,6 +153,52 @@ def update_job(job_id: int, **fields: Any) -> None:
         conn.commit()
 
 
+def update_target_dir_prefix(old_dir: str | Path, new_dir: str | Path) -> None:
+    old_text = str(old_dir)
+    new_text = str(new_dir)
+    old_prefix = old_text.rstrip("\\/") + os.sep
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT id, target_dir FROM jobs WHERE target_dir IS NOT NULL").fetchall()
+        for row in rows:
+            target_dir = str(row["target_dir"])
+            if target_dir == old_text:
+                updated = new_text
+            elif target_dir.startswith(old_prefix):
+                updated = new_text.rstrip("\\/") + os.sep + target_dir[len(old_prefix) :]
+            else:
+                continue
+            conn.execute("UPDATE jobs SET target_dir = ?, updated_at = ? WHERE id = ?", (updated, now, row["id"]))
+        conn.commit()
+
+
+def clear_target_dir_prefix(target_root: str | Path) -> None:
+    root_text = str(target_root)
+    root_prefix = root_text.rstrip("\\/") + os.sep
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT id, target_dir FROM jobs WHERE target_dir IS NOT NULL").fetchall()
+        for row in rows:
+            target_dir = str(row["target_dir"])
+            if target_dir == root_text or target_dir.startswith(root_prefix):
+                conn.execute("UPDATE jobs SET target_dir = NULL, updated_at = ? WHERE id = ?", (now, row["id"]))
+        conn.commit()
+
+
+def has_active_jobs_under(target_root: str | Path) -> bool:
+    root_text = str(target_root)
+    root_prefix = root_text.rstrip("\\/") + os.sep
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            "SELECT target_dir FROM jobs WHERE status IN ('queued', 'running') AND target_dir IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        target_dir = str(row["target_dir"])
+        if target_dir == root_text or target_dir.startswith(root_prefix):
+            return True
+    return False
+
+
 def append_log(job_id: int, message: str) -> None:
     stamp = utc_now()
     line = f"[{stamp}] {redact_sensitive_text(message)}\n"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from . import db
 from .downloader import enqueue_job, start_workers
 from .parsers import InputParseError, parse_input
-from .utils import human_bytes, safe_join
+from .utils import human_bytes, safe_join, sanitize_segment
 
 app = FastAPI(title="NAS Model Archiver", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
@@ -138,6 +139,60 @@ def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(build_folder_tree(DATA_ROOT))
 
 
+@app.post("/api/fs/rename")
+async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_mutable_path(source)
+    ensure_no_active_jobs(source)
+
+    new_name = clean_item_name(str(payload.get("new_name") or ""))
+    target = safe_join(DATA_ROOT, source.parent.relative_to(DATA_ROOT.resolve()).as_posix(), new_name)
+    if target.exists():
+        raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
+    source.rename(target)
+    db.update_target_dir_prefix(source, target)
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+
+
+@app.post("/api/fs/move")
+async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_mutable_path(source)
+    ensure_no_active_jobs(source)
+
+    destination = existing_data_path(str(payload.get("destination") or ""))
+    if not destination.is_dir():
+        raise HTTPException(status_code=400, detail="이동 대상은 폴더여야 합니다.")
+    target = safe_join(DATA_ROOT, destination.relative_to(DATA_ROOT.resolve()).as_posix(), source.name)
+    if target == source:
+        return JSONResponse({"ok": True, "path": relative_data_path(source), "folders": build_folder_tree(DATA_ROOT)})
+    if source in target.parents:
+        raise HTTPException(status_code=400, detail="자기 자신의 하위 폴더로 이동할 수 없습니다.")
+    if target.exists():
+        raise HTTPException(status_code=409, detail="이동 대상에 같은 이름의 폴더가 이미 있습니다.")
+
+    shutil.move(str(source), str(target))
+    db.update_target_dir_prefix(source, target)
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+
+
+@app.post("/api/fs/delete")
+async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_mutable_path(source)
+    ensure_no_active_jobs(source)
+
+    if source.is_dir():
+        shutil.rmtree(source)
+    else:
+        source.unlink()
+    db.clear_target_dir_prefix(source)
+    return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
+
+
 @app.get("/api/jobs/{job_id}")
 def api_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = db.get_job(job_id)
@@ -207,3 +262,38 @@ def ensure_route_folders() -> None:
         if key == "LIBRARY_ACTIVE":
             continue
         safe_join(DATA_ROOT, route_path).mkdir(parents=True, exist_ok=True)
+
+
+def existing_data_path(path: str) -> Path:
+    target = safe_join(DATA_ROOT, path.strip())
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="대상 경로를 찾을 수 없습니다.")
+    return target
+
+
+def ensure_mutable_path(path: Path) -> None:
+    if path.resolve() == DATA_ROOT.resolve():
+        raise HTTPException(status_code=400, detail="/data 루트는 이름변경, 이동, 삭제할 수 없습니다.")
+
+
+def ensure_no_active_jobs(path: Path) -> None:
+    if db.has_active_jobs_under(path):
+        raise HTTPException(status_code=409, detail="실행 중이거나 대기 중인 다운로드가 있는 폴더입니다.")
+
+
+def clean_item_name(name: str) -> str:
+    raw_name = name.strip()
+    if not raw_name or raw_name in {".", ".."} or "/" in raw_name or "\\" in raw_name:
+        raise HTTPException(status_code=400, detail="올바른 이름을 입력하세요.")
+    cleaned = sanitize_segment(raw_name, "item")
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="올바른 이름을 입력하세요.")
+    return cleaned
+
+
+def relative_data_path(path: Path) -> str:
+    root = DATA_ROOT.resolve()
+    resolved = path.resolve()
+    if resolved == root:
+        return ""
+    return resolved.relative_to(root).as_posix()

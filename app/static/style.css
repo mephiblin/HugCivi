@@ -894,6 +894,62 @@ a:hover {
   font-size: 14px;
 }
 
+.context-menu {
+  position: fixed;
+  z-index: 80;
+  width: 178px;
+  overflow: hidden;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 5px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+}
+
+.context-menu[hidden] {
+  display: none;
+}
+
+.context-menu-title {
+  overflow: hidden;
+  border-bottom: 1px solid #eef2f7;
+  padding: 6px 8px 7px;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: #111827;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+
+.context-menu button:hover {
+  background: #eef6ff;
+}
+
+.context-menu button.danger {
+  color: #b42318;
+}
+
+.context-menu button:disabled {
+  color: #a3adba;
+  cursor: default;
+}
+
+.context-menu button:disabled:hover {
+  background: transparent;
+}
+
 @media (max-width: 1040px) {
   .app-frame {
     grid-template-columns: 1fr;
