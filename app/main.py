@@ -47,12 +47,14 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
+    ensure_route_folders()
     start_workers()
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
     jobs = decorate_jobs(db.list_jobs())
+    ensure_route_folders()
     return templates.TemplateResponse(
         "index.html",
         {
@@ -83,6 +85,15 @@ def add_job(
 def save_settings(
     hf_token: str = Form(""),
     civitai_token: str = Form(""),
+    library_active: str = Form("ComfyUI"),
+    route_llm_root: str = Form(""),
+    route_lora_root: str = Form(""),
+    route_checkpoint_root: str = Form(""),
+    route_diffusion_model_root: str = Form(""),
+    route_embedding_root: str = Form(""),
+    route_vae_root: str = Form(""),
+    route_controlnet_root: str = Form(""),
+    route_upscaler_root: str = Form(""),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
     if hf_token.strip():
@@ -90,6 +101,22 @@ def save_settings(
 
     if civitai_token.strip():
         db.set_setting("CIVITAI_TOKEN", civitai_token.strip())
+
+    db.set_setting("LIBRARY_ACTIVE", library_active.strip() or db.ROUTE_DEFAULTS["LIBRARY_ACTIVE"])
+    route_fields = {
+        "ROUTE_LLM_ROOT": route_llm_root,
+        "ROUTE_LORA_ROOT": route_lora_root,
+        "ROUTE_CHECKPOINT_ROOT": route_checkpoint_root,
+        "ROUTE_DIFFUSION_MODEL_ROOT": route_diffusion_model_root,
+        "ROUTE_EMBEDDING_ROOT": route_embedding_root,
+        "ROUTE_VAE_ROOT": route_vae_root,
+        "ROUTE_CONTROLNET_ROOT": route_controlnet_root,
+        "ROUTE_UPSCALER_ROOT": route_upscaler_root,
+    }
+    for key, value in route_fields.items():
+        route_path = db.normalize_route_path(value, db.ROUTE_DEFAULTS[key])
+        db.set_setting(key, route_path)
+        safe_join(DATA_ROOT, route_path).mkdir(parents=True, exist_ok=True)
 
     return RedirectResponse(url="/", status_code=303)
 
@@ -173,3 +200,10 @@ def build_folder_tree(root: Path, max_depth: int = 4, max_entries: int = 300) ->
         return node
 
     return walk(root, 0)
+
+
+def ensure_route_folders() -> None:
+    for key, route_path in db.library_route_settings().items():
+        if key == "LIBRARY_ACTIVE":
+            continue
+        safe_join(DATA_ROOT, route_path).mkdir(parents=True, exist_ok=True)

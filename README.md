@@ -10,6 +10,7 @@ Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용
 - 일반 HTTP/HTTPS 파일 URL 다운로드
 - `/data` 폴더 트리 조회와 하위 폴더 생성
 - Hugging Face / Civitai 메타데이터 기반 자동 분류
+- LLM / LoRA / Checkpoint / Diffusion Model / Embedding / VAE / ControlNet / Upscaler 기본 저장 루트 지정
 - Civitai 이미지 썸네일, 모델 타입, 베이스 모델, 파일 포맷, 정밀도 정보 표시
 - SQLite 기반 작업 기록
 - 다운로드 진행률 표시
@@ -39,6 +40,15 @@ services:
       APP_PASSWORD: "replace-with-a-strong-password"
       HF_TOKEN: ""
       CIVITAI_TOKEN: ""
+      LIBRARY_ACTIVE: "ComfyUI"
+      ROUTE_LLM_ROOT: "huggingface/llm"
+      ROUTE_LORA_ROOT: "stable-diffusion/loras"
+      ROUTE_CHECKPOINT_ROOT: "stable-diffusion/checkpoints"
+      ROUTE_DIFFUSION_MODEL_ROOT: "stable-diffusion/diffusion_models"
+      ROUTE_EMBEDDING_ROOT: "stable-diffusion/embeddings"
+      ROUTE_VAE_ROOT: "stable-diffusion/vae"
+      ROUTE_CONTROLNET_ROOT: "stable-diffusion/controlnet"
+      ROUTE_UPSCALER_ROOT: "stable-diffusion/upscalers"
       MAX_CONCURRENT_DOWNLOADS: "1"
       HF_HUB_DOWNLOAD_TIMEOUT: "120"
       HF_XET_HIGH_PERFORMANCE: "0"
@@ -79,15 +89,14 @@ https://civitai.com/api/download/models/456789
 
 ## 자동 분류
 
-저장 하위 폴더를 비워두면 API 메타데이터를 기준으로 자동 저장 경로를 나눕니다.
+저장 하위 폴더를 비워두면 API 메타데이터를 기준으로 자동 저장 경로를 나눕니다. 웹 UI 왼쪽 아래 설정에서 기본 루트를 바꾸면 다음 다운로드부터 해당 루트 아래에 모델명/버전 폴더를 자동 생성합니다.
 
 ```text
-/data/huggingface/llm/...
-/data/huggingface/embeddings/...
-/data/huggingface/image/checkpoints/...
-/data/civitai/checkpoints/sdxl-1.0/...
-/data/civitai/loras/sd-1.5/...
-/data/civitai/embeddings/...
+/data/stable-diffusion/checkpoints/sdxl-1.0/.../version_456789
+/data/stable-diffusion/loras/sd-1.5/.../version_456789
+/data/stable-diffusion/embeddings/...
+/data/stable-diffusion/diffusion_models/...
+/data/huggingface/llm/openai-community__gpt2
 ```
 
 직접 폴더를 선택하거나 입력하면 해당 경로를 우선 사용합니다.

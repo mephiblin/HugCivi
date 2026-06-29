@@ -25,6 +25,16 @@ USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 HF_DEFAULT_SNAPSHOT_WORKERS = 2
+ROUTE_SETTING_BY_TYPE = {
+    "llm": "ROUTE_LLM_ROOT",
+    "lora": "ROUTE_LORA_ROOT",
+    "checkpoint": "ROUTE_CHECKPOINT_ROOT",
+    "diffusion_model": "ROUTE_DIFFUSION_MODEL_ROOT",
+    "embedding": "ROUTE_EMBEDDING_ROOT",
+    "vae": "ROUTE_VAE_ROOT",
+    "controlnet": "ROUTE_CONTROLNET_ROOT",
+    "upscaler": "ROUTE_UPSCALER_ROOT",
+}
 
 JOB_QUEUE: queue.Queue[int] = queue.Queue()
 _WORKERS_STARTED = False
@@ -90,10 +100,31 @@ def run_job(job_id: int) -> None:
     db.append_log(job_id, "done")
 
 
-def base_target(parsed: ParsedDownload, *fallback_parts: str) -> Path:
+def base_target(parsed: ParsedDownload, *fallback_parts: str, archive_info: dict[str, Any] | None = None) -> Path:
     if parsed.target_subdir:
         return safe_join(DATA_ROOT, parsed.target_subdir)
+    routed_parts = configured_route_parts(archive_info)
+    if routed_parts:
+        return safe_join(DATA_ROOT, *routed_parts)
     return safe_join(DATA_ROOT, *fallback_parts)
+
+
+def configured_route_parts(archive_info: dict[str, Any] | None) -> list[str]:
+    if not archive_info:
+        return []
+    route_type = archive_info.get("route_type")
+    if not isinstance(route_type, str):
+        return []
+    setting_key = ROUTE_SETTING_BY_TYPE.get(route_type)
+    if not setting_key:
+        return []
+
+    route_root = db.library_route_settings().get(setting_key)
+    if not route_root:
+        return []
+    raw_suffix = archive_info.get("target_suffix")
+    suffix = raw_suffix if isinstance(raw_suffix, list) else []
+    return [route_root, *[str(part) for part in suffix if part]]
 
 
 def metadata_stamp() -> dict[str, Any]:
@@ -281,7 +312,7 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
     verify_huggingface_token(job_id, token)
     metadata = fetch_huggingface_metadata(parsed, token, job_id)
     archive_info = classify_huggingface(metadata, parsed.repo_type, parsed.repo_id)
-    target = base_target(parsed, *archive_info["target_parts"])
+    target = base_target(parsed, *archive_info["target_parts"], archive_info=archive_info)
     target.mkdir(parents=True, exist_ok=True)
     update_job_archive_info(job_id, target, archive_info, metadata)
 
@@ -455,7 +486,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
 
     download_urls = civitai_download_urls(parsed, metadata, primary_file, version_id)
 
-    target = base_target(parsed, *archive_info["target_parts"])
+    target = base_target(parsed, *archive_info["target_parts"], archive_info=archive_info)
     target.mkdir(parents=True, exist_ok=True)
     update_job_archive_info(job_id, target, archive_info, metadata)
 

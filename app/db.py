@@ -14,6 +14,19 @@ from .utils import redact_sensitive_text
 DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
 _DB_LOCK = threading.RLock()
 
+ROUTE_DEFAULTS = {
+    "LIBRARY_ACTIVE": "ComfyUI",
+    "ROUTE_LLM_ROOT": "huggingface/llm",
+    "ROUTE_LORA_ROOT": "stable-diffusion/loras",
+    "ROUTE_CHECKPOINT_ROOT": "stable-diffusion/checkpoints",
+    "ROUTE_DIFFUSION_MODEL_ROOT": "stable-diffusion/diffusion_models",
+    "ROUTE_EMBEDDING_ROOT": "stable-diffusion/embeddings",
+    "ROUTE_VAE_ROOT": "stable-diffusion/vae",
+    "ROUTE_CONTROLNET_ROOT": "stable-diffusion/controlnet",
+    "ROUTE_UPSCALER_ROOT": "stable-diffusion/upscalers",
+}
+ROUTE_SETTING_KEYS = tuple(ROUTE_DEFAULTS.keys())
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -98,6 +111,8 @@ def create_job(parsed: ParsedDownload) -> int:
             ),
         )
         conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to create job")
         return int(cur.lastrowid)
 
 
@@ -184,8 +199,25 @@ def get_secret(name: str) -> str | None:
     return get_setting(name) or os.getenv(name) or None
 
 
-def settings_status() -> dict[str, dict[str, bool | str | None]]:
-    status: dict[str, dict[str, bool | str | None]] = {}
+def normalize_route_path(value: str | None, default: str = "") -> str:
+    raw = (value or "").strip().replace("\\", "/")
+    if not raw:
+        return default
+    raw = raw.removeprefix("/data/").removeprefix("data/").strip("/")
+    segments = [segment.strip() for segment in raw.split("/") if segment.strip() not in {"", ".", ".."}]
+    return "/".join(segments) or default
+
+
+def library_route_settings() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key, default in ROUTE_DEFAULTS.items():
+        value = get_setting(key) or os.getenv(key) or default
+        values[key] = normalize_route_path(value, default) if key != "LIBRARY_ACTIVE" else (value or default)
+    return values
+
+
+def settings_status() -> dict[str, Any]:
+    status: dict[str, Any] = {}
     with _DB_LOCK, connect() as conn:
         rows = conn.execute("SELECT key, updated_at FROM settings").fetchall()
     db_settings = {str(row["key"]): str(row["updated_at"]) for row in rows}
@@ -196,4 +228,5 @@ def settings_status() -> dict[str, dict[str, bool | str | None]]:
             "source": "ui" if key in db_settings else ("environment" if env_value else None),
             "updated_at": db_settings.get(key),
         }
+    status["routes"] = library_route_settings()
     return status

@@ -57,16 +57,72 @@
                         </button>
                       </div>
                     </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/diffusion_models" data-name="diffusion_models">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">diffusion_models</span>
+                        </button>
+                      </div>
+                    </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/embeddings" data-name="embeddings">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">embeddings</span>
+                        </button>
+                      </div>
+                    </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/vae" data-name="vae">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">vae</span>
+                        </button>
+                      </div>
+                    </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/controlnet" data-name="controlnet">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">controlnet</span>
+                        </button>
+                      </div>
+                    </li>
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="stable-diffusion/upscalers" data-name="upscalers">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">upscalers</span>
+                        </button>
+                      </div>
+                    </li>
                   </ul>
                 </li>
-                <li class="folder-node">
+                <li class="folder-node has-children expanded">
                   <div class="folder-row">
-                    <span class="folder-toggle-spacer"></span>
+                    <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
                     <button type="button" class="folder-picker" data-path="huggingface" data-name="huggingface">
                       <span class="folder-icon" aria-hidden="true"></span>
                       <span class="folder-name">huggingface</span>
                     </button>
                   </div>
+                  <ul class="folder-children">
+                    <li class="folder-node">
+                      <div class="folder-row">
+                        <span class="folder-toggle-spacer"></span>
+                        <button type="button" class="folder-picker" data-path="huggingface/llm" data-name="llm">
+                          <span class="folder-icon" aria-hidden="true"></span>
+                          <span class="folder-name">llm</span>
+                        </button>
+                      </div>
+                    </li>
+                  </ul>
                 </li>
                 <li class="folder-node">
                   <div class="folder-row">
@@ -98,6 +154,43 @@
           <h2>Civitai Token</h2>
           <label class="sr-only" for="civitai_token">Civitai Token</label>
           <input id="civitai_token" name="civitai_token" type="password" placeholder="설정됨 · ui">
+
+          <h2>폴더 설정</h2>
+          <label class="setting-label" for="library_active">활성 라이브러리</label>
+          <select id="library_active" name="library_active">
+            <option value="ComfyUI" selected>ComfyUI</option>
+            <option value="Custom">Custom</option>
+          </select>
+          <p class="setting-help">다운로드 정보로 기본 폴더를 고릅니다. 모든 경로는 /data 기준입니다.</p>
+
+          <label class="setting-label" for="route_llm_root">기본 LLM 루트</label>
+          <input id="route_llm_root" name="route_llm_root" value="huggingface/llm" placeholder="huggingface/llm">
+          <p class="setting-help">Hugging Face LLM, GGUF 계열의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_lora_root">기본 LoRA 루트</label>
+          <input id="route_lora_root" name="route_lora_root" value="stable-diffusion/loras" placeholder="stable-diffusion/loras">
+          <p class="setting-help">LoRA, LoCon 다운로드의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_checkpoint_root">기본 Checkpoint 루트</label>
+          <input id="route_checkpoint_root" name="route_checkpoint_root" value="stable-diffusion/checkpoints" placeholder="stable-diffusion/checkpoints">
+          <p class="setting-help">Civitai Checkpoint와 Hugging Face 이미지 모델의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_diffusion_model_root">기본 Diffusion Model 루트</label>
+          <input id="route_diffusion_model_root" name="route_diffusion_model_root" value="stable-diffusion/diffusion_models" placeholder="stable-diffusion/diffusion_models">
+          <p class="setting-help">UNET, Diffusion Model 파일의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_embedding_root">기본 Embedding 루트</label>
+          <input id="route_embedding_root" name="route_embedding_root" value="stable-diffusion/embeddings" placeholder="stable-diffusion/embeddings">
+          <p class="setting-help">Textual Inversion, 임베딩 모델의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_vae_root">기본 VAE 루트</label>
+          <input id="route_vae_root" name="route_vae_root" value="stable-diffusion/vae" placeholder="stable-diffusion/vae">
+
+          <label class="setting-label" for="route_controlnet_root">기본 ControlNet 루트</label>
+          <input id="route_controlnet_root" name="route_controlnet_root" value="stable-diffusion/controlnet" placeholder="stable-diffusion/controlnet">
+
+          <label class="setting-label" for="route_upscaler_root">기본 Upscaler 루트</label>
+          <input id="route_upscaler_root" name="route_upscaler_root" value="stable-diffusion/upscalers" placeholder="stable-diffusion/upscalers">
 
           <button type="submit">저장</button>
         </form>

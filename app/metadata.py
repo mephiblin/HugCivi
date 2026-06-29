@@ -32,6 +32,7 @@ def slug(value: str | None, default: str = "unknown") -> str:
 
 
 def classify_huggingface(metadata: dict[str, Any], repo_type: str, repo_id: str) -> dict[str, Any]:
+    route_type = None
     if repo_type == "dataset":
         category = "Dataset"
         category_slug = "datasets"
@@ -47,12 +48,15 @@ def classify_huggingface(metadata: dict[str, Any], repo_type: str, repo_id: str)
         if pipeline in EMBEDDING_PIPELINES or "sentence-transformers" in tags or "embedding" in name_blob:
             category = "Embedding"
             category_slug = "embeddings"
+            route_type = "embedding"
         elif pipeline in IMAGE_PIPELINES or "stable-diffusion" in name_blob or "diffusers" in tags:
             category = "Image Checkpoint"
             category_slug = "image/checkpoints"
+            route_type = "checkpoint"
         elif pipeline in LLM_PIPELINES or ".gguf" in name_blob or "causallm" in name_blob:
             category = "LLM"
             category_slug = "llm"
+            route_type = "llm"
         elif pipeline in VISION_PIPELINES:
             category = "Vision"
             category_slug = "vision"
@@ -63,13 +67,16 @@ def classify_huggingface(metadata: dict[str, Any], repo_type: str, repo_id: str)
             category = "Model"
             category_slug = "models"
 
-    config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
-    card_data = metadata.get("cardData") if isinstance(metadata.get("cardData"), dict) else {}
+    raw_config = metadata.get("config")
+    config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+    raw_card_data = metadata.get("cardData")
+    card_data: dict[str, Any] = raw_card_data if isinstance(raw_card_data, dict) else {}
     filenames = [str(item.get("rfilename") or "") for item in metadata.get("siblings") or []]
     thumbnail = card_data.get("thumbnail")
     if not isinstance(thumbnail, str):
         thumbnail = None
 
+    repo_slug = slug(repo_id.replace("/", "__"), "repo")
     return {
         "model_title": metadata.get("modelId") or metadata.get("id") or repo_id,
         "model_category": category,
@@ -78,7 +85,9 @@ def classify_huggingface(metadata: dict[str, Any], repo_type: str, repo_id: str)
         "file_format": infer_format(filenames),
         "precision": infer_precision(filenames, metadata),
         "thumbnail_url": thumbnail,
-        "target_parts": ["huggingface", category_slug, slug(repo_id.replace("/", "__"), "repo")],
+        "route_type": route_type,
+        "target_suffix": [repo_slug],
+        "target_parts": ["huggingface", category_slug, repo_slug],
     }
 
 
@@ -114,10 +123,22 @@ def classify_civitai(
         "embedding": "embeddings",
         "vae": "vae",
         "controlnet": "controlnet",
+        "diffusionmodel": "diffusion_models",
+        "unet": "diffusion_models",
         "poses": "poses",
         "upscaler": "upscalers",
         "motionmodule": "motion-modules",
     }.get(model_type.replace(" ", "").lower(), slug(model_type, "models"))
+    route_type = {
+        "checkpoints": "checkpoint",
+        "loras": "lora",
+        "embeddings": "embedding",
+        "vae": "vae",
+        "controlnet": "controlnet",
+        "diffusion_models": "diffusion_model",
+        "upscalers": "upscaler",
+    }.get(type_slug)
+    target_suffix = [slug(base_model), slug(model_name or f"version_{version_id}"), f"version_{version_id}"]
 
     return {
         "model_title": model_name or model.get("name") or f"version_{version_id}",
@@ -127,7 +148,9 @@ def classify_civitai(
         "file_format": file_metadata.get("format") or infer_format([str(primary_file.get("name") or "")]),
         "precision": file_metadata.get("fp") or file_metadata.get("size") or infer_precision([str(primary_file.get("name") or "")], metadata),
         "thumbnail_url": thumbnail,
-        "target_parts": ["civitai", type_slug, slug(base_model), slug(model_name or f"version_{version_id}"), f"version_{version_id}"],
+        "route_type": route_type,
+        "target_suffix": target_suffix,
+        "target_parts": ["civitai", type_slug, *target_suffix],
         "primary_file": primary_file,
     }
 
@@ -215,7 +238,8 @@ def display_civitai_category(model_type: str) -> str:
 
 def infer_hf_base_model(metadata: dict[str, Any]) -> str | None:
     tags = [str(tag) for tag in metadata.get("tags") or []]
-    config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
+    raw_config = metadata.get("config")
+    config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
     for tag in tags:
         lower = tag.lower()
         if lower.startswith("base_model:"):

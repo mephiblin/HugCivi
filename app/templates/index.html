@@ -67,6 +67,51 @@
           <input id="civitai_token" name="civitai_token" type="password" autocomplete="off"
                  placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
 
+          <h2>폴더 설정</h2>
+          <label class="setting-label" for="library_active">활성 라이브러리</label>
+          <select id="library_active" name="library_active">
+            <option value="ComfyUI" {% if settings.routes.LIBRARY_ACTIVE == 'ComfyUI' %}selected{% endif %}>ComfyUI</option>
+            <option value="Custom" {% if settings.routes.LIBRARY_ACTIVE == 'Custom' %}selected{% endif %}>Custom</option>
+          </select>
+          <p class="setting-help">다운로드 정보로 기본 폴더를 고릅니다. 모든 경로는 /data 기준입니다.</p>
+
+          <label class="setting-label" for="route_llm_root">기본 LLM 루트</label>
+          <input id="route_llm_root" name="route_llm_root" value="{{ settings.routes.ROUTE_LLM_ROOT }}"
+                 placeholder="huggingface/llm" autocomplete="off">
+          <p class="setting-help">Hugging Face LLM, GGUF 계열의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_lora_root">기본 LoRA 루트</label>
+          <input id="route_lora_root" name="route_lora_root" value="{{ settings.routes.ROUTE_LORA_ROOT }}"
+                 placeholder="stable-diffusion/loras" autocomplete="off">
+          <p class="setting-help">LoRA, LoCon 다운로드의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_checkpoint_root">기본 Checkpoint 루트</label>
+          <input id="route_checkpoint_root" name="route_checkpoint_root" value="{{ settings.routes.ROUTE_CHECKPOINT_ROOT }}"
+                 placeholder="stable-diffusion/checkpoints" autocomplete="off">
+          <p class="setting-help">Civitai Checkpoint와 Hugging Face 이미지 모델의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_diffusion_model_root">기본 Diffusion Model 루트</label>
+          <input id="route_diffusion_model_root" name="route_diffusion_model_root" value="{{ settings.routes.ROUTE_DIFFUSION_MODEL_ROOT }}"
+                 placeholder="stable-diffusion/diffusion_models" autocomplete="off">
+          <p class="setting-help">UNET, Diffusion Model 파일의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_embedding_root">기본 Embedding 루트</label>
+          <input id="route_embedding_root" name="route_embedding_root" value="{{ settings.routes.ROUTE_EMBEDDING_ROOT }}"
+                 placeholder="stable-diffusion/embeddings" autocomplete="off">
+          <p class="setting-help">Textual Inversion, 임베딩 모델의 기본 위치입니다.</p>
+
+          <label class="setting-label" for="route_vae_root">기본 VAE 루트</label>
+          <input id="route_vae_root" name="route_vae_root" value="{{ settings.routes.ROUTE_VAE_ROOT }}"
+                 placeholder="stable-diffusion/vae" autocomplete="off">
+
+          <label class="setting-label" for="route_controlnet_root">기본 ControlNet 루트</label>
+          <input id="route_controlnet_root" name="route_controlnet_root" value="{{ settings.routes.ROUTE_CONTROLNET_ROOT }}"
+                 placeholder="stable-diffusion/controlnet" autocomplete="off">
+
+          <label class="setting-label" for="route_upscaler_root">기본 Upscaler 루트</label>
+          <input id="route_upscaler_root" name="route_upscaler_root" value="{{ settings.routes.ROUTE_UPSCALER_ROOT }}"
+                 placeholder="stable-diffusion/upscalers" autocomplete="off">
+
           <button type="submit">저장</button>
         </form>
       </section>

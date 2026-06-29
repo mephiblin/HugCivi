@@ -2,6 +2,15 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    LIBRARY_ACTIVE=ComfyUI \
+    ROUTE_LLM_ROOT=huggingface/llm \
+    ROUTE_LORA_ROOT=stable-diffusion/loras \
+    ROUTE_CHECKPOINT_ROOT=stable-diffusion/checkpoints \
+    ROUTE_DIFFUSION_MODEL_ROOT=stable-diffusion/diffusion_models \
+    ROUTE_EMBEDDING_ROOT=stable-diffusion/embeddings \
+    ROUTE_VAE_ROOT=stable-diffusion/vae \
+    ROUTE_CONTROLNET_ROOT=stable-diffusion/controlnet \
+    ROUTE_UPSCALER_ROOT=stable-diffusion/upscalers \
     HF_HUB_DOWNLOAD_TIMEOUT=120 \
     HF_XET_HIGH_PERFORMANCE=0 \
     HF_XET_NUM_CONCURRENT_RANGE_GETS=4 \
