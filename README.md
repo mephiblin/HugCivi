@@ -14,6 +14,7 @@ Synology NAS에서 Hugging Face / Civitai / 일반 URL 모델 파일을 **사용
 - SQLite 기반 작업 기록
 - 다운로드 진행률 표시
 - 토큰은 환경변수 또는 웹 UI에서 설정: `HF_TOKEN`, `CIVITAI_TOKEN`
+- Hugging Face 토큰은 인증/게이트 모델/rate limit 완화에 사용하고, `hf_xet` 고성능 전송 모드로 대용량 파일 다운로드를 가속
 - 웹 UI Basic Auth 지원
 
 ## Synology 설치 개요
@@ -39,6 +40,10 @@ services:
       HF_TOKEN: ""
       CIVITAI_TOKEN: ""
       MAX_CONCURRENT_DOWNLOADS: "1"
+      HF_HUB_DOWNLOAD_TIMEOUT: "120"
+      HF_XET_HIGH_PERFORMANCE: "1"
+      HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY: "1"
+      HF_SNAPSHOT_MAX_WORKERS: "8"
     volumes:
       - /volume1/AI_MODELS:/data
       - /volume1/docker/nas-model-archiver/config:/config

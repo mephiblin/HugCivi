@@ -22,6 +22,7 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
+HF_DEFAULT_SNAPSHOT_WORKERS = 8
 
 JOB_QUEUE: queue.Queue[int] = queue.Queue()
 _WORKERS_STARTED = False
@@ -128,13 +129,47 @@ def positive_int_env(name: str, default: int) -> int:
         return default
 
 
+def configure_huggingface_runtime(token: str | None) -> None:
+    if token:
+        os.environ["HF_TOKEN"] = token
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    os.environ.setdefault("HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY", "1")
+
+
+def verify_huggingface_token(job_id: int, token: str | None) -> None:
+    if not token:
+        return
+    try:
+        response = requests.get(
+            "https://huggingface.co/api/whoami-v2",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+            timeout=(10, 30),
+        )
+    except requests.RequestException as exc:
+        db.append_log(job_id, f"HF token verification skipped: {exc}")
+        return
+    if response.status_code in {401, 403}:
+        raise ValueError("HF_TOKEN 인증에 실패했습니다. Hugging Face 토큰 값을 확인하세요.")
+    response.raise_for_status()
+    db.append_log(job_id, "HF token verified")
+
+
 def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
     if not parsed.repo_id:
         raise ValueError("Hugging Face repo_id가 없습니다.")
 
+    token = db.get_secret("HF_TOKEN")
+    configure_huggingface_runtime(token)
+
     from huggingface_hub import hf_hub_download, snapshot_download
 
-    token = db.get_secret("HF_TOKEN")
+    if token:
+        db.append_log(job_id, "HF token configured: authenticated Hub requests enabled")
+    else:
+        db.append_log(job_id, "HF token not configured: anonymous public Hub access")
+
+    verify_huggingface_token(job_id, token)
     metadata = fetch_huggingface_metadata(parsed, token)
     archive_info = classify_huggingface(metadata, parsed.repo_type, parsed.repo_id)
     target = base_target(parsed, *archive_info["target_parts"])
@@ -178,6 +213,7 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         local_path = snapshot_download(
             allow_patterns=parsed.include_patterns or None,
             ignore_patterns=parsed.exclude_patterns or None,
+            max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
             **common,
         )
         db.append_log(job_id, f"saved snapshot: {local_path}")
