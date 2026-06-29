@@ -48,7 +48,7 @@ services:
       DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
     volumes:
       - type: bind
-        source: /volume1/AI_MODELS
+        source: /volume1/docker/nas-model-archiver/models
         target: /data
       - type: bind
         source: /volume1/docker/nas-model-archiver/config
