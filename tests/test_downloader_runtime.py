@@ -257,6 +257,15 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertIn("extractor.ytdl.enabled=true", command)
         self.assertEqual(command[-1], "ytdl:https://www.youtube.com/watch?v=abc123")
 
+    def test_gallery_dl_command_enables_ytdlp_for_direct_xhamster_url(self) -> None:
+        url = "https://xhamster3.com/videos/sample-video-123456"
+
+        with mock.patch.object(downloader, "db", FakeDb({})):
+            command = downloader.gallery_dl_command(url, Path("/downloads/xhamster"))
+
+        self.assertIn("extractor.ytdl.enabled=true", command)
+        self.assertEqual(command[-1], f"ytdl:{url}")
+
     def test_ytdl_command_uses_yt_dlp_module_and_settings(self) -> None:
         fake_db = mock.Mock()
         fake_db.get_setting.return_value = "worst[ext=mp4]/worst"

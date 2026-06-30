@@ -78,6 +78,15 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "youtu.be",
 }
+XHAMSTER_BASE_HOSTS = {
+    "xhamster.com",
+    "xhamster.one",
+    "xhamster.desi",
+    "xhms.pro",
+    "xhday.com",
+    "xhvid.com",
+}
+XHAMSTER_NUMBERED_HOST_RE = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
     "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
@@ -1861,15 +1870,35 @@ def ytdl_inner_url(url: str) -> str:
 
 
 def gallery_dl_uses_ytdlp(url: str) -> bool:
-    return is_ytdl_url(url) or is_youtube_url(ytdl_inner_url(url) or url)
+    return is_ytdl_url(url) or is_ytdlp_preferred_url(ytdl_inner_url(url) or url)
 
 
 def gallery_dl_extractor_url(url: str) -> str:
-    return f"ytdl:{url}" if is_youtube_url(url) and not is_ytdl_url(url) else url
+    return f"ytdl:{url}" if is_ytdlp_preferred_url(url) and not is_ytdl_url(url) else url
 
 
 def is_youtube_url(url: str) -> bool:
     return normalized_url_host(url) in YOUTUBE_HOSTS
+
+
+def is_ytdlp_preferred_url(url: str) -> bool:
+    return is_youtube_url(url) or is_xhamster_url(url)
+
+
+def is_xhamster_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and is_xhamster_host((parsed.hostname or "").lower().rstrip("."))
+
+
+def is_xhamster_host(host: str) -> bool:
+    while host:
+        if host in XHAMSTER_BASE_HOSTS or XHAMSTER_NUMBERED_HOST_RE.match(host):
+            return True
+        _subdomain, separator, remainder = host.partition(".")
+        if not separator:
+            return False
+        host = remainder
+    return False
 
 
 def normalized_url_host(url: str) -> str:

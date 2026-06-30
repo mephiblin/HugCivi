@@ -21,7 +21,8 @@ COMFYUI_DOWNLOAD_COMMANDS = {"curl", "wget", "aria2c"}
 COMFYUI_SUBCOMMANDS = {"workflow", "workflows", "download"}
 COMFYUI_URL_HINTS = ("comfyui", "comfy-ui", "workflow", "workflows")
 GALLERYDL_EXPLICIT_COMMANDS = {"gallery-dl", "gallerydl", "gdl"}
-YOUTUBE_EXPLICIT_COMMANDS = {"youtube", "yt", "yt-dlp", "youtube-dl"}
+YTDLP_EXPLICIT_COMMANDS = {"yt-dlp", "youtube-dl"}
+YOUTUBE_EXPLICIT_COMMANDS = {"youtube", "yt", *YTDLP_EXPLICIT_COMMANDS}
 YOUTUBE_HOSTS = {
     "youtu.be",
     "www.youtu.be",
@@ -32,6 +33,15 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "www.youtube-nocookie.com",
 }
+XHAMSTER_BASE_HOSTS = {
+    "xhamster.com",
+    "xhamster.one",
+    "xhamster.desi",
+    "xhms.pro",
+    "xhday.com",
+    "xhvid.com",
+}
+XHAMSTER_NUMBERED_HOST_RE = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_RE = re.compile(
     r"^/(?:manga|doujinshi|cg|gamecg|imageset|galleries|reader)/(?:[^/?#]+-)?(\d+)(?:\.html)?/?$",
     re.IGNORECASE,
@@ -88,8 +98,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_hitomi_url(text, target_subdir=target_subdir)
         if is_comfyui_workflow_url(text, require_hint=True):
             return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
-        if is_youtube_url(text):
-            return parse_youtube_url(text, target_subdir=target_subdir)
+        if is_ytdlp_preferred_url(text):
+            return parse_ytdlp_url(text, target_subdir=target_subdir)
         return ParsedDownload(source="generic", raw_input=text, target_subdir=target_subdir, url=text)
 
     # Convenient shorthand for HF repo IDs: owner/repo
@@ -183,8 +193,8 @@ def maybe_parse_gallerydl_cli(text: str, target_subdir: str | None = None) -> Pa
     for token in tokens[1:]:
         if token.startswith("-"):
             continue
-        if is_youtube_url(token):
-            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
+        if is_ytdlp_preferred_url(token):
+            return parse_ytdlp_url(token, raw_input=text, target_subdir=target_subdir)
         if is_gallerydl_supported_url(token):
             return ParsedDownload(
                 source="gallerydl",
@@ -203,13 +213,18 @@ def maybe_parse_youtube_cli(text: str, target_subdir: str | None = None) -> Pars
     if not tokens or tokens[0].lower() not in YOUTUBE_EXPLICIT_COMMANDS:
         return None
 
+    command = tokens[0].lower()
     for token in tokens[1:]:
         if token.startswith("-"):
             continue
         if is_ytdl_url(token):
-            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
-        if is_youtube_url(token):
-            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
+            return parse_ytdlp_url(token, raw_input=text, target_subdir=target_subdir)
+        if is_ytdlp_preferred_url(token):
+            return parse_ytdlp_url(token, raw_input=text, target_subdir=target_subdir)
+        if command in YTDLP_EXPLICIT_COMMANDS and is_gallerydl_supported_url(token):
+            return parse_ytdlp_url(token, raw_input=text, target_subdir=target_subdir, allow_any_http=True)
+    if command in YTDLP_EXPLICIT_COMMANDS:
+        raise InputParseError("yt-dlp 입력에서 HTTP/HTTPS 또는 ytdl: URL을 찾지 못했습니다.")
     raise InputParseError("YouTube 입력에서 YouTube URL을 찾지 못했습니다.")
 
 
@@ -224,6 +239,30 @@ def parse_youtube_url(
         gallerydl_url = f"ytdl:{url}"
     else:
         raise InputParseError("YouTube URL이 아닙니다.")
+
+    return ParsedDownload(
+        source="gallerydl",
+        raw_input=raw_input or url,
+        target_subdir=target_subdir,
+        gallerydl_url=gallerydl_url,
+    )
+
+
+def parse_ytdlp_url(
+    url: str,
+    raw_input: str | None = None,
+    target_subdir: str | None = None,
+    allow_any_http: bool = False,
+) -> ParsedDownload:
+    if is_ytdl_url(url):
+        gallerydl_url = url
+    else:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise InputParseError("yt-dlp URL은 HTTP, HTTPS 또는 ytdl: URL이어야 합니다.")
+        if not allow_any_http and not is_ytdlp_preferred_url(url):
+            raise InputParseError("yt-dlp로 자동 처리할 수 있는 URL이 아닙니다.")
+        gallerydl_url = f"ytdl:{url}"
 
     return ParsedDownload(
         source="gallerydl",
@@ -250,6 +289,26 @@ def is_youtube_url(url: str) -> bool:
 
 def is_youtube_host(host: str) -> bool:
     return host in YOUTUBE_HOSTS
+
+
+def is_ytdlp_preferred_url(url: str) -> bool:
+    return is_youtube_url(url) or is_xhamster_url(url)
+
+
+def is_xhamster_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and is_xhamster_host((parsed.hostname or "").lower().rstrip("."))
+
+
+def is_xhamster_host(host: str) -> bool:
+    while host:
+        if host in XHAMSTER_BASE_HOSTS or XHAMSTER_NUMBERED_HOST_RE.match(host):
+            return True
+        _subdomain, separator, remainder = host.partition(".")
+        if not separator:
+            return False
+        host = remainder
+    return False
 
 
 def parse_comfyui_workflow_url(

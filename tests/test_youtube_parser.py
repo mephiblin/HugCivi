@@ -62,6 +62,35 @@ def test_plain_youtube_url_routes_to_gallerydl_ytdl() -> None:
     assert parsed.gallerydl_url == f"ytdl:{url}"
 
 
+def test_plain_xhamster_numbered_url_routes_to_gallerydl_ytdl() -> None:
+    url = "https://xhamster3.com/videos/sample-video-123456"
+
+    parsed = parse_input(url)
+
+    assert parsed.source == "gallerydl"
+    assert parsed.gallerydl_url == f"ytdl:{url}"
+
+
+def test_gallerydl_command_wraps_plain_xhamster_url() -> None:
+    url = "https://it.xhamster.com/videos/sample-video-123456"
+
+    parsed = parse_input(f"gallery-dl {url}")
+
+    assert parsed.source == "gallerydl"
+    assert parsed.raw_input == f"gallery-dl {url}"
+    assert parsed.gallerydl_url == f"ytdl:{url}"
+
+
+def test_yt_dlp_command_accepts_xhamster_url() -> None:
+    url = "https://xhamster26.com/videos/sample-video-123456"
+
+    parsed = parse_input(f"yt-dlp {url}")
+
+    assert parsed.source == "gallerydl"
+    assert parsed.raw_input == f"yt-dlp {url}"
+    assert parsed.gallerydl_url == f"ytdl:{url}"
+
+
 def test_non_youtube_http_url_still_routes_to_generic() -> None:
     url = "https://example.com/video.mp4"
 
