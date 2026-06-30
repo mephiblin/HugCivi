@@ -356,6 +356,12 @@ class DownloaderRuntimeTests(unittest.TestCase):
 
         self.assertEqual(command[:3], [downloader.sys.executable, "-m", "yt_dlp"])
         self.assertIn("--no-config", command)
+        self.assertIn("--socket-timeout", command)
+        self.assertEqual(command[command.index("--socket-timeout") + 1], "30")
+        self.assertIn("--extractor-retries", command)
+        self.assertEqual(command[command.index("--extractor-retries") + 1], "3")
+        self.assertIn("--retries", command)
+        self.assertEqual(command[command.index("--retries") + 1], "3")
         self.assertIn("--paths", command)
         self.assertIn("/downloads/xhamster", command)
         self.assertIn("--format", command)
