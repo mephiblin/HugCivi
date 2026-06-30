@@ -1058,6 +1058,8 @@ def transcode_video_for_browser(source: Path) -> Path:
             os.getenv("MEDIA_TRANSCODE_PRESET", "veryfast"),
             "-crf",
             os.getenv("MEDIA_TRANSCODE_CRF", "23"),
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             "-pix_fmt",
             "yuv420p",
             "-c:a",
