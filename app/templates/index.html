@@ -1096,13 +1096,12 @@
         return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-workflow="${workflow ? 'true' : 'false'}">
           ${image}
           <div class="asset-topline">
-            <span>${escapeHtml(shortSource(job.source))}</span>
+            <span class="asset-source-badge">${escapeHtml(shortSource(job.source))}</span>
             <div class="asset-actions">
               ${workflow ? workflowActionButton() : ''}
               <button type="button" class="asset-action" data-card-action="open" data-url="${escapeHtml(sourceUrl)}" title="URL 바로가기" aria-label="URL 바로가기" ${sourceUrl ? '' : 'disabled'}>
                 <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm2 3V18.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-10H6Zm.5-3.5a.5.5 0 0 0-.5.5V7h12V5.5a.5.5 0 0 0-.5-.5h-11Z"/>
-                  <path d="M8 12h8v2H8v-2Zm0 3h5v2H8v-2Z"/>
+                  <path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm6.9 9a8 8 0 0 0-1.5-4.1h-2.5c.4 1.2.7 2.6.8 4.1h3.2Zm-5.2 0a15 15 0 0 0-.9-4.1h-1.6a15 15 0 0 0-.9 4.1h3.4Zm-5.4 0c.1-1.5.4-2.9.8-4.1H6.6A8 8 0 0 0 5.1 11h3.2Zm0 2H5.1a8 8 0 0 0 1.5 4.1h2.5A17 17 0 0 1 8.3 13Zm2 0c.1 1.6.4 3 .9 4.1h1.6c.5-1.1.8-2.5.9-4.1h-3.4Zm5.4 0c-.1 1.5-.4 2.9-.8 4.1h2.5a8 8 0 0 0 1.5-4.1h-3.2Zm.1 6.1h-1.7l-.3.5c.7-.2 1.4-.4 2-.5Zm-5.6.5-.3-.5H8.2c.6.2 1.3.3 2 .5Zm0-15.2c-.7.2-1.4.4-2 .5h1.7l.3-.5Zm3.6 0 .3.5h1.7a8 8 0 0 0-2-.5Z"/>
                 </svg>
               </button>
               <button type="button" class="asset-action favorite ${favorite ? 'active' : ''}" data-card-action="favorite" aria-pressed="${favorite ? 'true' : 'false'}" title="즐겨찾기" aria-label="즐겨찾기">

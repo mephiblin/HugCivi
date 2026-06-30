@@ -1,13 +1,14 @@
 # NAS Model Archiver
 
-Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
+Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
-브라우저에서 URL을 붙여넣으면 모델 정보를 읽고, LLM, LoRA, Checkpoint, Embedding 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
+브라우저에서 URL을 붙여넣으면 모델과 갤러리 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, gallery-dl 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
 ## 이런 용도입니다
 
 - NAS에 AI 모델 파일을 모아두고 싶을 때
 - Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
+- Hitomi 또는 gallery-dl 지원 사이트 이미지를 폴더로 보관하고 필요할 때 ZIP으로 받고 싶을 때
 - ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
 - ComfyUI 워크플로우 공유 PNG 또는 JSON을 NAS에 저장하고 나중에 다시 보고 싶을 때
 - 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
@@ -17,6 +18,7 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI �
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
+- gallery-dl 지원 사이트 범용 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
 - ComfyUI 워크플로우 `.json` URL 다운로드
 - ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
@@ -28,13 +30,14 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI �
 - 자동 폴더 분류와 사용자 지정 기본 폴더
 - 라이브러리 카드 보기
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
+- 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
 - 작업 목록에서 다운로드 정지, 재개, 삭제
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
 - 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
-- HF 토큰, Civitai 토큰을 웹 UI에서 저장
+- HF 토큰, Civitai 토큰, gallery-dl 인증 정보를 웹 UI에서 저장
 - 요청 간격, 재시도, 낮은 병렬도 기본값으로 rate limit 위험 완화
 - Basic Auth 로그인
 
@@ -171,6 +174,7 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 /data/comfyui/workflows
 /data/generic
 /data/hitomi
+/data/gallery-dl
 ```
 
 이 하위 폴더들은 미리 만들 필요는 없습니다. 앱이 필요한 시점에 생성합니다.
@@ -179,13 +183,13 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 
 1. 웹 UI에 로그인합니다.
 2. 왼쪽 아래 사용자 버튼을 누릅니다.
-3. Hugging Face Token, Civitai Token을 입력합니다.
-4. 필요한 경우 기본 폴더 경로를 바꿉니다.
-5. 상단 입력창에 Hugging Face 또는 Civitai URL을 붙여넣습니다.
+3. 필요한 경우 Hugging Face Token, Civitai Token, gallery-dl 인증 정보를 입력합니다.
+4. 필요한 경우 기본 폴더 경로와 대기열 설정을 바꿉니다.
+5. 상단 입력창에 Hugging Face, Civitai, Hitomi, gallery-dl 또는 일반 URL을 붙여넣습니다.
 6. 다운로드 버튼을 누릅니다.
 7. 작업 목록에서 진행률과 로그를 확인합니다.
 
-토큰은 나중에 입력해도 됩니다. 공개 모델은 토큰 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델이나 속도 제한 완화에는 토큰이 도움이 됩니다.
+토큰과 인증 정보는 나중에 입력해도 됩니다. 공개 모델과 공개 갤러리는 인증 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델, Civitai 제한 모델, gallery-dl 사이트별 로그인/쿠키 요구사항, 속도 제한 완화에는 인증 정보가 도움이 됩니다.
 
 ## 다운로드 입력 예시
 
@@ -331,7 +335,7 @@ Upscaler: stable-diffusion/upscalers
 - 실행 중이거나 대기 중인 다운로드가 들어있는 폴더는 이동, 이름 변경, 삭제를 차단합니다.
 - 모든 작업은 `/data` 안에서만 허용됩니다.
 
-## 토큰 입력
+## 토큰 및 인증 입력
 
 ### Hugging Face Token
 
@@ -360,7 +364,21 @@ Civitai에서 발급한 API 토큰입니다.
 CIVITAI_TOKEN
 ```
 
-토큰은 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
+### gallery-dl 인증 정보
+
+gallery-dl이 지원하는 사이트 중 일부는 로그인, 쿠키, OAuth, API Key가 필요합니다.
+
+웹 UI의 API 토큰 패널에서 아래 값을 저장할 수 있습니다.
+
+- `gallery-dl Username`
+- `gallery-dl Password`
+- `gallery-dl Cookies File`
+- `gallery-dl Browser Cookies`
+- `gallery-dl Extra Options`
+
+`gallery-dl Extra Options`에는 gallery-dl 설정 키를 `extractor.site.key=value` 형식으로 한 줄씩 입력합니다. 공식 지원 사이트별 인증 분류는 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)를 참고하세요.
+
+토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
 
 ## 다운로드 안전 설정
 
@@ -446,8 +464,32 @@ uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 
 ## 패치내역
 
+자세한 변경 내용은 [PATCH_NOTES.md](PATCH_NOTES.md)에 정리되어 있습니다.
+
 ### 2026-06-30
 
+- Hitomi 및 gallery-dl 다운로드 추가
+  - Hitomi 갤러리 URL, reader URL, `hitomi {gallery_id}` 입력 지원
+  - gallery-dl 범용 다운로드를 `gallery-dl` 또는 `gdl` 접두어로 지원
+  - `/data/hitomi`, `/data/gallery-dl` 기본 저장 경로 추가
+  - 컨테이너 시작 시 gallery-dl 최신 안정 버전 범위 자동 업데이트 지원
+  - 공식 gallery-dl 지원 사이트 358개와 인증 분류 문서화
+- 인증 설정 확장
+  - HF Token, Civitai Token 외에 gallery-dl Username/Password, Cookies File, Browser Cookies, Extra Options 저장 지원
+  - 사이트별 쿠키, OAuth, API Key 요구사항을 앱 설정값과 연결
+- 대기열 관리 추가
+  - 공급자별 동시 다운로드 수 제한
+  - 전체 동시 다운로드 수 제한
+  - 다운로드 무진행 타임아웃 설정
+  - Hugging Face, Civitai, Hitomi, gallery-dl, 일반 URL을 공급자별로 분리된 대기열에서 처리
+- 작업 목록 제어 개선
+  - `취소` 버튼 제거
+  - `정지` 후 같은 버튼이 `재개`로 바뀌도록 UI와 상태 처리 정리
+  - 삭제 시 스트리밍 `.part` 파일 정리
+- 라이브러리 카드 디자인 개선
+  - 카드 상단을 블러 오버레이 바로 변경
+  - 공급자 배지, URL 바로가기 globe 아이콘, 즐겨찾기 비활성/활성 상태 표시 개선
+  - A-Z, Z-A, 날짜순, 즐겨찾기 정렬과 썸네일 블러 토글 유지
 - ComfyUI 워크플로우 기능 추가
   - `.json` 워크플로우 URL 저장 지원
   - 워크플로우 metadata가 내장된 `.png` 저장 지원
@@ -459,14 +501,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
   - 카드/폴더 우클릭 `속성`에서 메모 작성과 저장 지원
   - 이름 변경/이동 시 메모 경로 자동 갱신
   - 삭제 시 관련 메모 자동 삭제
-- 작업 목록 제어 기능 추가
-  - 다운로드 정지, 재개, 삭제 버튼 추가
-  - 스트리밍 다운로드는 삭제 시 `.part` 파일 정리
-- 라이브러리 카드 기능 개선
-  - 즐겨찾기 버튼 추가
-  - URL 바로가기 버튼 추가
-  - A-Z, Z-A, 날짜순, 즐겨찾기 정렬 추가
-  - 썸네일 블러 토글 추가
 - 배포 설정 최신화
   - 다운로드 워커 기본값 `MAX_CONCURRENT_DOWNLOADS=3`
   - Portainer 권장 Synology 기본 폴더를 `/volume1/docker/nas-model-archiver/models`, `/volume1/docker/nas-model-archiver/config`로 정리

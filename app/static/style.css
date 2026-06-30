@@ -1157,7 +1157,7 @@ a:hover {
   min-height: 238px;
   border-radius: 7px;
   background: #111827;
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12), 12px 12px 0 rgba(15, 23, 42, 0.06);
 }
 
 .asset-card img,
@@ -1190,49 +1190,71 @@ a:hover {
 
 .asset-topline {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  left: 8px;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 38px;
+  gap: 8px;
+  padding: 7px 7px 7px 8px;
   color: #ffffff;
   font-size: 10px;
   font-weight: 800;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.64), rgba(15, 23, 42, 0.18));
+  backdrop-filter: blur(12px) saturate(1.12);
+  -webkit-backdrop-filter: blur(12px) saturate(1.12);
+  z-index: 2;
 }
 
-.asset-topline span:first-child {
-  border-radius: 3px;
-  padding: 2px 5px;
-  background: rgba(0, 0, 0, 0.48);
+.asset-source-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  max-width: calc(100% - 96px);
+  min-height: 18px;
+  border-radius: 4px;
+  padding: 2px 6px;
+  color: #ffffff;
+  background: rgba(2, 6, 23, 0.72);
+  line-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
 }
 
 .asset-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex: 0 0 auto;
+  gap: 5px;
 }
 
 .asset-action {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   align-items: center;
   justify-content: center;
   border: 0;
   border-radius: 50%;
-  color: #ffffff;
-  background: #e600cf;
-  box-shadow: 0 5px 14px rgba(95, 0, 86, 0.24);
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(2, 6, 23, 0.2);
+  box-shadow: none;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease, opacity 0.16s ease;
 }
 
 .asset-action:hover {
-  background: #c900b7;
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
 }
 
 .asset-action svg {
   width: 17px;
   height: 17px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
 }
 
 .asset-action.favorite svg path {
@@ -1240,17 +1262,22 @@ a:hover {
 }
 
 .asset-action.favorite.active {
+  color: #ffffff;
   background: #e600cf;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.88), 0 5px 14px rgba(95, 0, 86, 0.24);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.86), 0 6px 14px rgba(95, 0, 86, 0.28);
+}
+
+.asset-action.favorite.active svg path {
+  fill-rule: nonzero;
 }
 
 .asset-action.workflow {
-  background: #2563eb;
-  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.25);
+  background: rgba(2, 6, 23, 0.24);
+  box-shadow: none;
 }
 
 .asset-action.workflow:hover {
-  background: #1d4ed8;
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .asset-action:disabled {
@@ -1259,7 +1286,8 @@ a:hover {
 }
 
 .asset-action:disabled:hover {
-  background: #e600cf;
+  background: rgba(2, 6, 23, 0.2);
+  transform: none;
 }
 
 .asset-dots,
