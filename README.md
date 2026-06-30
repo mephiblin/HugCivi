@@ -46,7 +46,6 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, Y
 
 - Synology NAS 또는 Docker가 실행되는 서버
 - Portainer 또는 Synology Container Manager
-- Portainer Repository 배포를 쓸 경우 미리 빌드해서 push한 컨테이너 이미지
 - 모델 저장용 NAS 폴더
 - 앱 설정 저장용 NAS 폴더
 
@@ -63,60 +62,47 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, Y
 
 ## 설치 A: Portainer + Repository
 
-Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 이미지를 먼저 빌드해서 레지스트리에 push하고, [portainer-stack.yml](portainer-stack.yml)은 그 이미지를 `image:`로 참조합니다.
+Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GitHub Actions가 배포하는 `ghcr.io/mephiblin/hugcivi:latest`입니다.
 
-1. 이 프로젝트를 빌드하고 컨테이너 레지스트리에 push합니다.
-
-```bash
-docker build -t ghcr.io/내계정/nas-model-archiver:latest .
-docker push ghcr.io/내계정/nas-model-archiver:latest
-```
-
-2. 이 프로젝트를 GitHub 저장소에 올립니다.
-3. NAS에 모델 저장 폴더를 만듭니다.
+1. NAS에 모델 저장 폴더를 만듭니다.
 
 ```text
 /volume1/docker/nas-model-archiver/models
 ```
 
-4. NAS에 설정 저장 폴더를 만듭니다.
+2. NAS에 설정 저장 폴더를 만듭니다.
 
 ```text
 /volume1/docker/nas-model-archiver/config
 ```
 
-5. Portainer에 접속합니다.
-6. 왼쪽 메뉴에서 `Stacks`를 누릅니다.
-7. `Add stack`을 누릅니다.
-8. `Repository` 방식을 선택합니다.
-9. GitHub 저장소 URL을 입력합니다.
-10. Compose path에 아래 값을 입력합니다.
+3. Portainer에 접속합니다.
+4. 왼쪽 메뉴에서 `Stacks`를 누릅니다.
+5. `Add stack`을 누릅니다.
+6. `Repository` 방식을 선택합니다.
+7. GitHub 저장소 URL을 입력합니다.
+8. Compose path에 아래 값을 입력합니다.
 
 ```text
 portainer-stack.yml
 ```
 
-11. Branch는 본인 저장소 브랜치에 맞춥니다.
+9. Branch는 본인 저장소 브랜치에 맞춥니다.
 
 ```text
 main
 ```
 
-또는 현재 로컬 기본 브랜치를 그대로 쓰면:
-
-```text
-master
-```
-
-12. Environment variables에 최소한 아래 값을 추가합니다.
+10. Environment variables에 최소한 아래 값을 추가합니다.
 
 ```text
 APP_PASSWORD=원하는_긴_비밀번호
-HUGCIVI_IMAGE=ghcr.io/내계정/nas-model-archiver:latest
 PUID=1026
 PGID=100
 UMASK=022
 ```
+
+`HUGCIVI_IMAGE`는 선택사항입니다. 기본값은 `ghcr.io/mephiblin/hugcivi:latest`이며, 다른 레지스트리 이미지를 직접 쓰려면 `HUGCIVI_IMAGE=이미지주소`를 추가하세요.
 
 Synology에서 `PUID`와 `PGID`는 파일을 소유할 DSM 사용자/그룹 ID로 맞춥니다. 권한이 맞지 않는 기존 폴더를 한 번 정리해야 하면 `HUGCIVI_CHOWN_ON_START=1`을 임시로 켤 수 있습니다.
 
@@ -137,8 +123,8 @@ YT_DLP_FORMAT=best[ext=mp4]/best
 YT_DLP_EXTRA_OPTIONS=
 ```
 
-13. `Deploy the stack`을 누릅니다.
-14. 브라우저에서 접속합니다.
+11. `Deploy the stack`을 누릅니다.
+12. 브라우저에서 접속합니다.
 
 ```text
 http://NAS_IP:8088
@@ -152,7 +138,7 @@ admin
 
 비밀번호는 `APP_PASSWORD`에 넣은 값입니다.
 
-Portainer가 `pull access denied` 오류를 내면 `HUGCIVI_IMAGE`가 실제 push된 이미지 이름과 일치하는지, 레지스트리가 공개 이미지인지 또는 Portainer에 registry 인증이 설정되어 있는지 확인하세요.
+Portainer가 `pull access denied` 오류를 내면 GitHub Packages의 `ghcr.io/mephiblin/hugcivi` 패키지가 공개 상태인지 확인하세요. 비공개로 유지하려면 Portainer의 `Registries`에 GHCR 인증을 추가해야 합니다.
 
 ## 설치 B: 로컬 Docker Compose
 
