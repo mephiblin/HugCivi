@@ -13,7 +13,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -1277,13 +1277,40 @@ def ensure_route_folders() -> None:
 
 
 def existing_data_path(path: str) -> Path:
+    target = data_path_from_request_path(path)
+    if target.exists():
+        return target
+
+    decoded_path = unquote(path)
+    if decoded_path != path:
+        target = data_path_from_request_path(decoded_path)
+        if target.exists():
+            return target
+
+    raise HTTPException(status_code=404, detail="대상 경로를 찾을 수 없습니다.")
+
+
+def data_path_from_request_path(path: str) -> Path:
     try:
-        target = safe_join(DATA_ROOT, path.strip())
+        target = raw_data_path(path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="데이터 루트 밖의 경로는 사용할 수 없습니다.") from exc
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="대상 경로를 찾을 수 없습니다.")
     return target
+
+
+def raw_data_path(path: str) -> Path:
+    root = DATA_ROOT.resolve(strict=False)
+    current = DATA_ROOT
+    for segment in str(path or "").strip().replace("\\", "/").lstrip("/").split("/"):
+        if segment in {"", "."}:
+            continue
+        if segment == "..":
+            raise ValueError("Target path escapes data root")
+        current = current / segment
+    resolved = current.resolve(strict=False)
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("Target path escapes data root")
+    return current
 
 
 def ensure_mutable_path(path: Path) -> None:

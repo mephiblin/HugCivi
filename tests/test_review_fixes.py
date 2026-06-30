@@ -276,3 +276,18 @@ def test_library_items_skip_empty_archive_metadata_folder(app_modules: tuple) ->
     rows = [row for row in main.library_items() if row.get("target_path") == "gallery-dl/xhamster3.com/failed"]
 
     assert rows == []
+
+
+def test_existing_data_path_preserves_downloaded_media_filename_punctuation(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "gallery-dl" / "youtube.com" / "video-XlFu9nJCA1A"
+    target.mkdir(parents=True)
+    filename = "진짜 자동으로 다~해줍니다!!! 크롤링, 예약, 구매, 쇼핑, E2E - Aside [XlFu9nJCA1A].mp4"
+    media = target / filename
+    media.write_bytes(b"video")
+
+    relative = f"gallery-dl/youtube.com/video-XlFu9nJCA1A/{filename}"
+
+    assert main.existing_data_path(relative) == media
+    with pytest.raises(ValueError):
+        main.data_path_from_request_path("../outside")
