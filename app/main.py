@@ -29,6 +29,7 @@ from .downloader import (
     enqueue_job,
     folder_thumbnail_path,
     notify_queue_settings_changed,
+    remove_pending_job,
     start_workers,
     thumbnail_media_type,
     thumbnail_url_for_path,
@@ -251,6 +252,7 @@ def api_pause_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = require_job(job_id)
     status = str(job.get("status"))
     if status == "queued":
+        remove_pending_job(job_id)
         db.update_job(job_id, status="paused", error=None)
         db.append_log(job_id, "pause requested")
     elif status == "running":
@@ -285,6 +287,7 @@ def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     elif status == "deleting":
         pass
     else:
+        remove_pending_job(job_id)
         cleanup_job_partial_files(job_id)
         db.delete_job(job_id)
     return jobs_response()
@@ -686,8 +689,20 @@ def should_index_directory(path: Path) -> bool:
     if lexical_absolute(path) == lexical_absolute(DATA_ROOT):
         return False
     if archive_metadata_path(path) is not None:
-        return True
+        return has_library_content_in_directory(path)
     return any(is_media_file(child) for child in direct_files(path))
+
+
+def has_library_content_in_directory(path: Path, limit: int = 10000) -> bool:
+    try:
+        for index, item in enumerate(path.rglob("*")):
+            if index >= limit:
+                return False
+            if item.is_file() and not item.is_symlink() and is_library_file(item):
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def direct_files(path: Path) -> list[Path]:
@@ -884,13 +899,13 @@ def media_files_for_path(path: Path, limit: int = 500) -> list[Path]:
     files: list[Path] = []
     try:
         for item in path.rglob("*"):
-            if len(files) >= limit:
+            if len(files) >= 10000:
                 break
             if item.is_file() and not item.is_symlink() and is_media_file(item):
                 files.append(item)
     except OSError:
         return files
-    return sorted(files, key=natural_path_key)
+    return sorted(files, key=natural_path_key)[:limit]
 
 
 def media_file_count(path: Path, limit: int = 10000) -> int:

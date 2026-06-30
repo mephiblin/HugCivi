@@ -256,3 +256,23 @@ def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
     assert rows[0]["source"] == "generic"
     assert rows[0]["source_url"] == "https://example.com/model.bin"
     assert rows[0]["status"] == "done"
+
+
+def test_library_items_skip_empty_archive_metadata_folder(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "gallery-dl" / "xhamster3.com" / "failed"
+    target.mkdir(parents=True)
+    (target / "_archive_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "gallery-dl",
+                "source_url": "https://xhamster3.com/videos/failed",
+                "raw_input": "https://xhamster3.com/videos/failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = [row for row in main.library_items() if row.get("target_path") == "gallery-dl/xhamster3.com/failed"]
+
+    assert rows == []

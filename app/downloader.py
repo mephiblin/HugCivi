@@ -80,6 +80,7 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "youtu.be",
 }
+XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
     "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
@@ -305,6 +306,12 @@ def enqueue_job(job_id: int) -> None:
     with _SCHEDULER_CONDITION:
         if job_id not in _PENDING_JOB_IDS:
             _PENDING_JOB_IDS.append(job_id)
+        _SCHEDULER_CONDITION.notify_all()
+
+
+def remove_pending_job(job_id: int) -> None:
+    with _SCHEDULER_CONDITION:
+        _PENDING_JOB_IDS[:] = [pending_id for pending_id in _PENDING_JOB_IDS if pending_id != job_id]
         _SCHEDULER_CONDITION.notify_all()
 
 
@@ -770,7 +777,7 @@ def request_interval_for_url(url: str) -> float:
     return default
 
 
-def wait_for_request_slot(url: str) -> None:
+def wait_for_request_slot(url: str, job_id: int | None = None) -> None:
     interval = request_interval_for_url(url)
     if interval <= 0:
         return
@@ -781,7 +788,7 @@ def wait_for_request_slot(url: str) -> None:
         sleep_for = max(0.0, next_at - now)
         _HOST_NEXT_REQUEST_AT[host] = max(now, next_at) + interval
     if sleep_for > 0:
-        time.sleep(sleep_for)
+        sleep_with_job_control(job_id, sleep_for)
 
 
 def retry_after_seconds(response: requests.Response) -> float | None:
@@ -827,7 +834,7 @@ def request_with_safety(
     for attempt in range(max_retries + 1):
         if job_id is not None:
             check_job_control(job_id)
-        wait_for_request_slot(url)
+        wait_for_request_slot(url, job_id)
         response = session.request(method, url, **kwargs)
         if response.status_code not in retry_statuses or attempt >= max_retries:
             return response
@@ -1068,6 +1075,10 @@ def run_huggingface_download_process(job_id: int, spec: dict[str, Any], target: 
         update_huggingface_progress(job_id, target)
         return local_path
     except JobControlStop:
+        if process and process.poll() is None:
+            stop_controlled_process(job_id, process, "HF download")
+        raise
+    except Exception:
         if process and process.poll() is None:
             stop_controlled_process(job_id, process, "HF download")
         raise
@@ -1460,18 +1471,23 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
         },
     )
 
-    if uses_ytdlp:
-        command = yt_dlp_command(source_url, target)
-        log_ytdlp_start(job_id, source_url, target)
-        run_ytdlp_process(job_id, command, target)
-    else:
-        command = gallery_dl_command(source_url, target)
-        log_gallery_dl_start(job_id, source_url, target)
-        run_gallery_dl_process(job_id, command, target)
+    try:
+        if uses_ytdlp:
+            command = yt_dlp_command(source_url, target)
+            log_ytdlp_start(job_id, source_url, target)
+            run_ytdlp_process(job_id, command, target)
+        else:
+            command = gallery_dl_command(source_url, target)
+            log_gallery_dl_start(job_id, source_url, target)
+            run_gallery_dl_process(job_id, command, target)
+    except Exception:
+        cleanup_empty_gallery_archive_target(job_id, target)
+        raise
 
     final_size = directory_size(target)
     files = gallery_dl_downloaded_files(target)
     if not files:
+        cleanup_empty_gallery_archive_target(job_id, target)
         raise RuntimeError("No media files were downloaded. Check the job log for extractor or network errors.")
     thumbnail_url = thumbnail_url_for_path(target)
     db.update_job(
@@ -1652,7 +1668,7 @@ def gallery_dl_command(source_url: str, target: Path, filename_format: str | Non
         command.extend(["--sleep-request", sleep_request])
     command.extend(gallery_dl_auth_args())
     if gallery_dl_uses_ytdlp(source_url):
-        command.extend(ytdl_gallery_dl_args())
+        command.extend(ytdl_gallery_dl_args(source_url))
     command.append(gallery_dl_extractor_url(source_url))
     return command
 
@@ -1683,7 +1699,9 @@ def yt_dlp_command(source_url: str, target: Path) -> list[str]:
     ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or YT_DLP_DEFAULT_FORMAT
     if ytdlp_format:
         command.extend(["--format", ytdlp_format])
-    command.extend(ytdlp_direct_cmdline_args())
+    extra_args = ytdlp_direct_cmdline_args()
+    command.extend(default_ytdlp_site_cmdline_args(url, extra_args))
+    command.extend(extra_args)
     command.append(url)
     return command
 
@@ -1715,7 +1733,7 @@ def gallery_dl_auth_args() -> list[str]:
     return args
 
 
-def ytdl_gallery_dl_args() -> list[str]:
+def ytdl_gallery_dl_args(source_url: str) -> list[str]:
     cmdline_args: list[str] = []
     config_options: dict[str, Any] = {}
 
@@ -1727,6 +1745,7 @@ def ytdl_gallery_dl_args() -> list[str]:
     if cookies_from_browser:
         cmdline_args.extend(["--cookies-from-browser", cookies_from_browser])
     parse_ytdlp_extra_options(extra_options, cmdline_args, config_options)
+    cmdline_args.extend(default_ytdlp_site_cmdline_args(ytdl_inner_url(source_url) or source_url, cmdline_args))
     if not has_ytdlp_cmdline_option(cmdline_args, "--js-runtimes"):
         cmdline_args.extend(default_ytdlp_js_runtime_args())
 
@@ -1779,6 +1798,40 @@ def parse_ytdlp_extra_cmdline_args(extra_options: str | None) -> list[str]:
 
 def default_ytdlp_js_runtime_args() -> list[str]:
     return ["--js-runtimes", "deno"] if shutil.which("deno") else []
+
+
+def default_ytdlp_site_cmdline_args(url: str, existing_args: list[str]) -> list[str]:
+    if not is_xhamster_url(url):
+        return []
+    args: list[str] = []
+    if not has_ytdlp_cmdline_option(existing_args, "--impersonate"):
+        args.extend(["--impersonate", "chrome"])
+    if not has_ytdlp_cmdline_option(existing_args, "--referer"):
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            args.extend(["--referer", f"{parsed.scheme}://{parsed.netloc}/"])
+    if not has_ytdlp_cmdline_option(existing_args, "--playlist-items") and not has_ytdlp_cmdline_option(
+        existing_args, "--no-playlist"
+    ):
+        args.extend(["--playlist-items", "1"])
+    if not has_ytdlp_cmdline_option(existing_args, "--force-ipv4") and not has_ytdlp_cmdline_option(
+        existing_args, "--force-ipv6"
+    ):
+        args.append("--force-ipv4")
+    return args
+
+
+def is_xhamster_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().strip(".").removeprefix("www.")
+    while host:
+        if host in {"xhamster.com", "xhamster.desi", "xhamster.one"} or XHAMSTER_HOST_PATTERN.match(host):
+            return True
+        _subdomain, separator, remainder = host.partition(".")
+        if not separator:
+            return False
+        host = remainder
+    return False
 
 
 def has_ytdlp_cmdline_option(tokens: list[str], option_name: str) -> bool:
@@ -2133,6 +2186,10 @@ def run_external_download_process(job_id: int, command: list[str], target: Path,
         if process and process.poll() is None:
             stop_controlled_process(job_id, process, label)
         raise
+    except Exception:
+        if process and process.poll() is None:
+            stop_controlled_process(job_id, process, label)
+        raise
 
 
 def read_process_output(pipe: Any, output_queue: queue.Queue[tuple[str, str | None]]) -> None:
@@ -2164,6 +2221,39 @@ def gallery_dl_downloaded_files(target: Path) -> list[Path]:
         and not item.name.endswith(".part")
     ]
     return sorted(files, key=lambda item: item.name.lower())
+
+
+def cleanup_empty_gallery_archive_target(job_id: int, target: Path) -> None:
+    if gallery_dl_downloaded_files(target) or not is_safe_gallery_archive_target(target):
+        return
+    try:
+        if not target.exists():
+            return
+        for item in sorted(target.rglob("*"), key=lambda child: len(child.parts), reverse=True):
+            if item.is_symlink():
+                continue
+            if item.is_file():
+                suffix = item.suffix.lower()
+                if suffix in {".json", ".txt", ".part"} or item.name.endswith(".part"):
+                    item.unlink()
+            elif item.is_dir():
+                try:
+                    item.rmdir()
+                except OSError:
+                    pass
+        target.rmdir()
+        db.append_log(job_id, f"removed empty gallery-dl archive: {target}")
+    except OSError as exc:
+        db.append_log(job_id, f"empty gallery-dl archive cleanup failed: {target} ({exc})")
+
+
+def is_safe_gallery_archive_target(target: Path) -> bool:
+    try:
+        root = DATA_ROOT.resolve(strict=False)
+        resolved = target.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved != root and root in resolved.parents
 
 
 def hitomi_gallery_files(target: Path) -> list[Path]:

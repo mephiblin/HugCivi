@@ -2036,29 +2036,7 @@
     function isMediaArchiveJob(job) {
       if (!libraryJobPath(job)) return false;
       if (job.has_media || Number(job.media_count || 0) > 0) return true;
-      const source = String(job.source || '').toLowerCase();
-      if (['hitomi', 'gallerydl'].includes(source)) return true;
-      const values = [
-        job.data_type,
-        job.dataType,
-        job.type,
-        job.kind,
-        job.category,
-        job.asset_type,
-        job.assetType,
-        job.model_category,
-        job.model_type,
-        job.file_format,
-        job.filename,
-        job.input_text,
-      ].filter(Boolean).map(value => String(value).toLowerCase());
-      return values.some(value => (
-        value.includes('media archive')
-        || value.includes('image archive')
-        || value.includes('gallery')
-        || value.includes('hitomi')
-        || value.includes('video')
-      ));
+      return false;
     }
 
     function renderProperties(data) {
