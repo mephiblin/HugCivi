@@ -5,4 +5,4 @@ requests==2.32.4
 huggingface_hub>=1.2.0,<2.0
 python-multipart==0.0.20
 gallery-dl>=1.32.4,<2.0
-yt-dlp[default]>=2026.1.1
+yt-dlp[default,curl-cffi]>=2026.1.1

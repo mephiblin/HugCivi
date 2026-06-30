@@ -1426,9 +1426,10 @@ def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
 def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
     if not parsed.gallerydl_url:
         raise ValueError("gallery-dl URL is missing.")
-    if not gallery_dl_available():
+    uses_ytdlp = gallery_dl_uses_ytdlp(parsed.gallerydl_url)
+    if not uses_ytdlp and not gallery_dl_available():
         raise RuntimeError("gallery-dl is not available in this container.")
-    if gallery_dl_uses_ytdlp(parsed.gallerydl_url) and not yt_dlp_available():
+    if uses_ytdlp and not yt_dlp_available():
         raise RuntimeError("yt-dlp is not available in this container.")
 
     source_url = parsed.gallerydl_url
@@ -1454,17 +1455,24 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
             "source_url": source_url,
             "raw_input": parsed.raw_input,
             "host": host,
-            "gallery_dl_version": gallery_dl_version(),
-            "yt_dlp_version": yt_dlp_version() if gallery_dl_uses_ytdlp(source_url) else None,
+            "gallery_dl_version": None if uses_ytdlp else gallery_dl_version(),
+            "yt_dlp_version": yt_dlp_version() if uses_ytdlp else None,
         },
     )
 
-    command = gallery_dl_command(source_url, target)
-    log_gallery_dl_start(job_id, source_url, target)
-    run_gallery_dl_process(job_id, command, target)
+    if uses_ytdlp:
+        command = yt_dlp_command(source_url, target)
+        log_ytdlp_start(job_id, source_url, target)
+        run_ytdlp_process(job_id, command, target)
+    else:
+        command = gallery_dl_command(source_url, target)
+        log_gallery_dl_start(job_id, source_url, target)
+        run_gallery_dl_process(job_id, command, target)
 
     final_size = directory_size(target)
     files = gallery_dl_downloaded_files(target)
+    if not files:
+        raise RuntimeError("No media files were downloaded. Check the job log for extractor or network errors.")
     thumbnail_url = thumbnail_url_for_path(target)
     db.update_job(
         job_id,
@@ -1649,6 +1657,29 @@ def gallery_dl_command(source_url: str, target: Path, filename_format: str | Non
     return command
 
 
+def yt_dlp_command(source_url: str, target: Path) -> list[str]:
+    url = ytdl_inner_url(source_url) or source_url
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-config",
+        "--newline",
+        "--write-info-json",
+        "--paths",
+        str(target),
+        "--output",
+        "%(title).180B [%(id)s].%(ext)s",
+    ]
+
+    ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or YT_DLP_DEFAULT_FORMAT
+    if ytdlp_format:
+        command.extend(["--format", ytdlp_format])
+    command.extend(ytdlp_direct_cmdline_args())
+    command.append(url)
+    return command
+
+
 def gallery_dl_auth_args() -> list[str]:
     args: list[str] = []
     username = db.get_secret("GALLERY_DL_USERNAME")
@@ -1703,6 +1734,39 @@ def ytdl_gallery_dl_args() -> list[str]:
     config_options["extractor.ytdl.module"] = "yt_dlp"
     config_options["downloader.ytdl.module"] = "yt_dlp"
     return gallery_dl_config_args(config_options)
+
+
+def ytdlp_direct_cmdline_args() -> list[str]:
+    args: list[str] = []
+    cookies_file = ytdlp_setting("YT_DLP_COOKIES_FILE")
+    cookies_from_browser = ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER")
+    extra_options = ytdlp_setting("YT_DLP_EXTRA_OPTIONS")
+    if cookies_file:
+        args.extend(["--cookies", cookies_file])
+    if cookies_from_browser:
+        args.extend(["--cookies-from-browser", cookies_from_browser])
+    args.extend(parse_ytdlp_extra_cmdline_args(extra_options))
+    if not has_ytdlp_cmdline_option(args, "--js-runtimes"):
+        args.extend(default_ytdlp_js_runtime_args())
+    return args
+
+
+def parse_ytdlp_extra_cmdline_args(extra_options: str | None) -> list[str]:
+    args: list[str] = []
+    if not extra_options:
+        return args
+    for line in extra_options.splitlines():
+        option = line.strip()
+        if not option or option.startswith("#"):
+            continue
+        if option.startswith("-") or "=" not in option:
+            args.extend(parse_ytdlp_cmdline_args(option))
+            continue
+        key, value = option.split("=", 1)
+        key = key.strip()
+        if key in {"cmdline-args", "ytdl.cmdline-args", "extractor.ytdl.cmdline-args", "downloader.ytdl.cmdline-args"}:
+            args.extend(parse_ytdlp_cmdline_args(value.strip()))
+    return args
 
 
 def default_ytdlp_js_runtime_args() -> list[str]:
@@ -1843,6 +1907,17 @@ def gallery_dl_auth_summary(source_url: str | None = None) -> str:
     return ", ".join(values) if values else "none"
 
 
+def ytdlp_auth_summary() -> str:
+    values = []
+    if ytdlp_setting("YT_DLP_COOKIES_FILE"):
+        values.append("cookies-file")
+    if ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER"):
+        values.append("browser-cookies")
+    if ytdlp_setting("YT_DLP_EXTRA_OPTIONS"):
+        values.append("extra-options")
+    return ", ".join(values) if values else "none"
+
+
 def log_gallery_dl_start(job_id: int, source_url: str, target: Path) -> None:
     db.append_log(
         job_id,
@@ -1850,6 +1925,16 @@ def log_gallery_dl_start(job_id: int, source_url: str, target: Path) -> None:
             f"gallery-dl start: source={redact_sensitive_text(source_url)} target={target} "
             f"version={gallery_dl_version()} yt-dlp={yt_dlp_version() if gallery_dl_uses_ytdlp(source_url) else 'n/a'} "
             f"auth={gallery_dl_auth_summary(source_url)}"
+        ),
+    )
+
+
+def log_ytdlp_start(job_id: int, source_url: str, target: Path) -> None:
+    db.append_log(
+        job_id,
+        (
+            f"yt-dlp start: source={redact_sensitive_text(ytdl_inner_url(source_url) or source_url)} "
+            f"target={target} version={yt_dlp_version()} auth={ytdlp_auth_summary()}"
         ),
     )
 
@@ -1981,6 +2066,14 @@ def stop_gallery_dl_process(job_id: int, process: subprocess.Popen[str]) -> None
 
 
 def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> None:
+    run_external_download_process(job_id, command, target, "gallery-dl")
+
+
+def run_ytdlp_process(job_id: int, command: list[str], target: Path) -> None:
+    run_external_download_process(job_id, command, target, "yt-dlp")
+
+
+def run_external_download_process(job_id: int, command: list[str], target: Path, label: str) -> None:
     process: subprocess.Popen[str] | None = None
     try:
         process = subprocess.Popen(
@@ -2016,7 +2109,7 @@ def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> Non
                 line = event[1]
                 message = line.strip()
                 if message:
-                    db.append_log(job_id, f"gallery-dl: {message[:1000]}")
+                    db.append_log(job_id, f"{label}: {message[:1000]}")
 
             now = time.time()
             if now - last_update >= 1.0:
@@ -2027,10 +2120,10 @@ def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> Non
 
         return_code = process.wait()
         if return_code != 0:
-            raise RuntimeError(f"gallery-dl exited with code {return_code}")
+            raise RuntimeError(f"{label} exited with code {return_code}")
     except JobControlStop:
         if process and process.poll() is None:
-            stop_gallery_dl_process(job_id, process)
+            stop_controlled_process(job_id, process, label)
         raise
 
 

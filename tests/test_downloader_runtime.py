@@ -151,6 +151,60 @@ class DownloaderRuntimeTests(unittest.TestCase):
             "/api/fs/preview?path=gallery-dl/example.com/123/001_page.jpg",
         )
 
+    def test_ytdl_download_uses_direct_ytdlp_process(self) -> None:
+        parsed = ParsedDownload(
+            source="gallerydl",
+            raw_input="https://xhamster3.com/videos/sample-video-123456",
+            gallerydl_url="ytdl:https://xhamster3.com/videos/sample-video-123456",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_run_ytdlp_process(_job_id: int, _command: list[str], target: Path) -> None:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "sample-video-123456.mp4").write_bytes(b"video")
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "gallery_dl_available", return_value=True),
+                mock.patch.object(downloader, "yt_dlp_available", return_value=True),
+                mock.patch.object(downloader, "gallery_dl_version", return_value="test-gallery-dl"),
+                mock.patch.object(downloader, "yt_dlp_version", return_value="test-yt-dlp"),
+                mock.patch.object(downloader, "run_ytdlp_process", side_effect=fake_run_ytdlp_process) as ytdlp_run,
+                mock.patch.object(downloader, "run_gallery_dl_process") as gallery_run,
+            ):
+                downloader.download_gallerydl(56, parsed)
+
+        ytdlp_run.assert_called_once()
+        gallery_run.assert_not_called()
+        self.assertEqual(fake_db.job["filename"], "1 files")
+
+    def test_ytdl_download_fails_when_no_media_files_are_created(self) -> None:
+        parsed = ParsedDownload(
+            source="gallerydl",
+            raw_input="https://xhamster3.com/videos/sample-video-123456",
+            gallerydl_url="ytdl:https://xhamster3.com/videos/sample-video-123456",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "gallery_dl_available", return_value=True),
+                mock.patch.object(downloader, "yt_dlp_available", return_value=True),
+                mock.patch.object(downloader, "gallery_dl_version", return_value="test-gallery-dl"),
+                mock.patch.object(downloader, "yt_dlp_version", return_value="test-yt-dlp"),
+                mock.patch.object(downloader, "run_ytdlp_process", return_value=None),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "No media files"):
+                    downloader.download_gallerydl(57, parsed)
+
     def test_huggingface_process_stops_child_when_job_is_deleted(self) -> None:
         class CapturingStdin:
             def __init__(self) -> None:
@@ -207,12 +261,12 @@ class DownloaderRuntimeTests(unittest.TestCase):
         with (
             mock.patch.object(downloader.subprocess, "Popen", return_value=fake_process),
             mock.patch.object(downloader, "check_job_control", side_effect=downloader.JobControlStop("deleted")),
-            mock.patch.object(downloader, "stop_gallery_dl_process") as stop_process,
+            mock.patch.object(downloader, "stop_controlled_process") as stop_process,
         ):
             with self.assertRaises(downloader.JobControlStop):
                 downloader.run_gallery_dl_process(88, ["gallery-dl", "ytdl:https://xhamster3.com/videos/1"], Path("/tmp"))
 
-        stop_process.assert_called_once_with(88, fake_process)
+        stop_process.assert_called_once_with(88, fake_process, "gallery-dl")
 
     def test_gallery_dl_ytdl_target_parts_unwrap_youtube_url(self) -> None:
         host, slug = downloader.gallery_dl_target_parts("ytdl:https://www.youtube.com/watch?v=abc123&t=30")
@@ -280,6 +334,39 @@ class DownloaderRuntimeTests(unittest.TestCase):
 
         self.assertIn("extractor.ytdl.enabled=true", command)
         self.assertEqual(command[-1], f"ytdl:{url}")
+
+    def test_yt_dlp_command_uses_direct_cli_with_auth_and_format(self) -> None:
+        fake_db = FakeDb(
+            {},
+            secrets={
+                "YT_DLP_COOKIES_FILE": "/config/yt-dlp-cookies.txt",
+                "YT_DLP_COOKIES_FROM_BROWSER": "firefox:default",
+                "YT_DLP_FORMAT": "best[ext=mp4]/best",
+                "YT_DLP_EXTRA_OPTIONS": "cmdline-args=--playlist-items 1",
+            },
+        )
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader.shutil, "which", return_value=None),
+        ):
+            command = downloader.yt_dlp_command(
+                "ytdl:https://xhamster3.com/videos/sample-video-123456",
+                Path("/downloads/xhamster"),
+            )
+
+        self.assertEqual(command[:3], [downloader.sys.executable, "-m", "yt_dlp"])
+        self.assertIn("--no-config", command)
+        self.assertIn("--paths", command)
+        self.assertIn("/downloads/xhamster", command)
+        self.assertIn("--format", command)
+        self.assertEqual(command[command.index("--format") + 1], "best[ext=mp4]/best")
+        self.assertIn("--cookies", command)
+        self.assertIn("/config/yt-dlp-cookies.txt", command)
+        self.assertIn("--cookies-from-browser", command)
+        self.assertIn("firefox:default", command)
+        self.assertIn("--playlist-items", command)
+        self.assertIn("1", command)
+        self.assertEqual(command[-1], "https://xhamster3.com/videos/sample-video-123456")
 
     def test_stall_watchdog_defaults_to_enabled(self) -> None:
         with mock.patch.object(downloader, "db", FakeDb({})):
