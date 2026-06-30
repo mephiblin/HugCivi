@@ -32,6 +32,8 @@ USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 HF_DEFAULT_SNAPSHOT_WORKERS = 2
+HF_DOWNLOAD_SUBCOMMAND = "huggingface-download"
+HF_RESULT_PREFIX = "HUGCIVI_HF_RESULT_JSON:"
 ROUTE_SETTING_BY_TYPE = {
     "llm": "ROUTE_LLM_ROOT",
     "lora": "ROUTE_LORA_ROOT",
@@ -58,6 +60,17 @@ _GALLERY_DL_VERSION_CACHE: str | None = None
 _YT_DLP_VERSION_LOCK = threading.Lock()
 _YT_DLP_VERSION_CACHE: str | None = None
 DOWNLOAD_RUNTIME_METADATA_KEY = "download_runtime"
+THUMBNAIL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
+THUMBNAIL_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+}
+FOLDER_THUMBNAIL_MAX_FILES = 5000
 YOUTUBE_HOSTS = {
     "youtube.com",
     "m.youtube.com",
@@ -511,6 +524,90 @@ def directory_size(path: Path) -> int:
     return total
 
 
+def is_thumbnail_image_file(path: Path) -> bool:
+    if path.suffix.lower() not in THUMBNAIL_IMAGE_EXTENSIONS or path.name.endswith(".part"):
+        return False
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
+def folder_thumbnail_path(path: Path, *, max_files: int = FOLDER_THUMBNAIL_MAX_FILES) -> Path | None:
+    if is_thumbnail_image_file(path):
+        return path
+    try:
+        if not path.is_dir():
+            return None
+    except OSError:
+        return None
+
+    candidates: list[Path] = []
+    inspected = 0
+    try:
+        for item in path.rglob("*"):
+            try:
+                if item.is_symlink() or not item.is_file():
+                    continue
+            except OSError:
+                continue
+            inspected += 1
+            if inspected > max_files:
+                break
+            if item.suffix.lower() in THUMBNAIL_IMAGE_EXTENSIONS and not item.name.endswith(".part"):
+                candidates.append(item)
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: folder_thumbnail_sort_key(path, item))
+
+
+def folder_thumbnail_sort_key(root: Path, path: Path) -> tuple[tuple[int, int | str], ...]:
+    try:
+        relative = path.relative_to(root if root.is_dir() else root.parent)
+    except (OSError, ValueError):
+        relative = path
+    return natural_path_sort_key(relative)
+
+
+def natural_path_sort_key(path: Path) -> tuple[tuple[int, int | str], ...]:
+    key: list[tuple[int, int | str]] = []
+    for part in path.parts:
+        for token in re.split(r"(\d+)", part.lower()):
+            if not token:
+                continue
+            if token.isdigit():
+                key.append((0, int(token)))
+            else:
+                key.append((1, token))
+        key.append((2, "/"))
+    return tuple(key)
+
+
+def data_root_relative_path(path: Path) -> str | None:
+    try:
+        root = DATA_ROOT.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+        return resolved.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def thumbnail_url_for_path(path: Path) -> str:
+    thumbnail = folder_thumbnail_path(path)
+    if thumbnail is None:
+        return ""
+    relative = data_root_relative_path(thumbnail)
+    if not relative:
+        return ""
+    return f"/api/fs/preview?path={quote(relative, safe='/')}"
+
+
+def thumbnail_media_type(path: Path) -> str:
+    return THUMBNAIL_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
 def redact_metadata(value: Any) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
@@ -797,8 +894,6 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
     token = db.get_secret("HF_TOKEN")
     configure_huggingface_runtime(token)
 
-    from huggingface_hub import hf_hub_download, snapshot_download
-
     if token:
         db.append_log(job_id, "HF token configured: authenticated Hub requests enabled")
     else:
@@ -846,9 +941,13 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
             db.append_log(job_id, f"HF file download: {parsed.repo_id}/{filename}")
             db.append_log(
                 job_id,
-                "HF Hub library call in progress; pause/delete requests may apply after this file call returns",
+                "HF Hub file process started; pause/delete requests can terminate it",
             )
-            local_path = hf_hub_download(filename=filename, **common)
+            local_path = run_huggingface_download_process(
+                job_id,
+                huggingface_download_process_spec(common, mode="file", filename=filename),
+                target,
+            )
             check_job_control(job_id)
             saved_path = Path(local_path)
             saved_size = saved_path.stat().st_size if saved_path.exists() else 0
@@ -864,18 +963,132 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         db.append_log(job_id, f"HF snapshot download: {parsed.repo_id}")
         db.append_log(
             job_id,
-            "HF Hub snapshot call in progress; pause/delete requests may apply after this library call returns",
+            "HF Hub snapshot process started; pause/delete requests can terminate it",
         )
-        local_path = snapshot_download(
-            allow_patterns=parsed.include_patterns or None,
-            ignore_patterns=parsed.exclude_patterns or None,
-            max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
-            **common,
+        local_path = run_huggingface_download_process(
+            job_id,
+            huggingface_download_process_spec(
+                common,
+                mode="snapshot",
+                allow_patterns=parsed.include_patterns or None,
+                ignore_patterns=parsed.exclude_patterns or None,
+                max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
+            ),
+            target,
         )
         check_job_control(job_id)
         saved_size = directory_size(Path(local_path))
         db.append_log(job_id, f"saved snapshot: {local_path} ({human_bytes(saved_size)})")
         db.update_job(job_id, filename="snapshot", progress_bytes=saved_size, total_bytes=saved_size)
+
+
+def huggingface_download_process_spec(
+    common: dict[str, Any],
+    *,
+    mode: str,
+    filename: str | None = None,
+    allow_patterns: list[str] | None = None,
+    ignore_patterns: list[str] | None = None,
+    max_workers: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "repo_id": common["repo_id"],
+        "repo_type": common.get("repo_type"),
+        "revision": common.get("revision"),
+        "local_dir": common["local_dir"],
+        "token": common.get("token"),
+        "filename": filename,
+        "allow_patterns": allow_patterns,
+        "ignore_patterns": ignore_patterns,
+        "max_workers": max_workers,
+    }
+
+
+def run_huggingface_download_process(job_id: int, spec: dict[str, Any], target: Path) -> str:
+    process: subprocess.Popen[str] | None = None
+    result: dict[str, Any] = {}
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "app.downloader", HF_DOWNLOAD_SUBCOMMAND],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **controlled_process_kwargs(),
+        )
+        if process.stdin:
+            try:
+                process.stdin.write(json.dumps(spec, ensure_ascii=False))
+                process.stdin.close()
+            except OSError:
+                pass
+
+        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_done = process.stdout is None
+        if process.stdout:
+            reader = threading.Thread(
+                target=read_process_output,
+                args=(process.stdout, output_queue),
+                name=f"huggingface-output-{job_id}",
+                daemon=True,
+            )
+            reader.start()
+
+        last_update = 0.0
+        while True:
+            check_job_control(job_id)
+            try:
+                event = output_queue.get(timeout=1.0)
+            except queue.Empty:
+                event = None
+            if event is not None and event[0] == "done":
+                output_done = True
+            elif event is not None and event[1] is not None:
+                handle_huggingface_process_output(job_id, event[1], result)
+
+            now = time.time()
+            if now - last_update >= 2.0:
+                update_huggingface_progress(job_id, target)
+                last_update = now
+            if process.poll() is not None and output_done and output_queue.empty():
+                break
+
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError(f"Hugging Face download process exited with code {return_code}")
+
+        local_path = result.get("local_path")
+        if not isinstance(local_path, str) or not local_path:
+            raise RuntimeError("Hugging Face download process did not report a saved path")
+        update_huggingface_progress(job_id, target)
+        return local_path
+    except JobControlStop:
+        if process and process.poll() is None:
+            stop_controlled_process(job_id, process, "HF download")
+        raise
+
+
+def handle_huggingface_process_output(job_id: int, line: str, result: dict[str, Any]) -> None:
+    message = line.strip()
+    if not message:
+        return
+    if message.startswith(HF_RESULT_PREFIX):
+        try:
+            payload = json.loads(message[len(HF_RESULT_PREFIX) :])
+        except json.JSONDecodeError:
+            db.append_log(job_id, "HF download process returned invalid result metadata")
+            return
+        if isinstance(payload, dict):
+            result.update(payload)
+        return
+    db.append_log(job_id, f"HF: {redact_sensitive_text(message)[:1000]}")
+
+
+def update_huggingface_progress(job_id: int, target: Path) -> None:
+    db.update_job(job_id, progress_bytes=directory_size(target), total_bytes=None)
 
 
 def civitai_file_selector(parsed: ParsedDownload) -> dict[str, Any]:
@@ -1181,7 +1394,7 @@ def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
             try:
                 db.append_log(job_id, f"Hitomi page {index}/{len(files)}: {filename}")
                 saved = stream_download(job_id, session, image_url, target, filename_override=filename)
-                thumbnail_url = thumbnail_url or image_url
+                thumbnail_url = thumbnail_url or thumbnail_url_for_path(saved)
                 break
             except requests.RequestException as exc:
                 last_error = exc
@@ -1198,7 +1411,13 @@ def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
         )
 
     final_size = directory_size(target)
-    db.update_job(job_id, filename=f"{len(files)} pages", progress_bytes=final_size, total_bytes=final_size)
+    db.update_job(
+        job_id,
+        filename=f"{len(files)} pages",
+        progress_bytes=final_size,
+        total_bytes=final_size,
+        thumbnail_url=thumbnail_url or thumbnail_url_for_path(target) or None,
+    )
     db.append_log(job_id, f"saved gallery: {target} ({human_bytes(final_size)})")
 
 
@@ -1244,12 +1463,14 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
 
     final_size = directory_size(target)
     files = gallery_dl_downloaded_files(target)
+    thumbnail_url = thumbnail_url_for_path(target)
     db.update_job(
         job_id,
         filename=f"{len(files) or 'downloaded'} files",
         progress_bytes=final_size,
         total_bytes=final_size,
         precision=f"{len(files)} files" if files else None,
+        thumbnail_url=thumbnail_url or None,
     )
     db.append_log(job_id, f"saved gallery-dl archive: {target} ({human_bytes(final_size)})")
 
@@ -1381,12 +1602,14 @@ def download_hitomi_gallery_dl(job_id: int, parsed: ParsedDownload, session: req
 
     final_size = directory_size(target)
     page_files = hitomi_gallery_files(target)
+    thumbnail_url = thumbnail_url_for_path(page_files[0] if page_files else target)
     db.update_job(
         job_id,
         filename=f"{len(page_files) or page_count or 'downloaded'} pages",
         progress_bytes=final_size,
         total_bytes=final_size,
         precision=f"{len(page_files)} pages" if page_files else (f"{page_count} pages" if page_count else None),
+        thumbnail_url=thumbnail_url or None,
     )
     db.append_log(job_id, f"saved gallery with gallery-dl: {target} ({human_bytes(final_size)})")
 
@@ -1691,29 +1914,33 @@ def generic_gallery_slug(parsed_url: Any, host: str) -> str:
     return host
 
 
-def gallery_dl_process_kwargs() -> dict[str, Any]:
+def controlled_process_kwargs() -> dict[str, Any]:
     if os.name == "posix":
         return {"start_new_session": True}
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     return {"creationflags": creationflags} if creationflags else {}
 
 
-def stop_gallery_dl_process(job_id: int, process: subprocess.Popen[str]) -> None:
+def gallery_dl_process_kwargs() -> dict[str, Any]:
+    return controlled_process_kwargs()
+
+
+def stop_controlled_process(job_id: int, process: subprocess.Popen[str], label: str) -> None:
     if process.poll() is not None:
         return
 
     if os.name == "posix":
         try:
             os.killpg(process.pid, signal.SIGTERM)
-            db.append_log(job_id, "gallery-dl process group terminate requested")
+            db.append_log(job_id, f"{label} process group terminate requested")
         except ProcessLookupError:
             return
         except OSError as exc:
-            db.append_log(job_id, f"gallery-dl process group terminate failed: {exc}; terminating parent")
+            db.append_log(job_id, f"{label} process group terminate failed: {exc}; terminating parent")
             process.terminate()
     else:
         process.terminate()
-        db.append_log(job_id, "gallery-dl process terminate requested")
+        db.append_log(job_id, f"{label} process terminate requested")
 
     try:
         process.wait(timeout=10)
@@ -1724,20 +1951,24 @@ def stop_gallery_dl_process(job_id: int, process: subprocess.Popen[str]) -> None
     if os.name == "posix":
         try:
             os.killpg(process.pid, signal.SIGKILL)
-            db.append_log(job_id, "gallery-dl process group kill requested")
+            db.append_log(job_id, f"{label} process group kill requested")
         except ProcessLookupError:
             return
         except OSError as exc:
-            db.append_log(job_id, f"gallery-dl process group kill failed: {exc}; killing parent")
+            db.append_log(job_id, f"{label} process group kill failed: {exc}; killing parent")
             process.kill()
     else:
         process.kill()
-        db.append_log(job_id, "gallery-dl process kill requested")
+        db.append_log(job_id, f"{label} process kill requested")
 
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        db.append_log(job_id, "gallery-dl process did not exit after kill request")
+        db.append_log(job_id, f"{label} process did not exit after kill request")
+
+
+def stop_gallery_dl_process(job_id: int, process: subprocess.Popen[str]) -> None:
+    stop_controlled_process(job_id, process, "gallery-dl")
 
 
 def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> None:
@@ -2248,3 +2479,62 @@ def parse_content_range_total(value: str | None) -> int | None:
     if match:
         return int(match.group(1))
     return None
+
+
+def huggingface_download_worker_main() -> int:
+    raw_spec = sys.stdin.read()
+    try:
+        spec = json.loads(raw_spec)
+    except json.JSONDecodeError as exc:
+        print(f"invalid Hugging Face download spec: {exc}", file=sys.stderr, flush=True)
+        return 2
+    if not isinstance(spec, dict):
+        print("invalid Hugging Face download spec: expected object", file=sys.stderr, flush=True)
+        return 2
+
+    try:
+        token = spec.get("token") or None
+        configure_huggingface_runtime(str(token) if token else None)
+
+        from huggingface_hub import hf_hub_download, snapshot_download
+
+        common = {
+            "repo_id": spec["repo_id"],
+            "repo_type": spec.get("repo_type"),
+            "revision": spec.get("revision"),
+            "local_dir": spec["local_dir"],
+            "token": token,
+        }
+        mode = spec.get("mode")
+        if mode == "file":
+            local_path = hf_hub_download(filename=spec["filename"], **common)
+        elif mode == "snapshot":
+            local_path = snapshot_download(
+                allow_patterns=spec.get("allow_patterns"),
+                ignore_patterns=spec.get("ignore_patterns"),
+                max_workers=int(spec.get("max_workers") or HF_DEFAULT_SNAPSHOT_WORKERS),
+                **common,
+            )
+        else:
+            raise ValueError(f"Unsupported Hugging Face download mode: {mode}")
+
+        print(
+            HF_RESULT_PREFIX + json.dumps({"local_path": str(local_path)}, ensure_ascii=False),
+            flush=True,
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 - child process must report failures to parent
+        print(redact_sensitive_text(f"Hugging Face download failed: {exc}"), file=sys.stderr, flush=True)
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args == [HF_DOWNLOAD_SUBCOMMAND]:
+        return huggingface_download_worker_main()
+    print("usage: python -m app.downloader huggingface-download", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

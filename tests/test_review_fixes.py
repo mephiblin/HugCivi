@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import pytest
@@ -171,3 +172,85 @@ def test_partial_download_path_is_job_and_url_scoped(app_modules: tuple) -> None
     assert first != third
     assert ".job-1-" in first.name
     assert first.name.endswith(".part")
+
+
+def test_library_items_restore_filesystem_card_after_job_row_deleted(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "stable-diffusion" / "loras" / "sdxl" / "disk-card" / "version_1"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/123",
+                "model_id": "123",
+                "version_id": "456",
+                "archive_info": {
+                    "model_title": "Disk Card",
+                    "model_category": "LoRA",
+                    "base_model": "SDXL",
+                    "file_format": "SafeTensor",
+                    "precision": "fp16",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed = ParsedDownload(
+        source="civitai",
+        raw_input="https://civitai.com/models/123",
+        civitai_model_id="123",
+        civitai_version_id="456",
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="done", target_dir=str(target), model_title="DB Row")
+
+    rows = [
+        row
+        for row in main.decorate_jobs(db.list_jobs())
+        if row.get("target_path") == "stable-diffusion/loras/sdxl/disk-card/version_1"
+    ]
+
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "DB Row"
+
+    db.delete_job(job_id)
+    assert main.decorate_jobs(db.list_jobs()) == []
+
+    rows = [
+        row
+        for row in main.library_items()
+        if row.get("target_path") == "stable-diffusion/loras/sdxl/disk-card/version_1"
+    ]
+
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Disk Card"
+    assert rows[0]["source"] == "civitai"
+    assert rows[0]["status"] == "done"
+    assert rows[0]["source_url"] == "https://civitai.com/models/123"
+    assert rows[0]["favorite"] is False
+
+
+def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "generic"
+    target.mkdir()
+    (target / "model.bin").write_text("model", encoding="utf-8")
+    (target / "_generic_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "generic",
+                "url": "https://example.com/model.bin",
+                "raw_input": "https://example.com/model.bin",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = [row for row in main.library_items() if row.get("target_path") == "generic"]
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "generic"
+    assert rows[0]["source_url"] == "https://example.com/model.bin"
+    assert rows[0]["status"] == "done"

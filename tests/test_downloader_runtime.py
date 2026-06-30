@@ -89,6 +89,116 @@ class DownloaderRuntimeTests(unittest.TestCase):
         else:
             self.assertIsInstance(kwargs, dict)
 
+    def test_folder_thumbnail_path_picks_first_image_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "hitomi" / "gallery"
+            target.mkdir(parents=True)
+            (target / "_archive_metadata.json").write_text("{}", encoding="utf-8")
+            (target / "001_page.webp.part").write_bytes(b"partial")
+            (target / "010_page.webp").write_bytes(b"ten")
+            (target / "002_page.webp").write_bytes(b"two")
+            first_page = target / "001_page.jpg"
+            first_page.write_bytes(b"one")
+
+            self.assertEqual(downloader.folder_thumbnail_path(target), first_page)
+
+    def test_thumbnail_url_for_path_exposes_existing_folder_image(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            target = root / "hitomi" / "123 Gallery"
+            target.mkdir(parents=True)
+            first_page = target / "001 page.jpg"
+            first_page.write_bytes(b"image")
+
+            with mock.patch.object(downloader, "DATA_ROOT", root):
+                self.assertEqual(
+                    downloader.thumbnail_url_for_path(target),
+                    "/api/fs/preview?path=hitomi/123%20Gallery/001%20page.jpg",
+                )
+                self.assertEqual(
+                    downloader.thumbnail_url_for_path(first_page),
+                    "/api/fs/preview?path=hitomi/123%20Gallery/001%20page.jpg",
+                )
+                self.assertEqual(downloader.thumbnail_media_type(first_page), "image/jpeg")
+
+    def test_gallerydl_folder_download_sets_local_thumbnail_url(self) -> None:
+        parsed = ParsedDownload(
+            source="gallerydl",
+            raw_input="https://example.com/gallery/123",
+            gallerydl_url="https://example.com/gallery/123",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_run_gallery_dl_process(_job_id: int, _command: list[str], target: Path) -> None:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "002_page.webp").write_bytes(b"two")
+                (target / "001_page.jpg").write_bytes(b"one")
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "gallery_dl_available", return_value=True),
+                mock.patch.object(downloader, "gallery_dl_version", return_value="test-gallery-dl"),
+                mock.patch.object(downloader, "run_gallery_dl_process", side_effect=fake_run_gallery_dl_process),
+            ):
+                downloader.download_gallerydl(55, parsed)
+
+        self.assertEqual(
+            fake_db.job["thumbnail_url"],
+            "/api/fs/preview?path=gallery-dl/example.com/123/001_page.jpg",
+        )
+
+    def test_huggingface_process_stops_child_when_job_is_deleted(self) -> None:
+        class CapturingStdin:
+            def __init__(self) -> None:
+                self.value = ""
+                self.closed = False
+
+            def write(self, value: str) -> int:
+                self.value += value
+                return len(value)
+
+            def close(self) -> None:
+                self.closed = True
+
+        fake_stdin = CapturingStdin()
+        fake_process = mock.Mock()
+        fake_process.stdin = fake_stdin
+        fake_process.stdout = None
+        fake_process.poll.return_value = None
+        spec = {
+            "mode": "snapshot",
+            "repo_id": "owner/repo",
+            "repo_type": "model",
+            "revision": None,
+            "local_dir": "/data/hf",
+            "token": "secret-token",
+            "allow_patterns": None,
+            "ignore_patterns": None,
+            "max_workers": 1,
+        }
+
+        with (
+            mock.patch.object(downloader.subprocess, "Popen", return_value=fake_process) as popen,
+            mock.patch.object(downloader, "check_job_control", side_effect=downloader.JobControlStop("deleted")),
+            mock.patch.object(downloader, "stop_controlled_process") as stop_process,
+        ):
+            with self.assertRaises(downloader.JobControlStop):
+                downloader.run_huggingface_download_process(77, spec, Path("/data/hf"))
+
+        command = popen.call_args.args[0]
+        self.assertEqual(
+            command,
+            [downloader.sys.executable, "-m", "app.downloader", "huggingface-download"],
+        )
+        self.assertNotIn("secret-token", command)
+        self.assertTrue(fake_stdin.closed)
+        self.assertEqual(json.loads(fake_stdin.value)["token"], "secret-token")
+        stop_process.assert_called_once_with(77, fake_process, "HF download")
+
     def test_gallery_dl_ytdl_target_parts_unwrap_youtube_url(self) -> None:
         host, slug = downloader.gallery_dl_target_parts("ytdl:https://www.youtube.com/watch?v=abc123&t=30")
 

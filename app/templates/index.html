@@ -462,6 +462,7 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="media" data-media-only role="menuitem" hidden>미디어 보기</button>
     <button type="button" data-action="workflow" data-workflow-only role="menuitem" hidden>워크플로 보기</button>
     <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
@@ -488,6 +489,44 @@
         <button type="button" id="properties-close" aria-label="속성 닫기">×</button>
       </header>
       <dl class="properties-list" id="properties-list"></dl>
+    </div>
+  </section>
+
+  <section class="media-modal" id="media-modal" role="dialog" aria-modal="true" aria-labelledby="media-title" hidden>
+    <div class="media-panel">
+      <header class="media-head">
+        <div>
+          <p class="media-kicker">Media Archive</p>
+          <h2 id="media-title">미디어 보기</h2>
+          <p id="media-path">/data</p>
+        </div>
+        <div class="media-head-actions">
+          <span class="media-counter" id="media-counter">0 / 0</span>
+          <button type="button" id="media-close" aria-label="미디어 보기 닫기">×</button>
+        </div>
+      </header>
+      <div class="media-body">
+        <section class="media-stage" aria-label="미디어 미리보기">
+          <button type="button" class="media-nav media-prev" id="media-prev" aria-label="이전 미디어">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="M15.7 5.3 9 12l6.7 6.7-1.4 1.4L6.2 12l8.1-8.1 1.4 1.4Z"/>
+            </svg>
+          </button>
+          <div class="media-display" id="media-display"></div>
+          <button type="button" class="media-nav media-next" id="media-next" aria-label="다음 미디어">
+            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+              <path d="m8.3 18.7 6.7-6.7-6.7-6.7 1.4-1.4 8.1 8.1-8.1 8.1-1.4-1.4Z"/>
+            </svg>
+          </button>
+          <footer class="media-caption">
+            <strong id="media-item-title">미디어를 선택하세요</strong>
+            <span id="media-item-meta"></span>
+          </footer>
+        </section>
+        <aside class="media-sidebar" aria-label="미디어 목록">
+          <div class="media-strip" id="media-strip"></div>
+        </aside>
+      </div>
     </div>
   </section>
 
@@ -528,6 +567,7 @@
 
   <script>
     const initialJobs = {{ jobs|tojson }};
+    const initialLibraryItems = {{ library_items|tojson }};
     const targetInput = document.getElementById('target_subdir');
     const selectedFolder = document.getElementById('selected-folder');
     const homeView = document.getElementById('home-view');
@@ -566,6 +606,17 @@
     const propertiesTitle = document.getElementById('properties-title');
     const propertiesPath = document.getElementById('properties-path');
     const propertiesList = document.getElementById('properties-list');
+    const mediaModal = document.getElementById('media-modal');
+    const mediaClose = document.getElementById('media-close');
+    const mediaTitle = document.getElementById('media-title');
+    const mediaPath = document.getElementById('media-path');
+    const mediaCounter = document.getElementById('media-counter');
+    const mediaDisplay = document.getElementById('media-display');
+    const mediaStrip = document.getElementById('media-strip');
+    const mediaPrev = document.getElementById('media-prev');
+    const mediaNext = document.getElementById('media-next');
+    const mediaItemTitle = document.getElementById('media-item-title');
+    const mediaItemMeta = document.getElementById('media-item-meta');
     const workflowModal = document.getElementById('workflow-modal');
     const workflowClose = document.getElementById('workflow-close');
     const workflowTitle = document.getElementById('workflow-title');
@@ -580,9 +631,13 @@
     let downloadQueueActive = false;
     let downloadQueueId = 1;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
+    let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
+    let mediaRequestId = 0;
+    let mediaItems = [];
+    let mediaIndex = 0;
     let workflowRequestId = 0;
     let workflowDropDepth = 0;
     let workflowDropTimer = null;
@@ -652,20 +707,32 @@
     document.addEventListener('click', () => {
       closeSettingsModal();
       closePropertiesModal();
+      closeMediaViewer();
       closeWorkflowViewer();
       hideContextMenu();
     });
 
     document.addEventListener('keydown', event => {
+      if (!mediaModal.hidden && event.key === 'ArrowLeft') {
+        event.preventDefault();
+        showPreviousMedia();
+        return;
+      }
+      if (!mediaModal.hidden && event.key === 'ArrowRight') {
+        event.preventDefault();
+        showNextMedia();
+        return;
+      }
       if (event.key === 'Escape') {
         closeSettingsModal();
         closePropertiesModal();
+        closeMediaViewer();
         closeWorkflowViewer();
         hideContextMenu();
       }
     });
 
-    refreshButton.addEventListener('click', refreshJobs);
+    refreshButton.addEventListener('click', refreshData);
     thumbnailBlurToggle.addEventListener('click', () => {
       applyThumbnailBlurPreference(!thumbnailBlurEnabled, true);
     });
@@ -690,6 +757,21 @@
       event.preventDefault();
       savePropertiesNote(button.dataset.notePath || '');
     });
+    mediaClose.addEventListener('click', closeMediaViewer);
+    mediaModal.addEventListener('click', event => {
+      if (event.target === mediaModal) {
+        closeMediaViewer();
+      }
+      event.stopPropagation();
+    });
+    mediaPrev.addEventListener('click', showPreviousMedia);
+    mediaNext.addEventListener('click', showNextMedia);
+    mediaStrip.addEventListener('click', event => {
+      const button = event.target.closest('[data-media-index]');
+      if (!button) return;
+      event.preventDefault();
+      showMediaAt(Number(button.dataset.mediaIndex));
+    });
     workflowClose.addEventListener('click', closeWorkflowViewer);
     workflowModal.addEventListener('click', event => {
       if (event.target === workflowModal) {
@@ -705,27 +787,53 @@
       showContextMenu(event.clientX, event.clientY, {
         path: card.dataset.path || '',
         name: card.dataset.name || card.dataset.path || 'model',
+        isMediaArchive: card.dataset.mediaArchive === 'true',
         isWorkflow: card.dataset.workflow === 'true',
       });
     });
     libraryGrid.addEventListener('click', event => {
       const actionButton = event.target.closest('[data-card-action]');
-      if (!actionButton) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const card = actionButton.closest('.asset-card');
-      const path = card?.dataset.path || '';
-      const action = actionButton.dataset.cardAction;
-      if (action === 'open') {
-        openSourceUrl(actionButton.dataset.url || '');
-      } else if (action === 'favorite') {
-        toggleFavorite(path, actionButton.getAttribute('aria-pressed') !== 'true');
-      } else if (action === 'workflow') {
-        openWorkflowViewer({
-          path,
-          name: card?.dataset.name || path || '워크플로',
-        });
+      if (actionButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        const card = actionButton.closest('.asset-card');
+        const path = card?.dataset.path || '';
+        const action = actionButton.dataset.cardAction;
+        if (action === 'media') {
+          openMediaViewer({
+            path,
+            name: card?.dataset.name || path || '미디어',
+          });
+        } else if (action === 'open') {
+          openSourceUrl(actionButton.dataset.url || '');
+        } else if (action === 'favorite') {
+          toggleFavorite(path, actionButton.getAttribute('aria-pressed') !== 'true');
+        } else if (action === 'workflow') {
+          openWorkflowViewer({
+            path,
+            name: card?.dataset.name || path || '워크플로',
+          });
+        }
+        return;
       }
+
+      const card = event.target.closest('.asset-card.media-archive');
+      if (!card || event.target.closest('button, a, input, select, textarea')) return;
+      event.preventDefault();
+      openMediaViewer({
+        path: card.dataset.path || '',
+        name: card.dataset.name || card.dataset.path || '미디어',
+      });
+    });
+    libraryGrid.addEventListener('keydown', event => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      const card = event.target.closest('.asset-card.media-archive');
+      if (!card || event.target !== card) return;
+      event.preventDefault();
+      openMediaViewer({
+        path: card.dataset.path || '',
+        name: card.dataset.name || card.dataset.path || '미디어',
+      });
     });
 
     contextMenu.addEventListener('click', event => {
@@ -999,6 +1107,22 @@
       }
     }
 
+    async function refreshLibraryItems() {
+      try {
+        const response = await fetch('/api/library');
+        if (!response.ok) return;
+        const data = await response.json();
+        currentLibraryItems = Array.isArray(data) ? data : [];
+        if (activeLibraryPath !== null) renderLibrary();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function refreshData() {
+      await Promise.all([refreshJobs(), refreshLibraryItems()]);
+    }
+
     async function clearJobHistory() {
       const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'deleting'].includes(job.status));
       if (!removable.length) {
@@ -1014,6 +1138,7 @@
         }
         const data = await response.json();
         currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        await refreshLibraryItems();
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
@@ -1087,6 +1212,7 @@
         }
         const data = await response.json();
         currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        await refreshLibraryItems();
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
@@ -1109,7 +1235,7 @@
 
     function renderLibrary() {
       const folder = activeLibraryPath || '';
-      const matches = sortLibraryJobs(currentJobs.filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder)));
+      const matches = sortLibraryJobs(libraryCards().filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder)));
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
       libraryCount.textContent = `${matches.length}개`;
       if (!matches.length) {
@@ -1127,11 +1253,13 @@
           : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
         const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
-        return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-workflow="${workflow ? 'true' : 'false'}">
+        const mediaArchive = isMediaArchiveJob(job);
+        return `<article class="asset-card ${mediaArchive ? 'media-archive' : ''}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
           ${image}
           <div class="asset-topline">
             <span class="asset-source-badge">${escapeHtml(shortSource(job.source))}</span>
             <div class="asset-actions">
+              ${mediaArchive ? mediaActionButton() : ''}
               ${workflow ? workflowActionButton() : ''}
               <button type="button" class="asset-action" data-card-action="open" data-url="${escapeHtml(sourceUrl)}" title="URL 바로가기" aria-label="URL 바로가기" ${sourceUrl ? '' : 'disabled'}>
                 <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
@@ -1152,6 +1280,39 @@
           </div>
         </article>`;
       }).join('');
+    }
+
+    function libraryCards() {
+      const byPath = new Map();
+      const add = item => {
+        const path = libraryJobPath(item);
+        if (!path) return;
+        const existing = byPath.get(path) || {};
+        byPath.set(path, mergeLibraryItems(existing, item));
+      };
+      currentLibraryItems.forEach(add);
+      currentJobs.filter(isLibraryJob).forEach(add);
+      return Array.from(byPath.values());
+    }
+
+    function mergeLibraryItems(existing, incoming) {
+      const merged = {...existing, ...incoming};
+      merged.thumbnail_url = incoming.thumbnail_url || existing.thumbnail_url || '';
+      merged.has_media = Boolean(existing.has_media || incoming.has_media);
+      merged.media_count = incoming.media_count || existing.media_count || 0;
+      merged.media_type = incoming.media_type || existing.media_type || '';
+      merged.favorite = Boolean(existing.favorite || incoming.favorite);
+      merged.source_url = incoming.source_url || existing.source_url || '';
+      merged.target_path = libraryJobPath(incoming) || libraryJobPath(existing);
+      return merged;
+    }
+
+    function mediaActionButton() {
+      return `<button type="button" class="asset-action media" data-card-action="media" title="미디어 보기" aria-label="미디어 보기">
+        <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+          <path d="M5 5a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V5Zm3-1a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H8Zm1.2 10.8 1.8-2.3 1.4 1.7 1.1-1.2 2.3 3H8.2l1-1.2ZM10.5 9a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3Z"/>
+        </svg>
+      </button>`;
     }
 
     function workflowActionButton() {
@@ -1215,6 +1376,10 @@
           const target = libraryJobPath(job);
           return target === normalized ? {...job, favorite: Boolean(data.favorite)} : job;
         });
+        currentLibraryItems = currentLibraryItems.map(item => {
+          const target = libraryJobPath(item);
+          return target === normalized ? {...item, favorite: Boolean(data.favorite)} : item;
+        });
         renderLibrary();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
@@ -1252,6 +1417,11 @@
       contextMenu.querySelectorAll('button[data-action]').forEach(button => {
         button.disabled = disabled;
       });
+      contextMenu.querySelectorAll('[data-media-only]').forEach(button => {
+        const visible = Boolean(target.isMediaArchive);
+        button.hidden = !visible;
+        button.disabled = disabled || !visible;
+      });
       contextMenu.querySelectorAll('[data-workflow-only]').forEach(button => {
         const visible = Boolean(target.isWorkflow);
         button.hidden = !visible;
@@ -1276,6 +1446,11 @@
 
       if (action === 'properties') {
         await showProperties(target);
+        return;
+      }
+
+      if (action === 'media') {
+        await openMediaViewer(target);
         return;
       }
 
@@ -1343,6 +1518,201 @@
       if (propertiesModal.hidden) return;
       propertiesModal.hidden = true;
       document.body.classList.remove('modal-open');
+    }
+
+    async function openMediaViewer(target) {
+      if (!target || !target.path) return;
+      const requestId = mediaRequestId + 1;
+      mediaRequestId = requestId;
+      mediaItems = [];
+      mediaIndex = 0;
+      mediaTitle.textContent = target.name || '미디어';
+      mediaPath.textContent = target.path ? `/data/${target.path}` : '/data';
+      setMediaLoading('미디어를 불러오는 중');
+      mediaModal.hidden = false;
+      document.body.classList.add('modal-open');
+      mediaClose.focus();
+
+      try {
+        const response = await fetch(`/api/media/list?path=${encodeURIComponent(target.path)}`);
+        if (requestId !== mediaRequestId) return;
+        if (!response.ok) {
+          let message = '미디어 목록을 불러오지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          setMediaError(message);
+          return;
+        }
+        const data = await response.json();
+        if (requestId !== mediaRequestId) return;
+        renderMediaViewer(data, target);
+      } catch (err) {
+        if (requestId === mediaRequestId) {
+          setMediaError('네트워크 요청을 완료하지 못했습니다.');
+        }
+      }
+    }
+
+    function closeMediaViewer() {
+      if (mediaModal.hidden) return;
+      stopMediaPlayback();
+      mediaModal.hidden = true;
+      mediaRequestId += 1;
+      mediaItems = [];
+      mediaIndex = 0;
+      document.body.classList.remove('modal-open');
+    }
+
+    function setMediaLoading(message) {
+      stopMediaPlayback();
+      mediaCounter.textContent = '0 / 0';
+      mediaDisplay.innerHTML = `<div class="media-loading">${escapeHtml(message)}</div>`;
+      mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
+      mediaItemTitle.textContent = message;
+      mediaItemMeta.textContent = '';
+      mediaPrev.disabled = true;
+      mediaNext.disabled = true;
+    }
+
+    function setMediaError(message) {
+      stopMediaPlayback();
+      mediaCounter.textContent = '0 / 0';
+      mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(message)}</div>`;
+      mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
+      mediaItemTitle.textContent = '불러오기 실패';
+      mediaItemMeta.textContent = message;
+      mediaPrev.disabled = true;
+      mediaNext.disabled = true;
+    }
+
+    function renderMediaViewer(data, target) {
+      mediaTitle.textContent = data?.name || data?.title || target.name || '미디어';
+      mediaPath.textContent = data?.path ? `/data/${normalizePath(data.path)}` : (target.path ? `/data/${target.path}` : '/data');
+      mediaItems = normalizeMediaItems(data);
+      if (!mediaItems.length) {
+        setMediaError('표시할 이미지나 비디오가 없습니다.');
+        return;
+      }
+      const requestedIndex = Number(data?.initial_index ?? data?.initialIndex ?? 0);
+      showMediaAt(Number.isFinite(requestedIndex) ? requestedIndex : 0);
+    }
+
+    function normalizeMediaItems(data) {
+      const rawItems = Array.isArray(data?.items)
+        ? data.items
+        : (Array.isArray(data?.media) ? data.media : []);
+      return rawItems.map((item, index) => normalizeMediaItem(item, index)).filter(Boolean);
+    }
+
+    function normalizeMediaItem(item, index) {
+      if (!item || typeof item !== 'object') return null;
+      const type = normalizeMediaType(item.type || item.kind || item.media_type || item.mediaType || item.mime_type || item.mimeType || item.url || item.stream_url || item.preview_url || item.path);
+      const url = item.url || item.stream_url || item.streamUrl || item.src || '';
+      if (!url || !['image', 'video'].includes(type)) return null;
+      const path = normalizePath(item.path || '');
+      const name = item.name || item.filename || (path ? path.split('/').pop() : '') || `media-${index + 1}`;
+      const previewUrl = item.preview_url || item.previewUrl || item.thumbnail_url || item.thumbnailUrl || (type === 'image' ? url : '');
+      return {
+        id: item.id || path || name || index,
+        type,
+        name,
+        path,
+        url,
+        previewUrl,
+        posterUrl: item.poster_url || item.posterUrl || previewUrl,
+        width: Number(item.width) || null,
+        height: Number(item.height) || null,
+        durationSeconds: Number(item.duration_seconds ?? item.durationSeconds) || null,
+        sizeBytes: Number(item.size_bytes ?? item.sizeBytes) || null,
+        mimeType: item.mime_type || item.mimeType || '',
+      };
+    }
+
+    function normalizeMediaType(value) {
+      const text = String(value || '').toLowerCase();
+      if (text.startsWith('image/') || /\.(avif|bmp|gif|jpe?g|png|webp)(\?|#|$)/i.test(text) || text === 'image') {
+        return 'image';
+      }
+      if (text.startsWith('video/') || /\.(m4v|mov|mp4|ogg|ogv|webm)(\?|#|$)/i.test(text) || text === 'video') {
+        return 'video';
+      }
+      return text.includes('video') ? 'video' : (text.includes('image') ? 'image' : '');
+    }
+
+    function showMediaAt(index) {
+      if (!mediaItems.length) return;
+      stopMediaPlayback();
+      mediaIndex = Math.max(0, Math.min(mediaItems.length - 1, Number(index) || 0));
+      const item = mediaItems[mediaIndex];
+      mediaCounter.textContent = `${mediaIndex + 1} / ${mediaItems.length}`;
+      mediaPrev.disabled = mediaIndex <= 0;
+      mediaNext.disabled = mediaIndex >= mediaItems.length - 1;
+      mediaDisplay.innerHTML = renderMediaDisplay(item);
+      mediaItemTitle.textContent = item.name || `${mediaIndex + 1}`;
+      mediaItemMeta.textContent = mediaItemMetaText(item);
+      renderMediaStrip();
+    }
+
+    function renderMediaDisplay(item) {
+      if (item.type === 'video') {
+        const typeAttr = item.mimeType ? ` type="${escapeHtml(item.mimeType)}"` : '';
+        const posterAttr = item.posterUrl ? ` poster="${escapeHtml(item.posterUrl)}"` : '';
+        return `<video class="media-video" controls preload="metadata" playsinline${posterAttr}>
+          <source src="${escapeHtml(item.url)}"${typeAttr}>
+          이 브라우저에서 재생할 수 없는 비디오입니다.
+        </video>`;
+      }
+      return `<img class="media-image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name || 'media')}">`;
+    }
+
+    function renderMediaStrip() {
+      mediaStrip.innerHTML = mediaItems.map((item, index) => {
+        const label = item.name || `${index + 1}`;
+        const preview = item.previewUrl
+          ? `<img src="${escapeHtml(item.previewUrl)}" alt="">`
+          : `<div class="media-thumb-placeholder">${item.type === 'video' ? 'VID' : 'IMG'}</div>`;
+        return `<button type="button" class="media-thumb ${index === mediaIndex ? 'active' : ''}" data-media-index="${index}" aria-label="${escapeHtml(label)}">
+          <span class="media-thumb-frame">${preview}</span>
+          <span class="media-thumb-kind">${escapeHtml(item.type === 'video' ? 'VIDEO' : 'IMAGE')}</span>
+          <span class="media-thumb-name">${escapeHtml(label)}</span>
+        </button>`;
+      }).join('');
+      const active = mediaStrip.querySelector('.media-thumb.active');
+      if (active) {
+        window.requestAnimationFrame(() => {
+          active.scrollIntoView({block: 'nearest', inline: 'nearest'});
+        });
+      }
+    }
+
+    function mediaItemMetaText(item) {
+      const values = [];
+      if (item.type) values.push(item.type === 'video' ? '비디오' : '이미지');
+      if (item.width && item.height) values.push(`${item.width}×${item.height}`);
+      if (item.durationSeconds) values.push(formatDuration(item.durationSeconds));
+      if (item.sizeBytes) values.push(formatFileSize(item.sizeBytes));
+      if (item.path) values.push(item.path);
+      return values.join(' · ');
+    }
+
+    function showPreviousMedia() {
+      showMediaAt(mediaIndex - 1);
+    }
+
+    function showNextMedia() {
+      showMediaAt(mediaIndex + 1);
+    }
+
+    function stopMediaPlayback() {
+      const video = mediaDisplay.querySelector('video');
+      if (!video) return;
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
     }
 
     async function openWorkflowViewer(target) {
@@ -1663,6 +2033,34 @@
       return values.some(value => value.includes('workflow') || value.includes('comfyui'));
     }
 
+    function isMediaArchiveJob(job) {
+      if (!libraryJobPath(job)) return false;
+      if (job.has_media || Number(job.media_count || 0) > 0) return true;
+      const source = String(job.source || '').toLowerCase();
+      if (['hitomi', 'gallerydl'].includes(source)) return true;
+      const values = [
+        job.data_type,
+        job.dataType,
+        job.type,
+        job.kind,
+        job.category,
+        job.asset_type,
+        job.assetType,
+        job.model_category,
+        job.model_type,
+        job.file_format,
+        job.filename,
+        job.input_text,
+      ].filter(Boolean).map(value => String(value).toLowerCase());
+      return values.some(value => (
+        value.includes('media archive')
+        || value.includes('image archive')
+        || value.includes('gallery')
+        || value.includes('hitomi')
+        || value.includes('video')
+      ));
+    }
+
     function renderProperties(data) {
       const rows = [
         ['종류', escapeHtml(data.kind === 'folder' ? '폴더' : '파일')],
@@ -1751,6 +2149,17 @@
         unitIndex += 1;
       }
       return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    }
+
+    function formatDuration(value) {
+      const totalSeconds = Math.max(0, Math.round(Number(value) || 0));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const padded = number => String(number).padStart(2, '0');
+      return hours > 0
+        ? `${hours}:${padded(minutes)}:${padded(seconds)}`
+        : `${minutes}:${padded(seconds)}`;
     }
 
     function enqueueLocalDownload(target) {

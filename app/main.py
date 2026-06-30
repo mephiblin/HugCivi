@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -19,7 +22,16 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
-from .downloader import cleanup_job_partial_files, enqueue_job, notify_queue_settings_changed, start_workers, update_job_workflow_info
+from .downloader import (
+    cleanup_job_partial_files,
+    enqueue_job,
+    folder_thumbnail_path,
+    notify_queue_settings_changed,
+    start_workers,
+    thumbnail_media_type,
+    thumbnail_url_for_path,
+    update_job_workflow_info,
+)
 from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
@@ -29,11 +41,31 @@ app = FastAPI(title="NAS Model Archiver", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
+MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/config/media-cache"))
 STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PATH.parent / "startup.env")))
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
+IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+MODEL_EXTENSIONS = {
+    ".bin",
+    ".ckpt",
+    ".gguf",
+    ".ggml",
+    ".onnx",
+    ".pt",
+    ".pth",
+    ".safetensors",
+}
+SIDECAR_FILENAMES = (
+    "_archive_metadata.json",
+    "_civitai_metadata.json",
+    "_generic_metadata.json",
+    "_hitomi_metadata.json",
+    "_workflow_metadata.json",
+)
 
 
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
@@ -71,6 +103,7 @@ def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
         {
             "request": request,
             "jobs": jobs,
+            "library_items": library_items(),
             "folder_tree": build_folder_tree(DATA_ROOT),
             "settings": db.settings_status(),
         },
@@ -255,6 +288,50 @@ def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(build_folder_tree(DATA_ROOT))
 
 
+@app.get("/api/library")
+def api_library(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(library_items())
+
+
+@app.get("/api/media/list")
+def api_media_list(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    source = existing_data_path(path)
+    ensure_downloadable_path(source)
+    files = media_files_for_path(source)
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": relative_data_path(source),
+            "name": source.name,
+            "items": [media_item_payload(item, index) for index, item in enumerate(files)],
+        }
+    )
+
+
+@app.get("/api/media/archive")
+def api_media_archive(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    return api_media_list(path, _)
+
+
+@app.get("/api/media/file")
+def api_media_file(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    if not source.is_file() or not is_media_file(source):
+        raise HTTPException(status_code=404, detail="미디어 파일을 찾지 못했습니다.")
+    return FileResponse(source, media_type=media_type_for_path(source), filename=source.name)
+
+
+@app.get("/api/media/poster")
+def api_media_poster(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    if source.is_file() and is_image_file(source):
+        return FileResponse(source, media_type=media_type_for_path(source), filename=source.name)
+    if not source.is_file() or not is_video_file(source):
+        raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
+    poster = video_poster_path(source)
+    return FileResponse(poster, media_type="image/jpeg", filename=f"{source.stem}.jpg")
+
+
 @app.post("/api/fs/rename")
 async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     payload = await request.json()
@@ -409,6 +486,15 @@ def api_workflow_preview(path: str, _: str = Depends(require_auth)) -> FileRespo
     return FileResponse(preview, media_type="image/png", filename=preview.name)
 
 
+@app.get("/api/fs/preview")
+def api_fs_preview(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    preview = folder_thumbnail_path(source)
+    if not preview:
+        raise HTTPException(status_code=404, detail="이미지 미리보기를 찾지 못했습니다.")
+    return FileResponse(preview, media_type=thumbnail_media_type(preview), filename=preview.name)
+
+
 @app.get("/api/fs/download-info")
 def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
@@ -501,16 +587,402 @@ def decorate_job(job: dict, favorites: set[str] | None = None) -> dict:
         percent = min(100, round(progress * 100 / total, 1))
     parsed = parse_job_for_display(job)
     target_path = display_target_path(job)
+    existing_source_url = str(job.get("source_url") or "")
     job = dict(job)
     job.pop("parsed_json", None)
     job["progress_human"] = human_bytes(progress)
     job["total_human"] = human_bytes(total)
     job["percent"] = percent
     job["target_path"] = target_path
+    if (
+        not job.get("thumbnail_url")
+        and job.get("target_dir")
+        and job.get("status") in {"done", "failed", "paused", "canceled"}
+    ):
+        job["thumbnail_url"] = thumbnail_url_for_path(Path(str(job.get("target_dir"))))
     favorite_paths = favorites if favorites is not None else db.favorite_paths()
     job["favorite"] = bool(target_path and target_path in favorite_paths)
-    job["source_url"] = source_url_for_job(job, parsed)
+    job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
     return job
+
+
+def library_items(max_items: int = 1000) -> list[dict[str, Any]]:
+    favorites = db.favorite_paths()
+    items: list[dict[str, Any]] = []
+    indexed_dirs: set[Path] = set()
+
+    for path in iter_data_paths(max_items=max_items * 3):
+        if len(items) >= max_items:
+            break
+        try:
+            if path.is_dir() and should_index_directory(path):
+                item = library_item_for_path(path, favorites)
+                items.append(item)
+                indexed_dirs.add(path.resolve())
+        except OSError:
+            continue
+
+    for path in iter_data_paths(max_items=max_items * 6):
+        if len(items) >= max_items:
+            break
+        try:
+            if not path.is_file() or not is_library_file(path):
+                continue
+            resolved_parent = path.parent.resolve()
+            if any(indexed == resolved_parent or indexed in resolved_parent.parents for indexed in indexed_dirs):
+                continue
+            items.append(library_item_for_path(path, favorites))
+        except OSError:
+            continue
+
+    return sorted(items, key=lambda item: (str(item.get("target_path") or "").lower()))
+
+
+def iter_data_paths(*, max_items: int) -> list[Path]:
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    try:
+        iterator = DATA_ROOT.rglob("*")
+        for path in iterator:
+            if len(paths) >= max_items:
+                break
+            if should_skip_index_path(path):
+                continue
+            paths.append(path)
+    except OSError:
+        return paths
+    return paths
+
+
+def should_skip_index_path(path: Path) -> bool:
+    name = path.name
+    if name.startswith(".") or name.endswith(".part"):
+        return True
+    try:
+        if path.is_symlink():
+            return True
+    except OSError:
+        return True
+    return False
+
+
+def should_index_directory(path: Path) -> bool:
+    if lexical_absolute(path) == lexical_absolute(DATA_ROOT):
+        return False
+    if archive_metadata_path(path) is not None:
+        return True
+    return any(is_media_file(child) for child in direct_files(path))
+
+
+def direct_files(path: Path) -> list[Path]:
+    try:
+        return [item for item in path.iterdir() if item.is_file() and not item.is_symlink()]
+    except OSError:
+        return []
+
+
+def is_library_file(path: Path) -> bool:
+    if path.name in SIDECAR_FILENAMES:
+        return False
+    return is_model_file(path) or is_media_file(path) or is_workflow_file(path)
+
+
+def is_model_file(path: Path) -> bool:
+    return path.suffix.lower() in MODEL_EXTENSIONS
+
+
+def is_workflow_file(path: Path) -> bool:
+    return path.suffix.lower() in {".json", ".png"} and "workflow" in path.name.lower()
+
+
+def is_media_file(path: Path) -> bool:
+    return is_image_file(path) or is_video_file(path)
+
+
+def is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+def is_video_file(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
+    metadata = archive_metadata(path)
+    media_files = media_files_for_path(path, limit=1)
+    first_media = media_files[0] if media_files else None
+    media_count = media_file_count(path)
+    relative_path = relative_data_path(path)
+    stat = path.stat()
+    size = path_size(path)
+    source = normalize_library_source(metadata.get("source") or ("media" if first_media else "filesystem"))
+    title = library_item_title(path, metadata)
+    category = library_item_category(path, metadata, first_media)
+    media_type = media_kind(first_media) if first_media else ""
+    return {
+        "id": f"fs:{stable_path_id(relative_path)}",
+        "status": "done",
+        "source": source,
+        "input_text": str(metadata.get("raw_input") or metadata.get("source_url") or ""),
+        "filename": path.name,
+        "progress_bytes": size,
+        "total_bytes": size,
+        "progress_human": human_bytes(size),
+        "total_human": human_bytes(size),
+        "percent": 100,
+        "target_dir": str(path),
+        "target_path": relative_path,
+        "model_title": title,
+        "model_category": category,
+        "model_type": str(metadata.get("model_type") or metadata.get("host") or media_type or ("folder" if path.is_dir() else "file")),
+        "base_model": str(metadata.get("base_model") or ""),
+        "file_format": library_item_format(path, metadata, first_media),
+        "precision": library_item_precision(path, metadata, media_count),
+        "thumbnail_url": thumbnail_url_for_media(first_media),
+        "favorite": relative_path in favorites,
+        "source_url": str(metadata.get("source_url") or source_url_from_metadata(metadata)),
+        "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+        "created_at": datetime.fromtimestamp(stat.st_ctime, timezone.utc).isoformat(timespec="seconds"),
+        "is_filesystem_item": True,
+        "has_media": first_media is not None,
+        "media_count": media_count,
+        "media_type": media_type,
+    }
+
+
+def library_item_title(path: Path, metadata: dict[str, Any]) -> str:
+    archive_info = metadata.get("archive_info") if isinstance(metadata.get("archive_info"), dict) else {}
+    for value in (
+        archive_info.get("model_title"),
+        metadata.get("title"),
+        metadata.get("model_name"),
+        metadata.get("repo_id"),
+        metadata.get("gallery_id"),
+    ):
+        if value:
+            return str(value)
+    return path.stem if path.is_file() else path.name
+
+
+def library_item_category(path: Path, metadata: dict[str, Any], first_media: Path | None) -> str:
+    archive_info = metadata.get("archive_info") if isinstance(metadata.get("archive_info"), dict) else {}
+    for value in (archive_info.get("model_category"), metadata.get("model_category"), metadata.get("source")):
+        if value == "hitomi":
+            return "Hitomi Gallery"
+        if value:
+            return str(value)
+    if first_media:
+        return "Media Gallery" if path.is_dir() else "Media File"
+    if is_workflow_file(path):
+        return "ComfyUI Workflow"
+    return "Local File" if path.is_file() else "Local Folder"
+
+
+def library_item_format(path: Path, metadata: dict[str, Any], first_media: Path | None) -> str:
+    archive_info = metadata.get("archive_info") if isinstance(metadata.get("archive_info"), dict) else {}
+    value = archive_info.get("file_format") or metadata.get("file_format")
+    if value:
+        return str(value)
+    if first_media:
+        return media_kind(first_media)
+    return path.suffix.lower().removeprefix(".") if path.is_file() else "folder"
+
+
+def library_item_precision(path: Path, metadata: dict[str, Any], media_count: int) -> str:
+    archive_info = metadata.get("archive_info") if isinstance(metadata.get("archive_info"), dict) else {}
+    value = archive_info.get("precision") or metadata.get("precision")
+    if value:
+        return str(value)
+    page_count = metadata.get("page_count")
+    if page_count:
+        return f"{page_count} pages"
+    if media_count:
+        return f"{media_count} media"
+    return ""
+
+
+def archive_metadata_path(path: Path) -> Path | None:
+    for name in SIDECAR_FILENAMES:
+        candidate = path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def archive_metadata(path: Path) -> dict[str, Any]:
+    current = path if path.is_dir() else path.parent
+    root = DATA_ROOT.resolve()
+    while True:
+        try:
+            resolved = current.resolve()
+        except OSError:
+            return {}
+        if resolved != root and root not in resolved.parents:
+            return {}
+
+        metadata_path = archive_metadata_path(current)
+        if metadata_path is not None:
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
+
+        if resolved == root:
+            return {}
+        current = current.parent
+
+
+def source_url_from_metadata(metadata: dict[str, Any]) -> str:
+    raw_input = metadata.get("raw_input")
+    if isinstance(raw_input, str) and is_http_url(raw_input):
+        return raw_input
+    repo_id = metadata.get("repo_id")
+    if isinstance(repo_id, str) and repo_id:
+        repo = quote(repo_id, safe="/")
+        repo_type = metadata.get("repo_type")
+        if repo_type == "dataset":
+            return f"https://huggingface.co/datasets/{repo}"
+        if repo_type == "space":
+            return f"https://huggingface.co/spaces/{repo}"
+        return f"https://huggingface.co/{repo}"
+    return ""
+
+
+def normalize_library_source(value: Any) -> str:
+    source = str(value or "").strip().lower().replace("_", "-")
+    if source in {"gallery-dl", "gallerydl"}:
+        return "gallerydl"
+    if source in {"huggingface", "civitai", "generic", "comfyui", "hitomi"}:
+        return source
+    return str(value or "").strip() or "filesystem"
+
+
+def stable_path_id(path: str) -> str:
+    return hashlib.sha256(path.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def media_files_for_path(path: Path, limit: int = 500) -> list[Path]:
+    if path.is_file():
+        return [path] if is_media_file(path) else []
+    files: list[Path] = []
+    try:
+        for item in path.rglob("*"):
+            if len(files) >= limit:
+                break
+            if item.is_file() and not item.is_symlink() and is_media_file(item):
+                files.append(item)
+    except OSError:
+        return files
+    return sorted(files, key=natural_path_key)
+
+
+def media_file_count(path: Path, limit: int = 10000) -> int:
+    if path.is_file():
+        return 1 if is_media_file(path) else 0
+    count = 0
+    try:
+        for item in path.rglob("*"):
+            if item.is_file() and not item.is_symlink() and is_media_file(item):
+                count += 1
+                if count >= limit:
+                    return count
+    except OSError:
+        return count
+    return count
+
+
+def natural_path_key(path: Path) -> list[Any]:
+    relative = relative_data_path(path)
+    parts = re_split_digits(relative.lower())
+    return [int(part) if part.isdigit() else part for part in parts]
+
+
+def re_split_digits(value: str) -> list[str]:
+    import re
+
+    return re.split(r"(\d+)", value)
+
+
+def media_item_payload(path: Path, index: int) -> dict[str, Any]:
+    relative_path = relative_data_path(path)
+    media_type = media_kind(path)
+    thumbnail_url = thumbnail_url_for_media(path)
+    return {
+        "index": index,
+        "path": relative_path,
+        "name": path.name,
+        "type": media_type,
+        "url": f"/api/media/file?path={quote(relative_path, safe='/')}",
+        "thumbnail_url": thumbnail_url,
+        "poster_url": thumbnail_url if media_type == "video" else "",
+        "mime_type": media_type_for_path(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def media_kind(path: Path | None) -> str:
+    if path is None:
+        return ""
+    if is_image_file(path):
+        return "image"
+    if is_video_file(path):
+        return "video"
+    return "file"
+
+
+def thumbnail_url_for_media(path: Path | None) -> str:
+    if path is None:
+        return ""
+    relative_path = relative_data_path(path)
+    endpoint = "file" if is_image_file(path) else "poster"
+    return f"/api/media/{endpoint}?path={quote(relative_path, safe='/')}"
+
+
+def media_type_for_path(path: Path) -> str:
+    guessed = mimetypes.guess_type(path.name)[0]
+    if guessed:
+        return guessed
+    if is_image_file(path):
+        return "image/jpeg"
+    if is_video_file(path):
+        return "video/mp4"
+    return "application/octet-stream"
+
+
+def video_poster_path(source: Path) -> Path:
+    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    stat = source.stat()
+    key = hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()[:24]
+    poster = MEDIA_CACHE_DIR / f"{key}.jpg"
+    if poster.exists() and poster.stat().st_size > 0:
+        return poster
+    temp = MEDIA_CACHE_DIR / f".{key}.jpg.tmp"
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        "1",
+        "-i",
+        str(source),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=480:-2",
+        "-q:v",
+        "4",
+        "-y",
+        str(temp),
+    ]
+    try:
+        subprocess.run(command, check=True, timeout=30, capture_output=True)
+        os.replace(temp, poster)
+    except (OSError, subprocess.SubprocessError) as exc:
+        cleanup_file(temp)
+        raise HTTPException(status_code=500, detail=f"동영상 썸네일을 생성하지 못했습니다: {exc}") from exc
+    return poster
 
 
 def parse_job_for_display(job: dict) -> ParsedDownload | None:
