@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
-SourceType = Literal["huggingface", "civitai", "generic", "comfyui"]
+SourceType = Literal["huggingface", "civitai", "generic", "comfyui", "hitomi", "gallerydl"]
 
 
 @dataclass
@@ -41,6 +41,13 @@ class ParsedDownload:
     comfyui_workflow_format: str | None = None
     comfyui_workflow_json: dict[str, Any] | None = None
     comfyui_workflow_metadata_key: str | None = None
+
+    # Hitomi gallery
+    hitomi_gallery_id: str | None = None
+    hitomi_gallery_url: str | None = None
+
+    # gallery-dl generic archive
+    gallerydl_url: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

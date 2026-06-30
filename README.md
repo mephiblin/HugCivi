@@ -16,6 +16,7 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI �
 
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
+- Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
 - ComfyUI 워크플로우 `.json` URL 다운로드
 - ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
@@ -29,7 +30,8 @@ Synology NAS에서 Hugging Face, Civitai, 일반 URL 모델 파일과 ComfyUI �
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
-- 작업 목록에서 다운로드 정지, 재개, 취소, 삭제
+- 작업 목록에서 다운로드 정지, 재개, 삭제
+- 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
 - 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
 - HF 토큰, Civitai 토큰을 웹 UI에서 저장
@@ -168,6 +170,7 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 /data/stable-diffusion/upscalers
 /data/comfyui/workflows
 /data/generic
+/data/hitomi
 ```
 
 이 하위 폴더들은 미리 만들 필요는 없습니다. 앱이 필요한 시점에 생성합니다.
@@ -205,6 +208,44 @@ https://civitai.com/api/download/models/456789
 ```
 
 숫자만 입력하면 Civitai model version ID로 처리합니다.
+
+### Hitomi
+
+```text
+https://hitomi.la/galleries/123456.html
+https://hitomi.la/reader/123456.html
+hitomi 123456
+```
+
+갤러리는 `/data/hitomi/{gallery_id}-{title}` 폴더에 페이지 이미지로 저장됩니다. 저장된 폴더는 라이브러리에서 다운로드하면 ZIP으로 받을 수 있습니다.
+
+Hitomi 다운로드는 기본적으로 `gallery-dl`을 우선 백엔드로 사용합니다. 컨테이너 시작 시 `gallery-dl` 패키지만 최신 안정 버전 범위로 업그레이드하고, 실패하면 이미지에 포함된 버전으로 계속 실행합니다. `gallery-dl` 실행이 실패했을 때는 내장 Hitomi 다운로더로 한 번 더 시도합니다.
+
+### gallery-dl 범용 다운로드
+
+```text
+gallery-dl https://example.com/gallery
+gdl https://example.com/gallery
+```
+
+`gallery-dl`이 지원하는 사이트를 명시적으로 다운로드할 때 사용합니다. 일반 HTTP 파일 URL과 충돌하지 않도록 `gallery-dl` 또는 `gdl` 접두어를 붙입니다. 기본 저장 경로는 `/data/gallery-dl/{host}/{name}`입니다.
+
+공식 지원 목록의 인증 분류는 앱 설정의 gallery-dl 입력으로 처리합니다.
+
+- `Cookies`: `gallery-dl Cookies File` 또는 `gallery-dl Browser Cookies`
+- `OAuth`, `API Key`: `gallery-dl Extra Options`에 `extractor.site.key=value` 형식으로 입력
+- `Supported`, `Required`: 사이트에 따라 Username/Password, Cookies File, Extra Options 중 필요한 값을 입력
+
+2026-06-30 기준 공식 지원 목록은 358개 사이트이며, 인증 칼럼은 `none` 297개, `Supported` 32개, `Cookies` 11개, `OAuth` 10개, `API Key` 5개, `Required` 3개로 분류됩니다.
+전체 지원 사이트와 인증 분류별 목록은 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)에 정리되어 있습니다.
+
+예:
+
+```text
+extractor.wallhaven.api-key=...
+extractor.deviantart.client-id=...
+extractor.deviantart.client-secret=...
+```
 
 ### ComfyUI 워크플로우
 
@@ -327,11 +368,22 @@ CIVITAI_TOKEN
 
 ```text
 MAX_CONCURRENT_DOWNLOADS=3
+QUEUE_PER_PROVIDER_LIMIT=1
+DOWNLOAD_STALL_TIMEOUT_SECONDS=0
 HF_SNAPSHOT_MAX_WORKERS=2
 DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
 DOWNLOAD_HTTP_MAX_RETRIES=3
 DOWNLOAD_RETRY_BACKOFF_SECONDS=5
 DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300
+HITOMI_BACKEND=auto
+GALLERY_DL_AUTO_UPDATE=1
+GALLERY_DL_UPDATE_SPEC=gallery-dl<2.0
+GALLERY_DL_SLEEP_REQUEST_SECONDS=1.5
+GALLERY_DL_USERNAME=
+GALLERY_DL_PASSWORD=
+GALLERY_DL_COOKIES_FILE=
+GALLERY_DL_COOKIES_FROM_BROWSER=
+GALLERY_DL_EXTRA_OPTIONS=
 ```
 
 너무 많은 요청으로 차단될 가능성을 줄이기 위해 기본값을 보수적으로 잡았습니다.
@@ -408,8 +460,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
   - 이름 변경/이동 시 메모 경로 자동 갱신
   - 삭제 시 관련 메모 자동 삭제
 - 작업 목록 제어 기능 추가
-  - 다운로드 정지, 재개, 취소, 삭제 버튼 추가
-  - 스트리밍 다운로드는 취소/삭제 시 `.part` 파일 정리
+  - 다운로드 정지, 재개, 삭제 버튼 추가
+  - 스트리밍 다운로드는 삭제 시 `.part` 파일 정리
 - 라이브러리 카드 기능 개선
   - 즐겨찾기 버튼 추가
   - URL 바로가기 버튼 추가

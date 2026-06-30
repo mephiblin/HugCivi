@@ -20,6 +20,11 @@ COMFYUI_EXPLICIT_COMMANDS = {"workflow", "workflows", "comfyui", "comfyui-workfl
 COMFYUI_DOWNLOAD_COMMANDS = {"curl", "wget", "aria2c"}
 COMFYUI_SUBCOMMANDS = {"workflow", "workflows", "download"}
 COMFYUI_URL_HINTS = ("comfyui", "comfy-ui", "workflow", "workflows")
+GALLERYDL_EXPLICIT_COMMANDS = {"gallery-dl", "gallerydl", "gdl"}
+HITOMI_GALLERY_RE = re.compile(
+    r"^/(?:manga|doujinshi|cg|gamecg|imageset|galleries|reader)/(?:[^/?#]+-)?(\d+)(?:\.html)?/?$",
+    re.IGNORECASE,
+)
 
 
 class InputParseError(ValueError):
@@ -41,6 +46,14 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
     if comfyui_cli is not None:
         return comfyui_cli
 
+    hitomi_cli = maybe_parse_hitomi_cli(text, target_subdir=target_subdir)
+    if hitomi_cli is not None:
+        return hitomi_cli
+
+    gallerydl_cli = maybe_parse_gallerydl_cli(text, target_subdir=target_subdir)
+    if gallerydl_cli is not None:
+        return gallerydl_cli
+
     if CIVITAI_VERSION_ID_RE.match(text):
         return ParsedDownload(
             source="civitai",
@@ -56,6 +69,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_huggingface_url(text, target_subdir=target_subdir)
         if is_civitai_host(host):
             return parse_civitai_url(text, target_subdir=target_subdir)
+        if is_hitomi_host(host):
+            return parse_hitomi_url(text, target_subdir=target_subdir)
         if is_comfyui_workflow_url(text, require_hint=True):
             return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
         return ParsedDownload(source="generic", raw_input=text, target_subdir=target_subdir, url=text)
@@ -71,7 +86,7 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
         )
 
     raise InputParseError(
-        "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, 일반 다운로드 URL, "
+        "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, Hitomi URL, 일반 다운로드 URL, "
         "또는 안전한 `hf download ...` 형태를 입력하세요."
     )
 
@@ -112,6 +127,54 @@ def maybe_parse_comfyui_cli(text: str, target_subdir: str | None = None) -> Pars
     if explicit:
         raise InputParseError("ComfyUI workflow 입력에서 .json 또는 .png URL을 찾지 못했습니다.")
     return None
+
+
+def maybe_parse_hitomi_cli(text: str, target_subdir: str | None = None) -> ParsedDownload | None:
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        raise InputParseError(f"CLI 파싱 실패: {exc}") from exc
+    if not tokens or tokens[0].lower() not in {"hitomi", "hitomi.la"}:
+        return None
+    if len(tokens) < 2:
+        raise InputParseError("Hitomi gallery ID 또는 URL을 입력하세요.")
+
+    value = tokens[1]
+    if value.isdecimal():
+        return ParsedDownload(
+            source="hitomi",
+            raw_input=text,
+            target_subdir=target_subdir,
+            hitomi_gallery_id=value,
+            hitomi_gallery_url=f"https://hitomi.la/galleries/{value}.html",
+        )
+
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"} and is_hitomi_host(parsed.netloc.lower()):
+        return parse_hitomi_url(value, raw_input=text, target_subdir=target_subdir)
+    raise InputParseError("Hitomi 입력은 gallery ID 또는 hitomi.la URL이어야 합니다.")
+
+
+def maybe_parse_gallerydl_cli(text: str, target_subdir: str | None = None) -> ParsedDownload | None:
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        raise InputParseError(f"CLI 파싱 실패: {exc}") from exc
+    if not tokens or tokens[0].lower() not in GALLERYDL_EXPLICIT_COMMANDS:
+        return None
+
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        parsed = urlparse(token)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return ParsedDownload(
+                source="gallerydl",
+                raw_input=text,
+                target_subdir=target_subdir,
+                gallerydl_url=token,
+            )
+    raise InputParseError("gallery-dl 입력에서 HTTP/HTTPS URL을 찾지 못했습니다.")
 
 
 def parse_comfyui_workflow_url(
@@ -359,6 +422,29 @@ def parse_hf_cli(text: str, target_subdir: str | None = None) -> ParsedDownload:
 
 def is_civitai_host(host: str) -> bool:
     return host.lower() in CIVITAI_HOSTS
+
+
+def is_hitomi_host(host: str) -> bool:
+    return host.lower() in {"hitomi.la", "www.hitomi.la"}
+
+
+def parse_hitomi_url(
+    url: str,
+    raw_input: str | None = None,
+    target_subdir: str | None = None,
+) -> ParsedDownload:
+    parsed = urlparse(url)
+    match = HITOMI_GALLERY_RE.match(parsed.path)
+    if not match:
+        raise InputParseError("Hitomi URL에서 gallery ID를 찾지 못했습니다.")
+    gallery_id = match.group(1)
+    return ParsedDownload(
+        source="hitomi",
+        raw_input=raw_input or url,
+        target_subdir=target_subdir,
+        hitomi_gallery_id=gallery_id,
+        hitomi_gallery_url=url,
+    )
 
 
 def first_query(query: dict[str, list[str]], *keys: str) -> str | None:

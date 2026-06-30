@@ -5,6 +5,8 @@ import os
 import queue
 import random
 import re
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -37,9 +39,12 @@ ROUTE_SETTING_BY_TYPE = {
     "upscaler": "ROUTE_UPSCALER_ROOT",
 }
 
-JOB_QUEUE: queue.Queue[int] = queue.Queue()
 _WORKERS_STARTED = False
 _WORKERS_LOCK = threading.Lock()
+_SCHEDULER_CONDITION = threading.Condition()
+_PENDING_JOB_IDS: list[int] = []
+_ACTIVE_GLOBAL_JOBS = 0
+_ACTIVE_PROVIDER_JOBS: dict[str, int] = {}
 _HOST_THROTTLE_LOCK = threading.Lock()
 _HOST_NEXT_REQUEST_AT: dict[str, float] = {}
 
@@ -62,11 +67,19 @@ def enqueue_existing_jobs() -> None:
             db.append_log(int(job["id"]), "paused after restart")
         elif job["status"] in {"queued", "running"}:
             db.update_job(job["id"], status="queued", error=None)
-            JOB_QUEUE.put(int(job["id"]))
+            enqueue_job(int(job["id"]))
 
 
 def enqueue_job(job_id: int) -> None:
-    JOB_QUEUE.put(job_id)
+    with _SCHEDULER_CONDITION:
+        if job_id not in _PENDING_JOB_IDS:
+            _PENDING_JOB_IDS.append(job_id)
+        _SCHEDULER_CONDITION.notify_all()
+
+
+def notify_queue_settings_changed() -> None:
+    with _SCHEDULER_CONDITION:
+        _SCHEDULER_CONDITION.notify_all()
 
 
 def start_workers() -> None:
@@ -74,17 +87,86 @@ def start_workers() -> None:
     with _WORKERS_LOCK:
         if _WORKERS_STARTED:
             return
-        max_workers = positive_int_env("MAX_CONCURRENT_DOWNLOADS", 3)
         enqueue_existing_jobs()
-        for index in range(max_workers):
-            thread = threading.Thread(target=worker_loop, name=f"download-worker-{index+1}", daemon=True)
-            thread.start()
+        thread = threading.Thread(target=scheduler_loop, name="download-scheduler", daemon=True)
+        thread.start()
         _WORKERS_STARTED = True
 
 
-def worker_loop() -> None:
+def scheduler_loop() -> None:
     while True:
-        job_id = JOB_QUEUE.get()
+        with _SCHEDULER_CONDITION:
+            selected: tuple[int, str] | None = None
+            while selected is None:
+                selected = pick_next_schedulable_job_locked()
+                if selected is None:
+                    _SCHEDULER_CONDITION.wait()
+            job_id, provider = selected
+            reserve_provider_slot_locked(provider)
+
+        thread = threading.Thread(
+            target=job_runner,
+            args=(job_id, provider),
+            name=f"download-job-{job_id}",
+            daemon=True,
+        )
+        thread.start()
+
+
+def pick_next_schedulable_job_locked() -> tuple[int, str] | None:
+    if _ACTIVE_GLOBAL_JOBS >= queue_global_limit():
+        return None
+
+    provider_limit = queue_per_provider_limit()
+    index = 0
+    while index < len(_PENDING_JOB_IDS):
+        job_id = _PENDING_JOB_IDS[index]
+        job = db.get_job(job_id)
+        if not job or job.get("status") != "queued":
+            _PENDING_JOB_IDS.pop(index)
+            continue
+        try:
+            provider = provider_key_for_job(job)
+        except Exception as exc:  # noqa: BLE001 - malformed persisted payload should not stall the queue
+            _PENDING_JOB_IDS.pop(index)
+            db.update_job(job_id, status="failed", error=str(exc))
+            db.append_log(job_id, f"FAILED: {exc}")
+            continue
+        if _ACTIVE_PROVIDER_JOBS.get(provider, 0) < provider_limit:
+            _PENDING_JOB_IDS.pop(index)
+            return job_id, provider
+        index += 1
+    return None
+
+
+def reserve_provider_slot_locked(provider: str) -> None:
+    global _ACTIVE_GLOBAL_JOBS
+    _ACTIVE_GLOBAL_JOBS += 1
+    _ACTIVE_PROVIDER_JOBS[provider] = _ACTIVE_PROVIDER_JOBS.get(provider, 0) + 1
+
+
+def release_provider_slot(provider: str) -> None:
+    global _ACTIVE_GLOBAL_JOBS
+    with _SCHEDULER_CONDITION:
+        _ACTIVE_GLOBAL_JOBS = max(0, _ACTIVE_GLOBAL_JOBS - 1)
+        current = max(0, _ACTIVE_PROVIDER_JOBS.get(provider, 0) - 1)
+        if current:
+            _ACTIVE_PROVIDER_JOBS[provider] = current
+        else:
+            _ACTIVE_PROVIDER_JOBS.pop(provider, None)
+        _SCHEDULER_CONDITION.notify_all()
+
+
+def job_runner(job_id: int, provider: str) -> None:
+    watchdog_stop = threading.Event()
+    watchdog = threading.Thread(
+        target=job_stall_watchdog,
+        args=(job_id, watchdog_stop),
+        name=f"download-watchdog-{job_id}",
+        daemon=True,
+    )
+    watchdog.start()
+    try:
         try:
             run_job(job_id)
         except JobControlStop as exc:
@@ -100,8 +182,9 @@ def worker_loop() -> None:
             else:
                 db.append_log(job_id, f"FAILED: {exc}")
                 db.update_job(job_id, status="failed", error=str(exc))
-        finally:
-            JOB_QUEUE.task_done()
+    finally:
+        watchdog_stop.set()
+        release_provider_slot(provider)
 
 
 def run_job(job_id: int) -> None:
@@ -121,6 +204,10 @@ def run_job(job_id: int) -> None:
         download_generic(job_id, parsed)
     elif parsed.source == "comfyui":
         download_comfyui(job_id, parsed)
+    elif parsed.source == "hitomi":
+        download_hitomi(job_id, parsed)
+    elif parsed.source == "gallerydl":
+        download_gallerydl(job_id, parsed)
     else:
         raise ValueError(f"Unsupported source: {parsed.source}")
 
@@ -231,6 +318,108 @@ def positive_int_env(name: str, default: int) -> int:
         return default
 
 
+def positive_int_setting(name: str, default: int) -> int:
+    raw_value = db.get_setting(name) or os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return default
+
+
+def nonnegative_int_setting(name: str, default: int) -> int:
+    raw_value = db.get_setting(name) or os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        return default
+
+
+def queue_global_limit() -> int:
+    return positive_int_setting("MAX_CONCURRENT_DOWNLOADS", 3)
+
+
+def queue_per_provider_limit() -> int:
+    return positive_int_setting("QUEUE_PER_PROVIDER_LIMIT", 1)
+
+
+def queue_stall_timeout_seconds() -> int:
+    return nonnegative_int_setting("DOWNLOAD_STALL_TIMEOUT_SECONDS", 0)
+
+
+def provider_key_for_job(job: dict[str, Any]) -> str:
+    return provider_key_for_parsed(db.parse_job_payload(job))
+
+
+def provider_key_for_parsed(parsed: ParsedDownload) -> str:
+    if parsed.source == "huggingface":
+        return "huggingface"
+    if parsed.source == "civitai":
+        return "civitai"
+    if parsed.source == "hitomi":
+        return "hitomi"
+    if parsed.source == "gallerydl":
+        return provider_key_from_url("gallerydl", parsed.gallerydl_url)
+    if parsed.source == "generic":
+        return provider_key_from_url("generic", parsed.url)
+    if parsed.source == "comfyui":
+        return provider_key_from_url("comfyui", parsed.comfyui_workflow_url)
+    return str(parsed.source or "unknown")
+
+
+def provider_key_from_url(prefix: str, url: str | None) -> str:
+    if not url:
+        return prefix
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return f"{prefix}:{host or 'unknown'}"
+
+
+def job_stall_watchdog(job_id: int, stop_event: threading.Event) -> None:
+    last_signature: tuple[Any, ...] | None = None
+    last_progress_at = time.monotonic()
+    while not stop_event.wait(5.0):
+        timeout = queue_stall_timeout_seconds()
+        if timeout <= 0:
+            last_signature = None
+            last_progress_at = time.monotonic()
+            continue
+
+        job = db.get_job(job_id)
+        if not job or job.get("status") != "running":
+            return
+
+        target_size = 0
+        target_dir = job.get("target_dir")
+        if target_dir:
+            try:
+                target_size = directory_size(Path(str(target_dir)))
+            except OSError:
+                target_size = 0
+        signature = (
+            job.get("progress_bytes") or 0,
+            job.get("total_bytes"),
+            job.get("filename") or "",
+            target_size,
+        )
+        now = time.monotonic()
+        if last_signature is None or signature != last_signature:
+            last_signature = signature
+            last_progress_at = now
+            continue
+
+        if now - last_progress_at >= timeout:
+            db.append_log(job_id, f"paused: no download progress for {timeout}s")
+            db.update_job(
+                job_id,
+                status="pausing",
+                error=f"No download progress for {timeout}s",
+            )
+            return
+
+
 def float_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -255,6 +444,8 @@ def request_interval_for_url(url: str) -> float:
         return float_env("HF_REQUEST_MIN_INTERVAL_SECONDS", default)
     if "civitai." in host or "image.civitai.com" in host:
         return float_env("CIVITAI_REQUEST_MIN_INTERVAL_SECONDS", default)
+    if "hitomi.la" in host or "gold-usergeneratedcontent.net" in host:
+        return float_env("HITOMI_REQUEST_MIN_INTERVAL_SECONDS", default)
     return default
 
 
@@ -661,6 +852,533 @@ def download_comfyui(job_id: int, parsed: ParsedDownload) -> None:
     db.append_log(job_id, f"saved workflow: {result['workflow_path']} ({human_bytes(len(data))})")
 
 
+def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
+    gallery_id = parsed.hitomi_gallery_id
+    if not gallery_id:
+        raise ValueError("Hitomi gallery ID is missing.")
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": USER_AGENT,
+            "Origin": "https://hitomi.la",
+            "Referer": f"https://hitomi.la/reader/{gallery_id}.html",
+        }
+    )
+
+    backend = hitomi_backend()
+    if backend in {"gallery-dl", "auto"}:
+        if gallery_dl_available():
+            try:
+                download_hitomi_gallery_dl(job_id, parsed, session)
+                return
+            except JobControlStop:
+                raise
+            except Exception as exc:  # noqa: BLE001 - fallback to built-in extractor when configured
+                if backend == "gallery-dl":
+                    raise
+                db.append_log(job_id, f"gallery-dl failed; falling back to built-in hitomi downloader: {exc}")
+        elif backend == "gallery-dl":
+            raise RuntimeError("gallery-dl is not available in this container.")
+
+    metadata = fetch_hitomi_gallery_info(session, gallery_id, job_id)
+    files = [item for item in metadata.get("files") or [] if isinstance(item, dict) and item.get("hash")]
+    if not files:
+        raise ValueError("Hitomi gallery file list is empty.")
+
+    gg = fetch_hitomi_gg(session, job_id)
+    title = str(metadata.get("title") or f"gallery_{gallery_id}")
+    target_name = sanitize_segment(f"{gallery_id}-{title}", f"gallery_{gallery_id}")
+    target_root = base_target(parsed, "hitomi")
+    target = safe_join(target_root, target_name)
+    target.mkdir(parents=True, exist_ok=True)
+
+    source_url = parsed.hitomi_gallery_url or f"https://hitomi.la/galleries/{gallery_id}.html"
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        model_title=title,
+        model_category="Hitomi Gallery",
+        model_type=str(metadata.get("type") or "Gallery"),
+        base_model=str(metadata.get("language") or metadata.get("language_localname") or ""),
+        file_format=hitomi_preferred_format().upper(),
+        precision=f"{len(files)} pages",
+        metadata_json=json.dumps(redact_metadata(hitomi_metadata_summary(metadata)), ensure_ascii=False),
+    )
+    write_metadata(
+        target,
+        "_hitomi_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "hitomi",
+            "gallery_id": gallery_id,
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "metadata": metadata,
+        },
+    )
+    write_metadata(
+        target,
+        "_archive_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "hitomi",
+            "gallery_id": gallery_id,
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "title": title,
+            "page_count": len(files),
+        },
+    )
+
+    total_saved = 0
+    thumbnail_url = ""
+    db.append_log(job_id, f"Hitomi gallery download: {gallery_id} ({len(files)} pages)")
+    for index, image in enumerate(files, start=1):
+        check_job_control(job_id)
+        original_name = str(image.get("name") or f"{index:03d}.jpg")
+        saved = None
+        last_error: Exception | None = None
+        for image_url, extension in hitomi_image_candidates(image, gg):
+            filename = hitomi_output_filename(index, original_name, extension)
+            try:
+                db.append_log(job_id, f"Hitomi page {index}/{len(files)}: {filename}")
+                saved = stream_download(job_id, session, image_url, target, filename_override=filename)
+                thumbnail_url = thumbnail_url or image_url
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                db.append_log(job_id, f"Hitomi page candidate failed: {exc}")
+        if saved is None:
+            raise RuntimeError(f"Hitomi page {index} download failed: {last_error}")
+        total_saved += saved.stat().st_size
+        db.update_job(
+            job_id,
+            filename=saved.name,
+            progress_bytes=total_saved,
+            total_bytes=None,
+            thumbnail_url=thumbnail_url,
+        )
+
+    final_size = directory_size(target)
+    db.update_job(job_id, filename=f"{len(files)} pages", progress_bytes=final_size, total_bytes=final_size)
+    db.append_log(job_id, f"saved gallery: {target} ({human_bytes(final_size)})")
+
+
+def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
+    if not parsed.gallerydl_url:
+        raise ValueError("gallery-dl URL is missing.")
+    if not gallery_dl_available():
+        raise RuntimeError("gallery-dl is not available in this container.")
+
+    source_url = parsed.gallerydl_url
+    parsed_url = urlparse(source_url)
+    host = sanitize_segment(parsed_url.netloc.lower().removeprefix("www."), "site")
+    path_name = Path(unquote(parsed_url.path).strip("/")).name
+    slug = sanitize_segment(Path(path_name).stem or host, "archive")
+    target_root = base_target(parsed, "gallery-dl")
+    target = safe_join(target_root, host, slug)
+    target.mkdir(parents=True, exist_ok=True)
+
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        model_title=slug,
+        model_category="gallery-dl",
+        model_type=host,
+        file_format="gallery-dl",
+    )
+    write_metadata(
+        target,
+        "_archive_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "gallery-dl",
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "host": host,
+        },
+    )
+
+    command = gallery_dl_command(source_url, target)
+    log_gallery_dl_start(job_id, source_url, target)
+    run_gallery_dl_process(job_id, command, target)
+
+    final_size = directory_size(target)
+    files = gallery_dl_downloaded_files(target)
+    db.update_job(
+        job_id,
+        filename=f"{len(files) or 'downloaded'} files",
+        progress_bytes=final_size,
+        total_bytes=final_size,
+        precision=f"{len(files)} files" if files else None,
+    )
+    db.append_log(job_id, f"saved gallery-dl archive: {target} ({human_bytes(final_size)})")
+
+
+def hitomi_backend() -> str:
+    value = os.getenv("HITOMI_BACKEND", "auto").strip().lower()
+    return value if value in {"gallery-dl", "builtin", "auto"} else "auto"
+
+
+def gallery_dl_available() -> bool:
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "gallery_dl", "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def download_hitomi_gallery_dl(job_id: int, parsed: ParsedDownload, session: requests.Session) -> None:
+    gallery_id = parsed.hitomi_gallery_id or ""
+    source_url = parsed.hitomi_gallery_url or f"https://hitomi.la/galleries/{gallery_id}.html"
+    metadata = fetch_hitomi_metadata_best_effort(session, gallery_id, job_id)
+    title = str(metadata.get("title") or f"gallery_{gallery_id}")
+    target_name = sanitize_segment(f"{gallery_id}-{title}", f"gallery_{gallery_id}")
+    target_root = base_target(parsed, "hitomi")
+    target = safe_join(target_root, target_name)
+    target.mkdir(parents=True, exist_ok=True)
+
+    page_count = len(metadata.get("files") or []) if metadata else 0
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        model_title=title,
+        model_category="Hitomi Gallery",
+        model_type=str(metadata.get("type") or "Gallery"),
+        base_model=str(metadata.get("language") or metadata.get("language_localname") or ""),
+        file_format="gallery-dl",
+        precision=f"{page_count} pages" if page_count else None,
+        metadata_json=json.dumps(redact_metadata(hitomi_metadata_summary(metadata)), ensure_ascii=False) if metadata else None,
+    )
+    write_metadata(
+        target,
+        "_archive_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "hitomi",
+            "backend": "gallery-dl",
+            "gallery_id": gallery_id,
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "title": title,
+            "page_count": page_count or None,
+        },
+    )
+    if metadata:
+        write_metadata(
+            target,
+            "_hitomi_metadata.json",
+            {
+                **metadata_stamp(),
+                "source": "hitomi",
+                "backend": "gallery-dl",
+                "gallery_id": gallery_id,
+                "source_url": source_url,
+                "raw_input": parsed.raw_input,
+                "metadata": metadata,
+            },
+        )
+
+    command = gallery_dl_command(source_url, target, filename_format="{num:>03}_{filename}.{extension}")
+    log_gallery_dl_start(job_id, source_url, target)
+    run_gallery_dl_process(job_id, command, target)
+
+    final_size = directory_size(target)
+    page_files = hitomi_gallery_files(target)
+    db.update_job(
+        job_id,
+        filename=f"{len(page_files) or page_count or 'downloaded'} pages",
+        progress_bytes=final_size,
+        total_bytes=final_size,
+        precision=f"{len(page_files)} pages" if page_files else (f"{page_count} pages" if page_count else None),
+    )
+    db.append_log(job_id, f"saved gallery with gallery-dl: {target} ({human_bytes(final_size)})")
+
+
+def fetch_hitomi_metadata_best_effort(session: requests.Session, gallery_id: str, job_id: int) -> dict[str, Any]:
+    try:
+        return fetch_hitomi_gallery_info(session, gallery_id, job_id)
+    except JobControlStop:
+        raise
+    except Exception as exc:  # noqa: BLE001 - gallery-dl can still download without our metadata parser
+        db.append_log(job_id, f"Hitomi metadata fetch skipped: {exc}")
+        return {}
+
+
+def gallery_dl_command(source_url: str, target: Path, filename_format: str | None = None) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "gallery_dl",
+        "--config-ignore",
+        "--no-input",
+        "-D",
+        str(target),
+        "--write-info-json",
+    ]
+    if filename_format:
+        command.extend(["-f", filename_format])
+    sleep_request = os.getenv("GALLERY_DL_SLEEP_REQUEST_SECONDS", "").strip()
+    if sleep_request:
+        command.extend(["--sleep-request", sleep_request])
+    command.extend(gallery_dl_auth_args())
+    command.append(source_url)
+    return command
+
+
+def gallery_dl_auth_args() -> list[str]:
+    args: list[str] = []
+    username = db.get_secret("GALLERY_DL_USERNAME")
+    password = db.get_secret("GALLERY_DL_PASSWORD")
+    cookies_file = db.get_secret("GALLERY_DL_COOKIES_FILE")
+    cookies_from_browser = db.get_secret("GALLERY_DL_COOKIES_FROM_BROWSER")
+    extra_options = db.get_secret("GALLERY_DL_EXTRA_OPTIONS")
+
+    if cookies_file:
+        args.extend(["--cookies", cookies_file])
+    if cookies_from_browser:
+        args.extend(["--cookies-from-browser", cookies_from_browser])
+    if username:
+        args.extend(["-u", username])
+    if password:
+        args.extend(["-p", password])
+    if extra_options:
+        for line in extra_options.splitlines():
+            option = line.strip()
+            if not option or option.startswith("#"):
+                continue
+            if "=" not in option:
+                continue
+            args.extend(["-o", option])
+    return args
+
+
+def gallery_dl_auth_summary() -> str:
+    values = []
+    if db.get_secret("GALLERY_DL_COOKIES_FILE"):
+        values.append("cookies-file")
+    if db.get_secret("GALLERY_DL_COOKIES_FROM_BROWSER"):
+        values.append("browser-cookies")
+    if db.get_secret("GALLERY_DL_USERNAME"):
+        values.append("username")
+    if db.get_secret("GALLERY_DL_PASSWORD"):
+        values.append("password")
+    if db.get_secret("GALLERY_DL_EXTRA_OPTIONS"):
+        values.append("extra-options")
+    return ", ".join(values) if values else "none"
+
+
+def log_gallery_dl_start(job_id: int, source_url: str, target: Path) -> None:
+    db.append_log(
+        job_id,
+        f"gallery-dl start: source={redact_sensitive_text(source_url)} target={target} auth={gallery_dl_auth_summary()}",
+    )
+
+
+def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> None:
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_done = process.stdout is None
+        if process.stdout:
+            reader = threading.Thread(
+                target=read_process_output,
+                args=(process.stdout, output_queue),
+                name=f"gallery-dl-output-{job_id}",
+                daemon=True,
+            )
+            reader.start()
+
+        last_update = 0.0
+        while True:
+            check_job_control(job_id)
+            try:
+                event = output_queue.get(timeout=1.0)
+            except queue.Empty:
+                event = None
+            if event is not None and event[0] == "done":
+                output_done = True
+            elif event is not None and event[1] is not None:
+                line = event[1]
+                message = line.strip()
+                if message:
+                    db.append_log(job_id, f"gallery-dl: {message[:1000]}")
+
+            now = time.time()
+            if now - last_update >= 1.0:
+                update_gallery_dl_progress(job_id, target)
+                last_update = now
+            if process.poll() is not None and output_done and output_queue.empty():
+                break
+
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError(f"gallery-dl exited with code {return_code}")
+    except JobControlStop:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        raise
+
+
+def read_process_output(pipe: Any, output_queue: queue.Queue[tuple[str, str | None]]) -> None:
+    try:
+        for line in pipe:
+            output_queue.put(("line", line))
+    finally:
+        output_queue.put(("done", None))
+
+
+def update_gallery_dl_progress(job_id: int, target: Path) -> None:
+    page_files = gallery_dl_downloaded_files(target)
+    latest_name = page_files[-1].name if page_files else None
+    db.update_job(
+        job_id,
+        filename=latest_name,
+        progress_bytes=directory_size(target),
+        total_bytes=None,
+    )
+
+
+def gallery_dl_downloaded_files(target: Path) -> list[Path]:
+    ignored_suffixes = {".part", ".json", ".txt"}
+    files = [
+        item
+        for item in target.rglob("*")
+        if item.is_file()
+        and item.suffix.lower() not in ignored_suffixes
+        and not item.name.endswith(".part")
+    ]
+    return sorted(files, key=lambda item: item.name.lower())
+
+
+def hitomi_gallery_files(target: Path) -> list[Path]:
+    extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
+    files = [
+        item
+        for item in target.rglob("*")
+        if item.is_file()
+        and item.suffix.lower() in extensions
+        and not item.name.endswith(".part")
+    ]
+    return sorted(files, key=lambda item: item.name.lower())
+
+
+def fetch_hitomi_gallery_info(session: requests.Session, gallery_id: str, job_id: int) -> dict[str, Any]:
+    url = f"https://ltn.gold-usergeneratedcontent.net/galleries/{gallery_id}.js"
+    db.append_log(job_id, f"Hitomi metadata: {url}")
+    response = request_with_safety(session, "GET", url, job_id=job_id, timeout=(20, 60))
+    response.raise_for_status()
+    match = re.search(r"var\s+galleryinfo\s*=\s*(\{.*\})\s*;?\s*$", response.text, flags=re.DOTALL)
+    if not match:
+        raise ValueError("Could not parse Hitomi gallery metadata.")
+    return json.loads(match.group(1))
+
+
+def fetch_hitomi_gg(session: requests.Session, job_id: int) -> dict[str, Any]:
+    url = "https://ltn.gold-usergeneratedcontent.net/gg.js"
+    response = request_with_safety(session, "GET", url, job_id=job_id, timeout=(20, 60))
+    response.raise_for_status()
+    page = response.text
+    mapping: dict[int, int] = {}
+    keys: list[int] = []
+    for match in re.finditer(r"case\s+(\d+):(?:\s*o\s*=\s*(\d+))?", page):
+        keys.append(int(match.group(1)))
+        if match.group(2) is not None:
+            value = int(match.group(2))
+            for key in keys:
+                mapping[key] = value
+            keys.clear()
+    for match in re.finditer(r"if\s+\(g\s*===?\s*(\d+)\)[\s{]*o\s*=\s*(\d+)", page):
+        mapping[int(match.group(1))] = int(match.group(2))
+    default_match = re.search(r"(?:var\s+|default:)\s*o\s*=\s*(\d+)", page)
+    prefix_match = re.search(r"b:\s*[\"']([^\"']+)[\"']", page)
+    return {
+        "mapping": mapping,
+        "default": int(default_match.group(1)) if default_match else 0,
+        "prefix": (prefix_match.group(1).strip("/") if prefix_match else ""),
+    }
+
+
+def hitomi_preferred_format() -> str:
+    value = os.getenv("HITOMI_IMAGE_FORMAT", "webp").strip().lower()
+    return value if value in {"webp", "avif", "original"} else "webp"
+
+
+def hitomi_image_candidates(image: dict[str, Any], gg: dict[str, Any]) -> list[tuple[str, str]]:
+    original_ext = Path(str(image.get("name") or "image.jpg")).suffix.lower().removeprefix(".") or "jpg"
+    preferred = hitomi_preferred_format()
+    requested = [preferred, "webp", "avif", "original"]
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for value in requested:
+        ext = original_ext if value == "original" else value
+        if ext in seen:
+            continue
+        if value == "webp" and not image.get("haswebp"):
+            continue
+        if value == "avif" and not image.get("hasavif"):
+            continue
+        seen.add(ext)
+        candidates.append((hitomi_image_url(str(image["hash"]), ext, gg), ext))
+    return candidates
+
+
+def hitomi_image_url(image_hash: str, extension: str, gg: dict[str, Any]) -> str:
+    number = int(image_hash[-1] + image_hash[-3:-1], 16)
+    mapping = gg.get("mapping") if isinstance(gg.get("mapping"), dict) else {}
+    shard = int(mapping.get(number, gg.get("default", 0))) + 1
+    prefix = str(gg.get("prefix") or "").strip("/")
+    directory = "images" if extension not in {"webp", "avif"} else extension
+    path_prefix = f"{prefix}/" if prefix else ""
+    return (
+        f"https://{extension[0]}{shard}.gold-usergeneratedcontent.net/"
+        f"{directory}/{path_prefix}{number}/{image_hash}.{extension}"
+    )
+
+
+def hitomi_output_filename(index: int, original_name: str, extension: str) -> str:
+    stem = Path(original_name).stem or f"page_{index:03d}"
+    return sanitize_segment(f"{index:03d}_{stem}.{extension}", f"{index:03d}.{extension}")
+
+
+def hitomi_metadata_summary(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": metadata.get("id"),
+        "title": metadata.get("title"),
+        "japanese_title": metadata.get("japanese_title"),
+        "type": metadata.get("type"),
+        "language": metadata.get("language"),
+        "language_localname": metadata.get("language_localname"),
+        "date": metadata.get("date"),
+        "datepublished": metadata.get("datepublished"),
+        "artists": metadata.get("artists"),
+        "groups": metadata.get("groups"),
+        "parodys": metadata.get("parodys"),
+        "characters": metadata.get("characters"),
+        "tags": metadata.get("tags"),
+        "page_count": len(metadata.get("files") or []),
+    }
+
+
 def fetch_workflow_bytes(
     session: requests.Session,
     url: str,
@@ -816,10 +1534,18 @@ def auth_headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def stream_download(job_id: int, session: requests.Session, url: str, target_dir: Path) -> Path:
+def stream_download(
+    job_id: int,
+    session: requests.Session,
+    url: str,
+    target_dir: Path,
+    filename_override: str | None = None,
+) -> Path:
     check_job_control(job_id)
     target_dir.mkdir(parents=True, exist_ok=True)
     filename, total_from_head = resolve_remote_filename(session, url, job_id)
+    if filename_override:
+        filename = filename_override
     filename = sanitize_segment(filename, default=f"job_{job_id}.bin")
     final_path = target_dir / filename
     part_path = target_dir / f"{filename}.part"
@@ -852,7 +1578,7 @@ def stream_download(job_id: int, session: requests.Session, url: str, target_dir
                 part_path.unlink(missing_ok=True)
 
             cd_filename = filename_from_content_disposition(response.headers.get("content-disposition"))
-            if cd_filename:
+            if cd_filename and not filename_override:
                 new_filename = sanitize_segment(cd_filename, default=filename)
                 if new_filename != filename and existing == 0:
                     filename = new_filename

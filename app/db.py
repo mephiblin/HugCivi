@@ -13,7 +13,7 @@ from .utils import redact_sensitive_text
 
 DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
 _DB_LOCK = threading.RLock()
-ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "canceling", "deleting")
+ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "deleting")
 
 ROUTE_DEFAULTS = {
     "LIBRARY_ACTIVE": "ComfyUI",
@@ -427,14 +427,45 @@ def settings_status() -> dict[str, Any]:
         }
         for row in rows
     }
-    for key in ("HF_TOKEN", "CIVITAI_TOKEN"):
+    secret_keys = (
+        "HF_TOKEN",
+        "CIVITAI_TOKEN",
+        "GALLERY_DL_USERNAME",
+        "GALLERY_DL_PASSWORD",
+        "GALLERY_DL_COOKIES_FILE",
+        "GALLERY_DL_COOKIES_FROM_BROWSER",
+        "GALLERY_DL_EXTRA_OPTIONS",
+    )
+    for key in secret_keys:
         env_value = os.getenv(key)
         db_value = db_settings.get(key)
+        value = db_value["value"] if db_value else (env_value or "")
+        if key == "GALLERY_DL_PASSWORD" and value:
+            value = ""
         status[key] = {
             "configured": bool(env_value or db_value),
             "source": "ui" if db_value else ("environment" if env_value else None),
             "updated_at": db_value["updated_at"] if db_value else None,
-            "value": db_value["value"] if db_value else (env_value or ""),
+            "value": value,
         }
     status["routes"] = library_route_settings()
+    status["queue"] = {
+        key: settings_status_entry(key, default, db_settings)
+        for key, default in {
+            "MAX_CONCURRENT_DOWNLOADS": "3",
+            "QUEUE_PER_PROVIDER_LIMIT": "1",
+            "DOWNLOAD_STALL_TIMEOUT_SECONDS": "0",
+        }.items()
+    }
     return status
+
+
+def settings_status_entry(key: str, default: str, db_settings: dict[str, dict[str, str]]) -> dict[str, Any]:
+    env_value = os.getenv(key)
+    db_value = db_settings.get(key)
+    return {
+        "configured": bool(env_value or db_value),
+        "source": "ui" if db_value else ("environment" if env_value else "default"),
+        "updated_at": db_value["updated_at"] if db_value else None,
+        "value": db_value["value"] if db_value else (env_value or default),
+    }

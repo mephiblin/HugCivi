@@ -11,7 +11,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ROUTE_VAE_ROOT=stable-diffusion/vae \
     ROUTE_CONTROLNET_ROOT=stable-diffusion/controlnet \
     ROUTE_UPSCALER_ROOT=stable-diffusion/upscalers \
+    HITOMI_BACKEND=auto \
+    GALLERY_DL_AUTO_UPDATE=1 \
+    GALLERY_DL_UPDATE_SPEC=gallery-dl<2.0 \
+    GALLERY_DL_SLEEP_REQUEST_SECONDS=1.5 \
     MAX_CONCURRENT_DOWNLOADS=3 \
+    QUEUE_PER_PROVIDER_LIMIT=1 \
+    DOWNLOAD_STALL_TIMEOUT_SECONDS=0 \
     HF_HUB_DOWNLOAD_TIMEOUT=120 \
     HF_XET_HIGH_PERFORMANCE=0 \
     HF_XET_NUM_CONCURRENT_RANGE_GETS=4 \
@@ -32,10 +38,14 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 COPY app ./app
 
 RUN mkdir -p /data /config
 
 EXPOSE 8088
 
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8088"]

@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
-from .downloader import enqueue_job, start_workers, update_job_workflow_info
+from .downloader import enqueue_job, notify_queue_settings_changed, start_workers, update_job_workflow_info
 from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
@@ -95,6 +95,11 @@ def add_job(
 def save_settings(
     hf_token: str = Form(""),
     civitai_token: str = Form(""),
+    gallery_dl_username: str = Form(""),
+    gallery_dl_password: str = Form(""),
+    gallery_dl_cookies_file: str = Form(""),
+    gallery_dl_cookies_from_browser: str = Form(""),
+    gallery_dl_extra_options: str = Form(""),
     library_active: str = Form("ComfyUI"),
     route_llm_root: str = Form(""),
     route_lora_root: str = Form(""),
@@ -104,6 +109,9 @@ def save_settings(
     route_vae_root: str = Form(""),
     route_controlnet_root: str = Form(""),
     route_upscaler_root: str = Form(""),
+    queue_global_limit: str = Form("3"),
+    queue_per_provider_limit: str = Form("1"),
+    queue_stall_timeout_seconds: str = Form("0"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
     if hf_token.strip():
@@ -111,6 +119,17 @@ def save_settings(
 
     if civitai_token.strip():
         db.set_setting("CIVITAI_TOKEN", civitai_token.strip())
+
+    gallery_dl_fields = {
+        "GALLERY_DL_USERNAME": gallery_dl_username,
+        "GALLERY_DL_PASSWORD": gallery_dl_password,
+        "GALLERY_DL_COOKIES_FILE": gallery_dl_cookies_file,
+        "GALLERY_DL_COOKIES_FROM_BROWSER": gallery_dl_cookies_from_browser,
+        "GALLERY_DL_EXTRA_OPTIONS": gallery_dl_extra_options,
+    }
+    for key, value in gallery_dl_fields.items():
+        if value.strip():
+            db.set_setting(key, value.strip())
 
     db.set_setting("LIBRARY_ACTIVE", library_active.strip() or db.ROUTE_DEFAULTS["LIBRARY_ACTIVE"])
     route_fields = {
@@ -127,6 +146,14 @@ def save_settings(
         route_path = db.normalize_route_path(value, db.ROUTE_DEFAULTS[key])
         db.set_setting(key, route_path)
         safe_join(DATA_ROOT, route_path).mkdir(parents=True, exist_ok=True)
+
+    db.set_setting("MAX_CONCURRENT_DOWNLOADS", normalize_int_setting(queue_global_limit, 3, minimum=1))
+    db.set_setting("QUEUE_PER_PROVIDER_LIMIT", normalize_int_setting(queue_per_provider_limit, 1, minimum=1))
+    db.set_setting(
+        "DOWNLOAD_STALL_TIMEOUT_SECONDS",
+        normalize_int_setting(queue_stall_timeout_seconds, 0, minimum=0),
+    )
+    notify_queue_settings_changed()
 
     return RedirectResponse(url="/", status_code=303)
 
@@ -189,28 +216,11 @@ def api_resume_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     return jobs_response()
 
 
-@app.post("/api/jobs/{job_id}/cancel")
-def api_cancel_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
-    job = require_job(job_id)
-    status = str(job.get("status"))
-    if status in {"queued", "paused"}:
-        db.update_job(job_id, status="canceled", error=None)
-        db.append_log(job_id, "cancel requested")
-    elif status in {"running", "pausing"}:
-        db.update_job(job_id, status="canceling", error=None)
-        db.append_log(job_id, "cancel requested")
-    elif status in {"canceling", "canceled"}:
-        pass
-    else:
-        raise HTTPException(status_code=400, detail="취소할 수 있는 작업 상태가 아닙니다.")
-    return jobs_response()
-
-
 @app.delete("/api/jobs/{job_id}")
 def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = require_job(job_id)
     status = str(job.get("status"))
-    if status in {"running", "pausing", "canceling"}:
+    if status in {"running", "pausing"}:
         db.update_job(job_id, status="deleting", error=None)
         db.append_log(job_id, "delete requested")
     else:
@@ -524,12 +534,26 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
         return parsed.url or ""
     if parsed.source == "comfyui" and is_http_url(parsed.comfyui_workflow_url or ""):
         return parsed.comfyui_workflow_url or ""
+    if parsed.source == "hitomi":
+        if is_http_url(parsed.hitomi_gallery_url or ""):
+            return parsed.hitomi_gallery_url or ""
+        if parsed.hitomi_gallery_id:
+            return f"https://hitomi.la/galleries/{quote(parsed.hitomi_gallery_id)}.html"
+    if parsed.source == "gallerydl" and is_http_url(parsed.gallerydl_url or ""):
+        return parsed.gallerydl_url or ""
     return ""
 
 
 def is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def normalize_int_setting(value: str, default: int, *, minimum: int = 0) -> str:
+    try:
+        return str(max(minimum, int(str(value).strip())))
+    except ValueError:
+        return str(default)
 
 
 def build_folder_tree(root: Path, max_depth: int = 4, max_entries: int = 300) -> dict[str, Any]:

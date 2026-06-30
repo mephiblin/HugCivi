@@ -10,12 +10,17 @@ SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._()\-가-힣]+")
 SENSITIVE_QUERY_KEYS = {
     "access_token",
     "api_key",
+    "api-key",
     "auth",
     "authorization",
+    "client_secret",
+    "client-secret",
     "civitai_token",
     "hf_token",
     "key",
     "key-pair-id",
+    "password",
+    "passwd",
     "policy",
     "secret",
     "sig",
@@ -28,7 +33,7 @@ SENSITIVE_QUERY_KEYS = {
     "x-goog-signature",
 }
 SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r"(?i)(\b(?:access_token|api_key|authorization|civitai_token|hf_token|secret|token)\b\s*[=:]\s*)([^\s&]+)"
+    r"(?i)(\b(?:access_token|api[_-]?key|authorization|client[_-]?secret|civitai_token|hf_token|password|passwd|secret|token)\b\s*[=:]\s*)([^\s&]+)"
 )
 BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]+)")
 

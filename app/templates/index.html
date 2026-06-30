@@ -86,13 +86,13 @@
       </div>
 
       <section class="hero mobile-panel is-mobile-panel-active workflow-drop-zone" data-mobile-panel="download" data-workflow-drop-zone aria-label="다운로드 입력">
-        <h1>civitai - Hugging Face</h1>
+        <h1>civitai - Hugging Face - Hitomi - gallery-dl</h1>
         <form class="download-form" id="command-form" method="post" action="/add">
           <input id="target_subdir" name="target_subdir" type="hidden">
           <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
           <div class="download-bar">
             <input id="input_text" name="input_text" class="download-input"
-                   placeholder="URL 또는 다운로드 명령 입력" autocomplete="off" required>
+                   placeholder="URL, hf download, hitomi 123456, gallery-dl URL" autocomplete="off" required>
             <button type="submit" class="submit-orb" title="다운로드 시작" aria-label="다운로드 시작">
               <span></span><span></span><span></span>
             </button>
@@ -167,14 +167,14 @@
                   <td data-label="로그"><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
                   <td data-label="제어" class="job-actions-cell">
                     <div class="job-action-buttons">
-                      {% if job.status in ['queued', 'running', 'pausing'] %}
+                      {% if job.status in ['queued', 'running'] %}
                         <button type="button" data-job-action="pause" data-job-id="{{ job.id }}">정지</button>
+                      {% endif %}
+                      {% if job.status == 'pausing' %}
+                        <button type="button" data-job-action="resume" data-job-id="{{ job.id }}" disabled>재개</button>
                       {% endif %}
                       {% if job.status == 'paused' %}
                         <button type="button" data-job-action="resume" data-job-id="{{ job.id }}">재개</button>
-                      {% endif %}
-                      {% if job.status in ['queued', 'running', 'paused', 'pausing', 'canceling'] %}
-                        <button type="button" data-job-action="cancel" data-job-id="{{ job.id }}">취소</button>
                       {% endif %}
                       <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger">삭제</button>
                     </div>
@@ -231,7 +231,15 @@
               <path d="M7.5 14a5.5 5.5 0 1 1 5-3.2l6.7 6.7V20H17v-2.2h-2.2v-2.2h-2.3A5.4 5.4 0 0 1 7.5 14Zm0-2a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
             </svg>
           </span>
-          API 토큰
+          API 토큰/인증
+        </button>
+        <button type="button" class="settings-nav-item" data-settings-pane="settings-queue">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M5 5.5A2.5 2.5 0 0 1 7.5 3h9A2.5 2.5 0 0 1 19 5.5v1A2.5 2.5 0 0 1 16.5 9h-9A2.5 2.5 0 0 1 5 6.5v-1Zm2 0v1c0 .3.2.5.5.5h9c.3 0 .5-.2.5-.5v-1c0-.3-.2-.5-.5-.5h-9c-.3 0-.5.2-.5.5ZM5 12a2 2 0 0 1 2-2h10a2 2 0 1 1 0 4H7a2 2 0 0 1-2-2Zm0 5.5A2.5 2.5 0 0 1 7.5 15h9a2.5 2.5 0 0 1 2.5 2.5v1a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 18.5v-1Zm2 0v1c0 .3.2.5.5.5h9c.3 0 .5-.2.5-.5v-1c0-.3-.2-.5-.5-.5h-9c-.3 0-.5.2-.5.5Z"/>
+            </svg>
+          </span>
+          대기열 관리
         </button>
         <button type="button" class="settings-nav-item" data-settings-pane="settings-folders">
           <span aria-hidden="true">
@@ -246,19 +254,19 @@
       <form class="settings-form" method="post" action="/settings">
         <header class="settings-header">
           <div>
-            <h2 id="settings-title">API 토큰</h2>
-            <p id="settings-description">비워 두면 기존에 저장된 토큰을 유지합니다.</p>
+            <h2 id="settings-title">API 토큰/인증</h2>
+            <p id="settings-description">비워 두면 기존에 저장된 인증값을 유지합니다.</p>
           </div>
           <button type="submit" class="settings-save top-save">저장</button>
         </header>
 
         <div class="settings-content">
         <section class="settings-block settings-pane active" id="settings-tokens"
-                 data-settings-title="API 토큰"
-                 data-settings-description="비워 두면 기존에 저장된 토큰을 유지합니다.">
+                 data-settings-title="API 토큰/인증"
+                 data-settings-description="비워 두면 기존에 저장된 인증값을 유지합니다.">
           <div class="settings-block-copy">
-            <h3>API 토큰</h3>
-            <p>비워 두면 기존에 저장된 토큰을 유지합니다.</p>
+            <h3>API 토큰/인증</h3>
+            <p>비워 두면 기존에 저장된 인증값을 유지합니다.</p>
           </div>
           <div class="settings-grid two-cols">
             <label class="setting-field" for="hf_token">
@@ -272,6 +280,67 @@
               <input id="civitai_token" name="civitai_token" type="text" autocomplete="off"
                      value="{{ settings.CIVITAI_TOKEN.value }}"
                      placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
+            </label>
+            <label class="setting-field" for="gallery_dl_username">
+              <span>gallery-dl Username</span>
+              <input id="gallery_dl_username" name="gallery_dl_username" type="text" autocomplete="off"
+                     value="{{ settings.GALLERY_DL_USERNAME.value }}"
+                     placeholder="{% if settings.GALLERY_DL_USERNAME.configured %}설정됨 · {{ settings.GALLERY_DL_USERNAME.source }}{% else %}site login username{% endif %}">
+            </label>
+            <label class="setting-field" for="gallery_dl_password">
+              <span>gallery-dl Password</span>
+              <input id="gallery_dl_password" name="gallery_dl_password" type="password" autocomplete="off"
+                     value=""
+                     placeholder="{% if settings.GALLERY_DL_PASSWORD.configured %}설정됨 · {{ settings.GALLERY_DL_PASSWORD.source }}{% else %}site login password{% endif %}">
+            </label>
+            <label class="setting-field" for="gallery_dl_cookies_file">
+              <span>gallery-dl Cookies File</span>
+              <input id="gallery_dl_cookies_file" name="gallery_dl_cookies_file" type="text" autocomplete="off"
+                     value="{{ settings.GALLERY_DL_COOKIES_FILE.value }}"
+                     placeholder="{% if settings.GALLERY_DL_COOKIES_FILE.configured %}설정됨 · {{ settings.GALLERY_DL_COOKIES_FILE.source }}{% else %}/config/gallery-dl/cookies.txt{% endif %}">
+              <small>Netscape cookies.txt 파일 경로입니다. 컨테이너 안에서 읽을 수 있어야 합니다.</small>
+            </label>
+            <label class="setting-field" for="gallery_dl_cookies_from_browser">
+              <span>gallery-dl Browser Cookies</span>
+              <input id="gallery_dl_cookies_from_browser" name="gallery_dl_cookies_from_browser" type="text" autocomplete="off"
+                     value="{{ settings.GALLERY_DL_COOKIES_FROM_BROWSER.value }}"
+                     placeholder="{% if settings.GALLERY_DL_COOKIES_FROM_BROWSER.configured %}설정됨 · {{ settings.GALLERY_DL_COOKIES_FROM_BROWSER.source }}{% else %}firefox, chrome, chromium{% endif %}">
+              <small>브라우저 프로필을 컨테이너에 마운트한 경우에만 사용합니다.</small>
+            </label>
+            <label class="setting-field wide" for="gallery_dl_extra_options">
+              <span>gallery-dl Extra Options</span>
+              <textarea id="gallery_dl_extra_options" name="gallery_dl_extra_options" rows="5" autocomplete="off"
+                        placeholder="{% if settings.GALLERY_DL_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.GALLERY_DL_EXTRA_OPTIONS.source }}{% else %}extractor.wallhaven.api-key=...\nextractor.deviantart.client-id=...\nextractor.deviantart.client-secret=...{% endif %}">{{ settings.GALLERY_DL_EXTRA_OPTIONS.value }}</textarea>
+              <small>한 줄에 하나씩 gallery-dl `-o key=value` 옵션을 입력합니다. API Key, OAuth, 사이트별 토큰은 여기에 넣습니다.</small>
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-block settings-pane" id="settings-queue"
+                 data-settings-title="대기열 관리"
+                 data-settings-description="공급자별 실행 슬롯과 전체 실행 슬롯을 조절합니다.">
+          <div class="settings-block-copy">
+            <h3>대기열 관리</h3>
+            <p>공급자별 실행 슬롯과 전체 실행 슬롯을 조절합니다.</p>
+          </div>
+          <div class="settings-grid two-cols">
+            <label class="setting-field" for="queue_per_provider_limit">
+              <span>각 공급자당 동시 다운로드 수 제한</span>
+              <input id="queue_per_provider_limit" name="queue_per_provider_limit" type="number" min="1" step="1"
+                     value="{{ settings.queue.QUEUE_PER_PROVIDER_LIMIT.value }}" autocomplete="off">
+              <small>같은 공급자에서 동시에 실행할 작업 수입니다. 예: Hugging Face 1개, Civitai 1개, Hitomi 1개.</small>
+            </label>
+            <label class="setting-field" for="queue_global_limit">
+              <span>전체 동시 다운로드 수 제한</span>
+              <input id="queue_global_limit" name="queue_global_limit" type="number" min="1" step="1"
+                     value="{{ settings.queue.MAX_CONCURRENT_DOWNLOADS.value }}" autocomplete="off">
+              <small>전체 실행 슬롯입니다. 이 수를 넘으면 공급자가 달라도 대기합니다.</small>
+            </label>
+            <label class="setting-field" for="queue_stall_timeout_seconds">
+              <span>타임아웃 시간</span>
+              <input id="queue_stall_timeout_seconds" name="queue_stall_timeout_seconds" type="number" min="0" step="1"
+                     value="{{ settings.queue.DOWNLOAD_STALL_TIMEOUT_SECONDS.value }}" autocomplete="off">
+              <small>초 단위입니다. 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
             </label>
           </div>
         </section>
@@ -897,7 +966,7 @@
     }
 
     async function clearJobHistory() {
-      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'canceling', 'deleting'].includes(job.status));
+      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'deleting'].includes(job.status));
       if (!removable.length) {
         window.alert('지울 완료 기록이 없습니다.');
         return;
@@ -946,26 +1015,25 @@
     function renderJobActions(job) {
       const status = job.status || '';
       const buttons = [];
-      if (['queued', 'running', 'pausing'].includes(status)) {
+      if (['queued', 'running'].includes(status)) {
         buttons.push(jobActionButton(job.id, 'pause', '정지'));
+      }
+      if (status === 'pausing') {
+        buttons.push(jobActionButton(job.id, 'resume', '재개', '', true));
       }
       if (status === 'paused') {
         buttons.push(jobActionButton(job.id, 'resume', '재개'));
-      }
-      if (['queued', 'running', 'paused', 'pausing', 'canceling'].includes(status)) {
-        buttons.push(jobActionButton(job.id, 'cancel', '취소'));
       }
       buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger'));
       return `<div class="job-action-buttons">${buttons.join('')}</div>`;
     }
 
-    function jobActionButton(id, action, label, className = '') {
-      return `<button type="button" data-job-action="${escapeHtml(action)}" data-job-id="${escapeHtml(id)}" class="${escapeHtml(className)}">${escapeHtml(label)}</button>`;
+    function jobActionButton(id, action, label, className = '', disabled = false) {
+      return `<button type="button" data-job-action="${escapeHtml(action)}" data-job-id="${escapeHtml(id)}" class="${escapeHtml(className)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
     }
 
     async function handleJobAction(jobId, action) {
       if (!jobId || !action) return;
-      if (action === 'cancel' && !window.confirm('이 다운로드 작업을 취소할까요?')) return;
       if (action === 'delete' && !window.confirm('이 작업 기록을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
 
       const method = action === 'delete' ? 'DELETE' : 'POST';
@@ -1759,6 +1827,8 @@
       if (source === 'huggingface') return 'HF';
       if (source === 'civitai') return 'NAI';
       if (source === 'comfyui') return 'WF';
+      if (source === 'hitomi') return 'HT';
+      if (source === 'gallerydl') return 'GDL';
       return 'URL';
     }
 

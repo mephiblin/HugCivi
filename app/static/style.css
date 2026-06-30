@@ -33,7 +33,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -293,7 +294,8 @@ a:hover {
 
 .new-folder-form input,
 .settings-form input,
-.settings-form select {
+.settings-form select,
+.settings-form textarea {
   width: 100%;
   min-height: 43px;
   border: 1px solid #cbd5e1;
@@ -307,6 +309,7 @@ a:hover {
 .new-folder-form input:focus,
 .settings-form input:focus,
 .settings-form select:focus,
+.settings-form textarea:focus,
 .download-input:focus {
   border-color: #5b7df0;
   box-shadow: 0 0 0 3px rgba(61, 102, 232, 0.12);
@@ -508,6 +511,10 @@ a:hover {
   display: grid;
   gap: 7px;
   min-width: 0;
+}
+
+.setting-field.wide {
+  grid-column: 1 / -1;
 }
 
 .setting-field.compact {
@@ -1044,6 +1051,17 @@ a:hover {
 
 .job-action-buttons button:hover {
   background: #f8fafc;
+}
+
+.job-action-buttons button:disabled {
+  color: #8a94a3;
+  background: #f3f6fa;
+  cursor: default;
+  opacity: 0.72;
+}
+
+.job-action-buttons button:disabled:hover {
+  background: #f3f6fa;
 }
 
 .job-action-buttons button.danger {
