@@ -3,20 +3,23 @@
 # Recommended mode:
 #   Portainer > Stacks > Add stack > Repository
 #   Compose path: portainer-stack.yml
-#   Set APP_PASSWORD in the stack environment variables before deploying.
+#   Set APP_PASSWORD and HUGCIVI_IMAGE in the stack environment variables before deploying.
+#   Build/push the image separately; Portainer Repository stacks can fail with build: contexts.
 
 services:
   nas-model-archiver:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: "${HUGCIVI_IMAGE:?Set HUGCIVI_IMAGE to a prebuilt image, for example ghcr.io/your-org/nas-model-archiver:latest}"
     restart: unless-stopped
     ports:
-      - "8088:8088"
+      - "${HUGCIVI_HTTP_PORT:-8088}:8088"
     environment:
       TZ: "Asia/Seoul"
       APP_USERNAME: "${APP_USERNAME:-admin}"
-      APP_PASSWORD: "${APP_PASSWORD:-replace-with-a-strong-password}"
+      APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD to a long password before deploying}"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      UMASK: "${UMASK:-022}"
+      HUGCIVI_CHOWN_ON_START: "${HUGCIVI_CHOWN_ON_START:-0}"
 
       # Tokens can also be saved later in the web UI.
       HF_TOKEN: "${HF_TOKEN:-}"
@@ -35,12 +38,17 @@ services:
       HITOMI_BACKEND: "${HITOMI_BACKEND:-auto}"
       GALLERY_DL_AUTO_UPDATE: "${GALLERY_DL_AUTO_UPDATE:-1}"
       GALLERY_DL_UPDATE_SPEC: "${GALLERY_DL_UPDATE_SPEC:-gallery-dl<2.0}"
+      HUGCIVI_STARTUP_CONFIG_FILE: "${HUGCIVI_STARTUP_CONFIG_FILE:-/config/startup.env}"
       GALLERY_DL_SLEEP_REQUEST_SECONDS: "${GALLERY_DL_SLEEP_REQUEST_SECONDS:-1.5}"
       GALLERY_DL_USERNAME: "${GALLERY_DL_USERNAME:-}"
       GALLERY_DL_PASSWORD: "${GALLERY_DL_PASSWORD:-}"
       GALLERY_DL_COOKIES_FILE: "${GALLERY_DL_COOKIES_FILE:-}"
       GALLERY_DL_COOKIES_FROM_BROWSER: "${GALLERY_DL_COOKIES_FROM_BROWSER:-}"
       GALLERY_DL_EXTRA_OPTIONS: "${GALLERY_DL_EXTRA_OPTIONS:-}"
+      YT_DLP_COOKIES_FILE: "${YT_DLP_COOKIES_FILE:-}"
+      YT_DLP_COOKIES_FROM_BROWSER: "${YT_DLP_COOKIES_FROM_BROWSER:-}"
+      YT_DLP_FORMAT: "${YT_DLP_FORMAT:-best[ext=mp4]/best}"
+      YT_DLP_EXTRA_OPTIONS: "${YT_DLP_EXTRA_OPTIONS:-}"
 
       # Conservative download defaults to reduce rate-limit risk.
       MAX_CONCURRENT_DOWNLOADS: "${MAX_CONCURRENT_DOWNLOADS:-3}"
@@ -58,10 +66,10 @@ services:
       DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
     volumes:
       - type: bind
-        source: /volume1/docker/nas-model-archiver/models
+        source: "${HUGCIVI_DATA_DIR:-/volume1/docker/nas-model-archiver/models}"
         target: /data
       - type: bind
-        source: /volume1/docker/nas-model-archiver/config
+        source: "${HUGCIVI_CONFIG_DIR:-/volume1/docker/nas-model-archiver/config}"
         target: /config
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS -u \"$${APP_USERNAME}:$${APP_PASSWORD}\" http://127.0.0.1:8088/ >/dev/null || exit 1"]

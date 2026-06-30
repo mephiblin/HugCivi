@@ -9,11 +9,32 @@ from pathlib import Path
 from typing import Any
 
 from .models import ParsedDownload
-from .utils import redact_sensitive_text
+from .utils import redact_sensitive_text, safe_join
 
 DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
+DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 _DB_LOCK = threading.RLock()
 ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "deleting")
+ROUTE_SETTING_BY_TYPE = {
+    "llm": "ROUTE_LLM_ROOT",
+    "lora": "ROUTE_LORA_ROOT",
+    "checkpoint": "ROUTE_CHECKPOINT_ROOT",
+    "diffusion_model": "ROUTE_DIFFUSION_MODEL_ROOT",
+    "embedding": "ROUTE_EMBEDDING_ROOT",
+    "vae": "ROUTE_VAE_ROOT",
+    "controlnet": "ROUTE_CONTROLNET_ROOT",
+    "upscaler": "ROUTE_UPSCALER_ROOT",
+}
+HF_POSSIBLE_ROUTE_TYPES = ("llm", "checkpoint", "embedding")
+CIVITAI_POSSIBLE_ROUTE_TYPES = (
+    "lora",
+    "checkpoint",
+    "diffusion_model",
+    "embedding",
+    "vae",
+    "controlnet",
+    "upscaler",
+)
 
 ROUTE_DEFAULTS = {
     "LIBRARY_ACTIVE": "ComfyUI",
@@ -325,7 +346,10 @@ def clear_favorite_path_prefix(target_path: str) -> None:
     root_text = target_path.strip("/")
     root_prefix = root_text.rstrip("/") + "/"
     with _DB_LOCK, connect() as conn:
-        conn.execute("DELETE FROM favorites WHERE path = ? OR path LIKE ?", (root_text, root_prefix + "%"))
+        conn.execute(
+            "DELETE FROM favorites WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (root_text, escape_like(root_prefix) + "%"),
+        )
         conn.commit()
 
 
@@ -333,24 +357,136 @@ def clear_note_path_prefix(target_path: str) -> None:
     root_text = target_path.strip("/")
     root_prefix = root_text.rstrip("/") + "/"
     with _DB_LOCK, connect() as conn:
-        conn.execute("DELETE FROM item_notes WHERE path = ? OR path LIKE ?", (root_text, root_prefix + "%"))
+        conn.execute(
+            "DELETE FROM item_notes WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (root_text, escape_like(root_prefix) + "%"),
+        )
         conn.commit()
 
 
+def escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def has_active_jobs_under(target_root: str | Path) -> bool:
-    root_text = str(target_root)
-    root_prefix = root_text.rstrip("\\/") + os.sep
+    root_text = normalized_path_text(target_root)
     placeholders = ", ".join("?" for _ in ACTIVE_JOB_STATUSES)
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
-            f"SELECT target_dir FROM jobs WHERE status IN ({placeholders}) AND target_dir IS NOT NULL",
+            f"SELECT target_dir, parsed_json, source FROM jobs WHERE status IN ({placeholders})",
             ACTIVE_JOB_STATUSES,
         ).fetchall()
+    route_settings = library_route_settings()
     for row in rows:
-        target_dir = str(row["target_dir"])
-        if target_dir == root_text or target_dir.startswith(root_prefix):
-            return True
+        for active_root in active_job_roots(dict(row), route_settings):
+            if paths_overlap(active_root, root_text):
+                return True
     return False
+
+
+def active_job_roots(job: dict[str, Any], route_settings: dict[str, str]) -> list[Path]:
+    target_dir = job.get("target_dir")
+    if target_dir:
+        return [Path(str(target_dir))]
+
+    parsed = parsed_download_or_none(job.get("parsed_json"))
+    source = parsed.source if parsed else str(job.get("source") or "")
+    if parsed and parsed.target_subdir:
+        return compact_paths([safe_data_path(parsed.target_subdir)])
+    if source == "generic":
+        return compact_paths([safe_data_path("generic")])
+    if source == "comfyui":
+        return compact_paths([safe_data_path("comfyui", "workflows")])
+    if source == "hitomi":
+        return compact_paths([safe_data_path("hitomi")])
+    if source == "gallerydl":
+        return compact_paths([safe_data_path("gallery-dl")])
+    if source == "huggingface":
+        return huggingface_expected_roots(parsed, route_settings)
+    if source == "civitai":
+        return civitai_expected_roots(route_settings)
+    return []
+
+
+def huggingface_expected_roots(parsed: ParsedDownload | None, route_settings: dict[str, str]) -> list[Path]:
+    roots: list[Path | None] = []
+    repo_type = parsed.repo_type if parsed else "model"
+    if repo_type == "dataset":
+        roots.append(safe_data_path("huggingface", "datasets"))
+    elif repo_type == "space":
+        roots.append(safe_data_path("huggingface", "spaces"))
+    else:
+        roots.extend(route_root_paths(HF_POSSIBLE_ROUTE_TYPES, route_settings))
+        roots.extend(
+            [
+                safe_data_path("huggingface", "models"),
+                safe_data_path("huggingface", "vision"),
+                safe_data_path("huggingface", "audio"),
+            ]
+        )
+    return compact_paths(roots)
+
+
+def civitai_expected_roots(route_settings: dict[str, str]) -> list[Path]:
+    roots: list[Path | None] = route_root_paths(CIVITAI_POSSIBLE_ROUTE_TYPES, route_settings)
+    roots.append(safe_data_path("civitai"))
+    return compact_paths(roots)
+
+
+def route_root_paths(route_types: tuple[str, ...], route_settings: dict[str, str]) -> list[Path | None]:
+    roots: list[Path | None] = []
+    for route_type in route_types:
+        setting_key = ROUTE_SETTING_BY_TYPE.get(route_type)
+        route_path = route_settings.get(setting_key or "")
+        if route_path:
+            roots.append(safe_data_path(route_path))
+    return roots
+
+
+def safe_data_path(*parts: str) -> Path | None:
+    try:
+        return safe_join(DATA_ROOT, *parts)
+    except ValueError:
+        return None
+
+
+def compact_paths(paths: list[Path | None]) -> list[Path]:
+    seen: set[str] = set()
+    values: list[Path] = []
+    for path in paths:
+        if path is None:
+            continue
+        text = normalized_path_text(path)
+        if text in seen:
+            continue
+        seen.add(text)
+        values.append(path)
+    return values
+
+
+def parsed_download_or_none(payload: Any) -> ParsedDownload | None:
+    if not payload:
+        return None
+    try:
+        raw = json.loads(str(payload))
+        if not isinstance(raw, dict):
+            return None
+        return ParsedDownload.from_dict(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def paths_overlap(path: str | Path, root: str | Path) -> bool:
+    path_text = normalized_path_text(path)
+    root_text = normalized_path_text(root)
+    path_prefix = path_text.rstrip("\\/") + os.sep
+    root_prefix = root_text.rstrip("\\/") + os.sep
+    return path_text == root_text or path_text.startswith(root_prefix) or root_text.startswith(path_prefix)
+
+
+def normalized_path_text(path: str | Path) -> str:
+    text = str(path).rstrip("\\/")
+    return text or os.sep
 
 
 def append_log(job_id: int, message: str) -> None:
@@ -435,18 +571,18 @@ def settings_status() -> dict[str, Any]:
         "GALLERY_DL_COOKIES_FILE",
         "GALLERY_DL_COOKIES_FROM_BROWSER",
         "GALLERY_DL_EXTRA_OPTIONS",
+        "YT_DLP_COOKIES_FILE",
+        "YT_DLP_COOKIES_FROM_BROWSER",
+        "YT_DLP_EXTRA_OPTIONS",
     )
     for key in secret_keys:
         env_value = os.getenv(key)
         db_value = db_settings.get(key)
-        value = db_value["value"] if db_value else (env_value or "")
-        if key == "GALLERY_DL_PASSWORD" and value:
-            value = ""
         status[key] = {
             "configured": bool(env_value or db_value),
             "source": "ui" if db_value else ("environment" if env_value else None),
             "updated_at": db_value["updated_at"] if db_value else None,
-            "value": value,
+            "value": "",
         }
     status["routes"] = library_route_settings()
     status["queue"] = {
@@ -456,6 +592,12 @@ def settings_status() -> dict[str, Any]:
             "QUEUE_PER_PROVIDER_LIMIT": "1",
             "DOWNLOAD_STALL_TIMEOUT_SECONDS": "0",
         }.items()
+    }
+    status["startup"] = {
+        "GALLERY_DL_AUTO_UPDATE": settings_status_entry("GALLERY_DL_AUTO_UPDATE", "1", db_settings),
+    }
+    status["youtube"] = {
+        "YT_DLP_FORMAT": settings_status_entry("YT_DLP_FORMAT", "best[ext=mp4]/best", db_settings),
     }
     return status
 

@@ -47,7 +47,7 @@ def sanitize_segment(value: str, default: str = "item") -> str:
 
 def safe_join(root: str | Path, *parts: str) -> Path:
     root_path = Path(root).resolve()
-    current = root_path
+    current = Path(root)
     for part in parts:
         if not part:
             continue
@@ -58,7 +58,7 @@ def safe_join(root: str | Path, *parts: str) -> Path:
     resolved = current.resolve()
     if root_path not in resolved.parents and resolved != root_path:
         raise ValueError("Target path escapes data root")
-    return resolved
+    return current
 
 
 def human_bytes(num: int | float | None) -> str:

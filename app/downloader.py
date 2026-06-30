@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
 import random
 import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -13,7 +17,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse, unquote
+from urllib.parse import parse_qsl, quote, urlparse, urlunparse, unquote
 
 import requests
 
@@ -47,6 +51,68 @@ _ACTIVE_GLOBAL_JOBS = 0
 _ACTIVE_PROVIDER_JOBS: dict[str, int] = {}
 _HOST_THROTTLE_LOCK = threading.Lock()
 _HOST_NEXT_REQUEST_AT: dict[str, float] = {}
+_FINAL_PATH_LOCKS_LOCK = threading.Lock()
+_FINAL_PATH_LOCKS: dict[str, threading.Lock] = {}
+_GALLERY_DL_VERSION_LOCK = threading.Lock()
+_GALLERY_DL_VERSION_CACHE: str | None = None
+_YT_DLP_VERSION_LOCK = threading.Lock()
+_YT_DLP_VERSION_CACHE: str | None = None
+DOWNLOAD_RUNTIME_METADATA_KEY = "download_runtime"
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "youtu.be",
+}
+YT_DLP_SETTING_ALIASES = {
+    "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
+    "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
+    "YT_DLP_EXTRA_OPTIONS": ("YT_DLP_EXTRA_OPTIONS", "YTDLP_EXTRA_OPTIONS"),
+    "YT_DLP_FORMAT": ("YT_DLP_FORMAT", "YTDLP_FORMAT"),
+}
+YT_DLP_SHARED_CONFIG_KEYS = {"deprecations", "format", "logging"}
+YT_DLP_EXTRACTOR_CONFIG_KEYS = {"enabled", "generic", "generic-category"}
+YT_DLP_DOWNLOADER_CONFIG_KEYS = {"forward-cookies"}
+YT_DLP_BLOCKED_CMDLINE_OPTIONS = {
+    "--cache-dir",
+    "--config-location",
+    "--config-locations",
+    "--download-archive",
+    "--downloader",
+    "--downloader-args",
+    "--external-downloader",
+    "--external-downloader-args",
+    "--ffmpeg-location",
+    "--load-info-json",
+    "--output",
+    "--paths",
+    "--plugin-dirs",
+    "--postprocessor-args",
+    "--ppa",
+    "--use-postprocessor",
+}
+YT_DLP_BLOCKED_CONFIG_OPTIONS = {
+    "cachedir",
+    "cache-dir",
+    "config-file",
+    "config-location",
+    "config-locations",
+    "download-archive",
+    "exec",
+    "exec-cmd",
+    "external-downloader",
+    "external-downloader-args",
+    "ffmpeg-location",
+    "load-info-json",
+    "outtmpl",
+    "output",
+    "paths",
+    "plugin-dirs",
+    "postprocessor-args",
+    "ppa",
+    "use-postprocessor",
+}
 
 
 class JobControlStop(Exception):
@@ -55,9 +121,159 @@ class JobControlStop(Exception):
         self.status = status
 
 
+class FinalPathLockGuard:
+    def __init__(self) -> None:
+        self.key: str | None = None
+        self.lock: threading.Lock | None = None
+
+    def acquire_for(self, path: Path, job_id: int | None = None) -> None:
+        key, lock = final_path_lock(path)
+        if key == self.key:
+            return
+        self.release()
+        while True:
+            if lock.acquire(timeout=1.0):
+                break
+            if job_id is not None:
+                check_job_control(job_id)
+        self.key = key
+        self.lock = lock
+
+    def release(self) -> None:
+        if self.lock is not None:
+            self.lock.release()
+            self.lock = None
+            self.key = None
+
+
+def stable_hash(value: str, length: int = 12) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:length]
+
+
+def partial_download_path(final_path: Path, job_id: int, source_url: str) -> Path:
+    source_key = source_url or str(final_path)
+    return final_path.with_name(f"{final_path.name}.job-{job_id}-{stable_hash(source_key)}.part")
+
+
+def final_path_lock_key(path: Path) -> str:
+    try:
+        return str(path.resolve(strict=False))
+    except OSError:
+        return str(path.absolute())
+
+
+def final_path_lock(path: Path) -> tuple[str, threading.Lock]:
+    key = final_path_lock_key(path)
+    with _FINAL_PATH_LOCKS_LOCK:
+        lock = _FINAL_PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _FINAL_PATH_LOCKS[key] = lock
+    return key, lock
+
+
+def parse_metadata_json(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def register_job_partial_path(job_id: int, part_path: Path, final_path: Path, source_url: str) -> None:
+    job = db.get_job(job_id)
+    metadata = parse_metadata_json(job.get("metadata_json") if job else None)
+    runtime = metadata.get(DOWNLOAD_RUNTIME_METADATA_KEY)
+    if not isinstance(runtime, dict):
+        runtime = {}
+
+    partials = runtime.get("partial_paths")
+    partial_paths = [str(item) for item in partials] if isinstance(partials, list) else []
+    part_text = str(part_path)
+    if part_text not in partial_paths:
+        partial_paths.append(part_text)
+
+    runtime.update(
+        {
+            "partial_path": part_text,
+            "partial_paths": partial_paths,
+            "final_path": str(final_path),
+            "source_url_hash": stable_hash(source_url or str(final_path)),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+    metadata[DOWNLOAD_RUNTIME_METADATA_KEY] = runtime
+    db.update_job(job_id, metadata_json=json.dumps(redact_metadata(metadata), ensure_ascii=False))
+    db.append_log(job_id, f"partial file: {part_path}")
+
+
+def job_partial_paths(job_id: int) -> list[Path]:
+    job = db.get_job(job_id)
+    if not job:
+        return []
+
+    paths: list[Path] = []
+    metadata = parse_metadata_json(job.get("metadata_json"))
+    runtime = metadata.get(DOWNLOAD_RUNTIME_METADATA_KEY)
+    if isinstance(runtime, dict):
+        partial_path = runtime.get("partial_path")
+        if isinstance(partial_path, str) and partial_path:
+            paths.append(Path(partial_path))
+        partial_paths = runtime.get("partial_paths")
+        if isinstance(partial_paths, list):
+            paths.extend(Path(str(path)) for path in partial_paths if path)
+
+    target_dir = job.get("target_dir")
+    if target_dir:
+        target = Path(str(target_dir))
+        try:
+            paths.extend(target.rglob(f"*.job-{job_id}-*.part"))
+        except OSError:
+            pass
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = final_path_lock_key(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def is_safe_job_partial_path(path: Path, job_id: int) -> bool:
+    if path.suffix != ".part" or f".job-{job_id}-" not in path.name:
+        return False
+    try:
+        root = DATA_ROOT.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def cleanup_job_partial_files(job_id: int) -> list[Path]:
+    removed: list[Path] = []
+    for path in job_partial_paths(job_id):
+        if not is_safe_job_partial_path(path, job_id):
+            continue
+        try:
+            if path.exists():
+                path.unlink()
+                removed.append(path)
+        except OSError as exc:
+            db.append_log(job_id, f"partial cleanup failed: {path} ({exc})")
+    if removed:
+        db.append_log(job_id, "removed partial files: " + ", ".join(str(path) for path in removed))
+    return removed
+
+
 def enqueue_existing_jobs() -> None:
     for job in reversed(db.list_jobs(limit=500)):
         if job["status"] == "deleting":
+            cleanup_job_partial_files(int(job["id"]))
             db.delete_job(int(job["id"]))
         elif job["status"] == "canceling":
             db.update_job(int(job["id"]), status="canceled", error=None)
@@ -87,6 +303,8 @@ def start_workers() -> None:
     with _WORKERS_LOCK:
         if _WORKERS_STARTED:
             return
+        print(f"gallery-dl version: {gallery_dl_version()}", flush=True)
+        print(f"yt-dlp version: {yt_dlp_version()}", flush=True)
         enqueue_existing_jobs()
         thread = threading.Thread(target=scheduler_loop, name="download-scheduler", daemon=True)
         thread.start()
@@ -233,6 +451,7 @@ def check_job_control(job_id: int) -> None:
 
 def handle_control_stop(job_id: int, status: str) -> None:
     if status == "deleted":
+        cleanup_job_partial_files(job_id)
         db.delete_job(job_id)
         return
     if status == "canceled":
@@ -373,7 +592,10 @@ def provider_key_for_parsed(parsed: ParsedDownload) -> str:
 def provider_key_from_url(prefix: str, url: str | None) -> str:
     if not url:
         return prefix
-    host = urlparse(url).netloc.lower().removeprefix("www.")
+    source_url = ytdl_inner_url(url) or url
+    host = urlparse(source_url).netloc.lower().removeprefix("www.")
+    if host in YOUTUBE_HOSTS:
+        host = "youtube.com"
     return f"{prefix}:{host or 'unknown'}"
 
 
@@ -622,13 +844,28 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         for filename in parsed.filenames:
             check_job_control(job_id)
             db.append_log(job_id, f"HF file download: {parsed.repo_id}/{filename}")
+            db.append_log(
+                job_id,
+                "HF Hub library call in progress; pause/delete requests may apply after this file call returns",
+            )
             local_path = hf_hub_download(filename=filename, **common)
             check_job_control(job_id)
+            saved_path = Path(local_path)
+            saved_size = saved_path.stat().st_size if saved_path.exists() else 0
             db.append_log(job_id, f"saved: {local_path}")
-            db.update_job(job_id, filename=str(Path(local_path).name))
+            db.update_job(
+                job_id,
+                filename=saved_path.name,
+                progress_bytes=saved_size,
+                total_bytes=saved_size,
+            )
     else:
         check_job_control(job_id)
         db.append_log(job_id, f"HF snapshot download: {parsed.repo_id}")
+        db.append_log(
+            job_id,
+            "HF Hub snapshot call in progress; pause/delete requests may apply after this library call returns",
+        )
         local_path = snapshot_download(
             allow_patterns=parsed.include_patterns or None,
             ignore_patterns=parsed.exclude_patterns or None,
@@ -970,12 +1207,11 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
         raise ValueError("gallery-dl URL is missing.")
     if not gallery_dl_available():
         raise RuntimeError("gallery-dl is not available in this container.")
+    if gallery_dl_uses_ytdlp(parsed.gallerydl_url) and not yt_dlp_available():
+        raise RuntimeError("yt-dlp is not available in this container.")
 
     source_url = parsed.gallerydl_url
-    parsed_url = urlparse(source_url)
-    host = sanitize_segment(parsed_url.netloc.lower().removeprefix("www."), "site")
-    path_name = Path(unquote(parsed_url.path).strip("/")).name
-    slug = sanitize_segment(Path(path_name).stem or host, "archive")
+    host, slug = gallery_dl_target_parts(source_url)
     target_root = base_target(parsed, "gallery-dl")
     target = safe_join(target_root, host, slug)
     target.mkdir(parents=True, exist_ok=True)
@@ -997,6 +1233,8 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
             "source_url": source_url,
             "raw_input": parsed.raw_input,
             "host": host,
+            "gallery_dl_version": gallery_dl_version(),
+            "yt_dlp_version": yt_dlp_version() if gallery_dl_uses_ytdlp(source_url) else None,
         },
     )
 
@@ -1022,6 +1260,15 @@ def hitomi_backend() -> str:
 
 
 def gallery_dl_available() -> bool:
+    return not gallery_dl_version().startswith("unavailable")
+
+
+def gallery_dl_version() -> str:
+    global _GALLERY_DL_VERSION_CACHE
+    with _GALLERY_DL_VERSION_LOCK:
+        if _GALLERY_DL_VERSION_CACHE is not None:
+            return _GALLERY_DL_VERSION_CACHE
+
     try:
         result = subprocess.run(
             [sys.executable, "-m", "gallery_dl", "--version"],
@@ -1030,9 +1277,50 @@ def gallery_dl_available() -> bool:
             text=True,
             timeout=20,
         )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    except (OSError, subprocess.SubprocessError) as exc:
+        version = f"unavailable ({exc})"
+    else:
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            version = output or "unknown"
+        else:
+            version = f"unavailable (exit {result.returncode}: {output})"
+
+    with _GALLERY_DL_VERSION_LOCK:
+        _GALLERY_DL_VERSION_CACHE = version
+    return version
+
+
+def yt_dlp_available() -> bool:
+    return not yt_dlp_version().startswith("unavailable")
+
+
+def yt_dlp_version() -> str:
+    global _YT_DLP_VERSION_CACHE
+    with _YT_DLP_VERSION_LOCK:
+        if _YT_DLP_VERSION_CACHE is not None:
+            return _YT_DLP_VERSION_CACHE
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        version = f"unavailable ({exc})"
+    else:
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            version = output or "unknown"
+        else:
+            version = f"unavailable (exit {result.returncode}: {output})"
+
+    with _YT_DLP_VERSION_LOCK:
+        _YT_DLP_VERSION_CACHE = version
+    return version
 
 
 def download_hitomi_gallery_dl(job_id: int, parsed: ParsedDownload, session: requests.Session) -> None:
@@ -1069,6 +1357,7 @@ def download_hitomi_gallery_dl(job_id: int, parsed: ParsedDownload, session: req
             "raw_input": parsed.raw_input,
             "title": title,
             "page_count": page_count or None,
+            "gallery_dl_version": gallery_dl_version(),
         },
     )
     if metadata:
@@ -1129,7 +1418,9 @@ def gallery_dl_command(source_url: str, target: Path, filename_format: str | Non
     if sleep_request:
         command.extend(["--sleep-request", sleep_request])
     command.extend(gallery_dl_auth_args())
-    command.append(source_url)
+    if gallery_dl_uses_ytdlp(source_url):
+        command.extend(ytdl_gallery_dl_args())
+    command.append(gallery_dl_extractor_url(source_url))
     return command
 
 
@@ -1160,7 +1451,152 @@ def gallery_dl_auth_args() -> list[str]:
     return args
 
 
-def gallery_dl_auth_summary() -> str:
+def ytdl_gallery_dl_args() -> list[str]:
+    cmdline_args: list[str] = []
+    config_options: dict[str, Any] = {}
+
+    cookies_file = ytdlp_setting("YT_DLP_COOKIES_FILE")
+    cookies_from_browser = ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER")
+    extra_options = ytdlp_setting("YT_DLP_EXTRA_OPTIONS")
+    if cookies_file:
+        cmdline_args.extend(["--cookies", cookies_file])
+    if cookies_from_browser:
+        cmdline_args.extend(["--cookies-from-browser", cookies_from_browser])
+    parse_ytdlp_extra_options(extra_options, cmdline_args, config_options)
+    if not has_ytdlp_cmdline_option(cmdline_args, "--js-runtimes"):
+        cmdline_args.extend(default_ytdlp_js_runtime_args())
+
+    ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or "best[ext=mp4]/best"
+    if ytdlp_format:
+        config_options["extractor.ytdl.format"] = ytdlp_format
+        config_options["downloader.ytdl.format"] = ytdlp_format
+    if cmdline_args:
+        config_options["extractor.ytdl.cmdline-args"] = cmdline_args
+        config_options["downloader.ytdl.cmdline-args"] = cmdline_args
+
+    config_options["extractor.ytdl.enabled"] = True
+    config_options["extractor.ytdl.module"] = "yt_dlp"
+    config_options["downloader.ytdl.module"] = "yt_dlp"
+    return gallery_dl_config_args(config_options)
+
+
+def default_ytdlp_js_runtime_args() -> list[str]:
+    return ["--js-runtimes", "deno"] if shutil.which("deno") else []
+
+
+def has_ytdlp_cmdline_option(tokens: list[str], option_name: str) -> bool:
+    return any(token == option_name or token.startswith(f"{option_name}=") for token in tokens)
+
+
+def ytdlp_setting(name: str) -> str | None:
+    for key in YT_DLP_SETTING_ALIASES.get(name, (name,)):
+        value = db.get_secret(key)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def parse_ytdlp_extra_options(
+    extra_options: str | None,
+    cmdline_args: list[str],
+    config_options: dict[str, Any],
+) -> None:
+    if not extra_options:
+        return
+    for line in extra_options.splitlines():
+        option = line.strip()
+        if not option or option.startswith("#"):
+            continue
+        if option.startswith("-") or "=" not in option:
+            cmdline_args.extend(parse_ytdlp_cmdline_args(option))
+            continue
+        key, value = option.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if key == "cmdline-args":
+            cmdline_args.extend(parse_ytdlp_cmdline_args(value))
+        else:
+            add_ytdlp_config_option(config_options, key, parse_gallery_dl_option_value(value))
+
+
+def parse_ytdlp_cmdline_args(value: str) -> list[str]:
+    try:
+        tokens = shlex.split(value, comments=True)
+    except ValueError as exc:
+        raise ValueError(f"Invalid YT_DLP_EXTRA_OPTIONS command line: {exc}") from exc
+    for token in tokens:
+        option = token.split("=", 1)[0]
+        if (
+            option in YT_DLP_BLOCKED_CMDLINE_OPTIONS
+            or option.startswith("--exec")
+            or (token.startswith("-o") and not token.startswith("--"))
+            or (token.startswith("-P") and not token.startswith("--"))
+        ):
+            raise ValueError(f"YT_DLP_EXTRA_OPTIONS cannot set output/path/exec option: {option}")
+    return tokens
+
+
+def parse_gallery_dl_option_value(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
+
+
+def add_ytdlp_config_option(config_options: dict[str, Any], key: str, value: Any) -> None:
+    validate_ytdlp_config_option(key)
+    if key.startswith(("extractor.ytdl.", "downloader.ytdl.")):
+        config_options[key] = value
+        return
+    if key.startswith("ytdl."):
+        key = key.removeprefix("ytdl.")
+    if key.startswith("raw-options."):
+        set_ytdlp_shared_config(config_options, key, value)
+    elif key in YT_DLP_SHARED_CONFIG_KEYS:
+        set_ytdlp_shared_config(config_options, key, value)
+    elif key in YT_DLP_EXTRACTOR_CONFIG_KEYS:
+        config_options[f"extractor.ytdl.{key}"] = value
+    elif key in YT_DLP_DOWNLOADER_CONFIG_KEYS:
+        config_options[f"downloader.ytdl.{key}"] = value
+    else:
+        set_ytdlp_shared_config(config_options, f"raw-options.{key}", value)
+
+
+def validate_ytdlp_config_option(key: str) -> None:
+    option_key = ytdlp_config_option_key(key)
+    if option_key in YT_DLP_BLOCKED_CONFIG_OPTIONS or option_key.startswith(
+        tuple(f"{blocked}." for blocked in YT_DLP_BLOCKED_CONFIG_OPTIONS)
+    ):
+        raise ValueError(f"YT_DLP_EXTRA_OPTIONS cannot set unsafe yt-dlp option: {key}")
+
+
+def ytdlp_config_option_key(key: str) -> str:
+    option_key = key.strip()
+    for prefix in ("extractor.ytdl.", "downloader.ytdl.", "ytdl."):
+        if option_key.startswith(prefix):
+            option_key = option_key.removeprefix(prefix)
+            break
+    if option_key.startswith("raw-options."):
+        option_key = option_key.removeprefix("raw-options.")
+    return option_key.lower().replace("_", "-")
+
+
+def set_ytdlp_shared_config(config_options: dict[str, Any], key: str, value: Any) -> None:
+    config_options[f"extractor.ytdl.{key}"] = value
+    config_options[f"downloader.ytdl.{key}"] = value
+
+
+def gallery_dl_config_args(config_options: dict[str, Any]) -> list[str]:
+    args: list[str] = []
+    for key, value in config_options.items():
+        encoded = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        args.extend(["-o", f"{key}={encoded}"])
+    return args
+
+
+def gallery_dl_auth_summary(source_url: str | None = None) -> str:
     values = []
     if db.get_secret("GALLERY_DL_COOKIES_FILE"):
         values.append("cookies-file")
@@ -1172,14 +1608,136 @@ def gallery_dl_auth_summary() -> str:
         values.append("password")
     if db.get_secret("GALLERY_DL_EXTRA_OPTIONS"):
         values.append("extra-options")
+    if source_url and gallery_dl_uses_ytdlp(source_url):
+        if ytdlp_setting("YT_DLP_COOKIES_FILE"):
+            values.append("yt-dlp-cookies-file")
+        if ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER"):
+            values.append("yt-dlp-browser-cookies")
+        if ytdlp_setting("YT_DLP_EXTRA_OPTIONS"):
+            values.append("yt-dlp-extra-options")
     return ", ".join(values) if values else "none"
 
 
 def log_gallery_dl_start(job_id: int, source_url: str, target: Path) -> None:
     db.append_log(
         job_id,
-        f"gallery-dl start: source={redact_sensitive_text(source_url)} target={target} auth={gallery_dl_auth_summary()}",
+        (
+            f"gallery-dl start: source={redact_sensitive_text(source_url)} target={target} "
+            f"version={gallery_dl_version()} yt-dlp={yt_dlp_version() if gallery_dl_uses_ytdlp(source_url) else 'n/a'} "
+            f"auth={gallery_dl_auth_summary(source_url)}"
+        ),
     )
+
+
+def is_ytdl_url(url: str) -> bool:
+    return urlparse(url).scheme.lower() == "ytdl"
+
+
+def ytdl_inner_url(url: str) -> str:
+    return url.split(":", 1)[1] if is_ytdl_url(url) else ""
+
+
+def gallery_dl_uses_ytdlp(url: str) -> bool:
+    return is_ytdl_url(url) or is_youtube_url(ytdl_inner_url(url) or url)
+
+
+def gallery_dl_extractor_url(url: str) -> str:
+    return f"ytdl:{url}" if is_youtube_url(url) and not is_ytdl_url(url) else url
+
+
+def is_youtube_url(url: str) -> bool:
+    return normalized_url_host(url) in YOUTUBE_HOSTS
+
+
+def normalized_url_host(url: str) -> str:
+    return urlparse(url).netloc.lower().removeprefix("www.")
+
+
+def gallery_dl_target_parts(source_url: str) -> tuple[str, str]:
+    display_url = ytdl_inner_url(source_url) or source_url
+    parsed_url = urlparse(display_url)
+    host = sanitize_segment(parsed_url.netloc.lower().removeprefix("www."), "site")
+    slug = sanitize_segment(youtube_slug(parsed_url) or generic_gallery_slug(parsed_url, host), "archive")
+    return host, slug
+
+
+def youtube_slug(parsed_url: Any) -> str:
+    host = parsed_url.netloc.lower().removeprefix("www.")
+    if host == "youtu.be":
+        video_id = Path(unquote(parsed_url.path).strip("/")).name
+        return f"video-{video_id}" if video_id else ""
+    if host in {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"}:
+        query = dict(parse_qsl(parsed_url.query, keep_blank_values=False))
+        if query.get("v"):
+            return f"video-{query['v']}"
+        if query.get("list"):
+            return f"playlist-{query['list']}"
+        parts = [part for part in parsed_url.path.strip("/").split("/") if part]
+        if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}:
+            return f"{parts[0]}-{parts[1]}"
+        if parts and parts[0].startswith("@"):
+            return "-".join(parts[:2])
+    return ""
+
+
+def generic_gallery_slug(parsed_url: Any, host: str) -> str:
+    path_name = Path(unquote(parsed_url.path).strip("/")).name
+    if path_name:
+        stem = Path(path_name).stem
+        if stem:
+            return stem
+    if parsed_url.query:
+        return f"{host}-{stable_hash(parsed_url.query, 8)}"
+    return host
+
+
+def gallery_dl_process_kwargs() -> dict[str, Any]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return {"creationflags": creationflags} if creationflags else {}
+
+
+def stop_gallery_dl_process(job_id: int, process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            db.append_log(job_id, "gallery-dl process group terminate requested")
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            db.append_log(job_id, f"gallery-dl process group terminate failed: {exc}; terminating parent")
+            process.terminate()
+    else:
+        process.terminate()
+        db.append_log(job_id, "gallery-dl process terminate requested")
+
+    try:
+        process.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            db.append_log(job_id, "gallery-dl process group kill requested")
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            db.append_log(job_id, f"gallery-dl process group kill failed: {exc}; killing parent")
+            process.kill()
+    else:
+        process.kill()
+        db.append_log(job_id, "gallery-dl process kill requested")
+
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        db.append_log(job_id, "gallery-dl process did not exit after kill request")
 
 
 def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> None:
@@ -1192,6 +1750,7 @@ def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> Non
             text=True,
             encoding="utf-8",
             errors="replace",
+            **gallery_dl_process_kwargs(),
         )
         output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
         output_done = process.stdout is None
@@ -1231,11 +1790,7 @@ def run_gallery_dl_process(job_id: int, command: list[str], target: Path) -> Non
             raise RuntimeError(f"gallery-dl exited with code {return_code}")
     except JobControlStop:
         if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
+            stop_gallery_dl_process(job_id, process)
         raise
 
 
@@ -1548,15 +2103,17 @@ def stream_download(
         filename = filename_override
     filename = sanitize_segment(filename, default=f"job_{job_id}.bin")
     final_path = target_dir / filename
-    part_path = target_dir / f"{filename}.part"
-
-    existing = part_path.stat().st_size if part_path.exists() else 0
-    headers: dict[str, str] = {"Accept-Encoding": "identity"}
-    if existing > 0:
-        headers["Range"] = f"bytes={existing}-"
-        db.append_log(job_id, f"resume from {human_bytes(existing)}")
+    lock_guard = FinalPathLockGuard()
+    lock_guard.acquire_for(final_path, job_id)
+    part_path = partial_download_path(final_path, job_id, url)
 
     try:
+        existing = part_path.stat().st_size if part_path.exists() else 0
+        headers: dict[str, str] = {"Accept-Encoding": "identity"}
+        if existing > 0:
+            headers["Range"] = f"bytes={existing}-"
+            db.append_log(job_id, f"resume from {human_bytes(existing)}")
+
         with request_with_safety(
             session,
             "GET",
@@ -1583,7 +2140,13 @@ def stream_download(
                 if new_filename != filename and existing == 0:
                     filename = new_filename
                     final_path = target_dir / filename
-                    part_path = target_dir / f"{filename}.part"
+                    lock_guard.acquire_for(final_path, job_id)
+                    part_path = partial_download_path(final_path, job_id, url)
+                    if part_path.exists():
+                        db.append_log(job_id, "content-disposition filename changed; restarting matching partial file")
+                        part_path.unlink(missing_ok=True)
+
+            register_job_partial_path(job_id, part_path, final_path, url)
 
             content_length = response.headers.get("content-length")
             total = None
@@ -1611,18 +2174,22 @@ def stream_download(
                     if now - last_update >= 1.0:
                         db.update_job(job_id, progress_bytes=downloaded, total_bytes=total)
                         last_update = now
+
+        if total is not None and downloaded < total:
+            raise requests.ConnectionError(f"incomplete download: {human_bytes(downloaded)} / {human_bytes(total)}")
+
+        part_path.replace(final_path)
+        final_size = final_path.stat().st_size
+        db.update_job(job_id, progress_bytes=final_size, total_bytes=final_size)
+        db.append_log(job_id, f"saved: {final_path} ({human_bytes(final_size)})")
+        return final_path
     except JobControlStop as exc:
         if exc.status in {"canceled", "deleted"}:
             part_path.unlink(missing_ok=True)
+            cleanup_job_partial_files(job_id)
         raise
-
-    if total is not None and downloaded < total:
-        raise requests.ConnectionError(f"incomplete download: {human_bytes(downloaded)} / {human_bytes(total)}")
-
-    part_path.replace(final_path)
-    db.update_job(job_id, progress_bytes=final_path.stat().st_size, total_bytes=final_path.stat().st_size)
-    db.append_log(job_id, f"saved: {final_path} ({human_bytes(final_path.stat().st_size)})")
-    return final_path
+    finally:
+        lock_guard.release()
 
 
 def resolve_remote_filename(session: requests.Session, url: str, job_id: int | None = None) -> tuple[str, int | None]:

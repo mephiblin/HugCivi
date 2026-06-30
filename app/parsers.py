@@ -21,6 +21,17 @@ COMFYUI_DOWNLOAD_COMMANDS = {"curl", "wget", "aria2c"}
 COMFYUI_SUBCOMMANDS = {"workflow", "workflows", "download"}
 COMFYUI_URL_HINTS = ("comfyui", "comfy-ui", "workflow", "workflows")
 GALLERYDL_EXPLICIT_COMMANDS = {"gallery-dl", "gallerydl", "gdl"}
+YOUTUBE_EXPLICIT_COMMANDS = {"youtube", "yt", "yt-dlp", "youtube-dl"}
+YOUTUBE_HOSTS = {
+    "youtu.be",
+    "www.youtu.be",
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+}
 HITOMI_GALLERY_RE = re.compile(
     r"^/(?:manga|doujinshi|cg|gamecg|imageset|galleries|reader)/(?:[^/?#]+-)?(\d+)(?:\.html)?/?$",
     re.IGNORECASE,
@@ -50,6 +61,10 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
     if hitomi_cli is not None:
         return hitomi_cli
 
+    youtube_cli = maybe_parse_youtube_cli(text, target_subdir=target_subdir)
+    if youtube_cli is not None:
+        return youtube_cli
+
     gallerydl_cli = maybe_parse_gallerydl_cli(text, target_subdir=target_subdir)
     if gallerydl_cli is not None:
         return gallerydl_cli
@@ -73,6 +88,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_hitomi_url(text, target_subdir=target_subdir)
         if is_comfyui_workflow_url(text, require_hint=True):
             return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
+        if is_youtube_url(text):
+            return parse_youtube_url(text, target_subdir=target_subdir)
         return ParsedDownload(source="generic", raw_input=text, target_subdir=target_subdir, url=text)
 
     # Convenient shorthand for HF repo IDs: owner/repo
@@ -86,8 +103,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
         )
 
     raise InputParseError(
-        "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, Hitomi URL, 일반 다운로드 URL, "
-        "또는 안전한 `hf download ...` 형태를 입력하세요."
+        "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, Hitomi URL, YouTube URL, "
+        "gallery-dl URL, 일반 다운로드 URL 또는 안전한 `hf download ...` 형태를 입력하세요."
     )
 
 
@@ -166,15 +183,73 @@ def maybe_parse_gallerydl_cli(text: str, target_subdir: str | None = None) -> Pa
     for token in tokens[1:]:
         if token.startswith("-"):
             continue
-        parsed = urlparse(token)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
+        if is_youtube_url(token):
+            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
+        if is_gallerydl_supported_url(token):
             return ParsedDownload(
                 source="gallerydl",
                 raw_input=text,
                 target_subdir=target_subdir,
                 gallerydl_url=token,
             )
-    raise InputParseError("gallery-dl 입력에서 HTTP/HTTPS URL을 찾지 못했습니다.")
+    raise InputParseError("gallery-dl 입력에서 HTTP/HTTPS 또는 ytdl: URL을 찾지 못했습니다.")
+
+
+def maybe_parse_youtube_cli(text: str, target_subdir: str | None = None) -> ParsedDownload | None:
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        raise InputParseError(f"CLI 파싱 실패: {exc}") from exc
+    if not tokens or tokens[0].lower() not in YOUTUBE_EXPLICIT_COMMANDS:
+        return None
+
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        if is_ytdl_url(token):
+            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
+        if is_youtube_url(token):
+            return parse_youtube_url(token, raw_input=text, target_subdir=target_subdir)
+    raise InputParseError("YouTube 입력에서 YouTube URL을 찾지 못했습니다.")
+
+
+def parse_youtube_url(
+    url: str,
+    raw_input: str | None = None,
+    target_subdir: str | None = None,
+) -> ParsedDownload:
+    if is_ytdl_url(url):
+        gallerydl_url = url
+    elif is_youtube_url(url):
+        gallerydl_url = f"ytdl:{url}"
+    else:
+        raise InputParseError("YouTube URL이 아닙니다.")
+
+    return ParsedDownload(
+        source="gallerydl",
+        raw_input=raw_input or url,
+        target_subdir=target_subdir,
+        gallerydl_url=gallerydl_url,
+    )
+
+
+def is_gallerydl_supported_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return (parsed.scheme in {"http", "https"} and bool(parsed.netloc)) or is_ytdl_url(url)
+
+
+def is_ytdl_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "ytdl" and bool(url[len("ytdl:") :])
+
+
+def is_youtube_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in {"http", "https"} and is_youtube_host((parsed.hostname or "").lower().rstrip("."))
+
+
+def is_youtube_host(host: str) -> bool:
+    return host in YOUTUBE_HOSTS
 
 
 def parse_comfyui_workflow_url(

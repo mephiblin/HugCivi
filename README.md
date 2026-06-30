@@ -1,14 +1,14 @@
 # NAS Model Archiver
 
-Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
+Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, YouTube/yt-dlp, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
-브라우저에서 URL을 붙여넣으면 모델과 갤러리 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, gallery-dl 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
+브라우저에서 URL을 붙여넣으면 모델과 갤러리 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
 ## 이런 용도입니다
 
 - NAS에 AI 모델 파일을 모아두고 싶을 때
 - Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
-- Hitomi 또는 gallery-dl 지원 사이트 이미지를 폴더로 보관하고 필요할 때 ZIP으로 받고 싶을 때
+- Hitomi, gallery-dl 지원 사이트, YouTube 영상을 폴더로 보관하고 필요할 때 받고 싶을 때
 - ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
 - ComfyUI 워크플로우 공유 PNG 또는 JSON을 NAS에 저장하고 나중에 다시 보고 싶을 때
 - 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
@@ -19,6 +19,7 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, �
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - gallery-dl 지원 사이트 범용 다운로드
+- YouTube/yt-dlp URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
 - ComfyUI 워크플로우 `.json` URL 다운로드
 - ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
@@ -37,7 +38,7 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, �
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
 - 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
-- HF 토큰, Civitai 토큰, gallery-dl 인증 정보를 웹 UI에서 저장
+- HF 토큰, Civitai 토큰, gallery-dl, YouTube/yt-dlp 인증 정보를 웹 UI에서 저장
 - 요청 간격, 재시도, 낮은 병렬도 기본값으로 rate limit 위험 완화
 - Basic Auth 로그인
 
@@ -45,7 +46,7 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, �
 
 - Synology NAS 또는 Docker가 실행되는 서버
 - Portainer 또는 Synology Container Manager
-- GitHub 저장소 URL
+- Portainer Repository 배포를 쓸 경우 미리 빌드해서 push한 컨테이너 이미지
 - 모델 저장용 NAS 폴더
 - 앱 설정 저장용 NAS 폴더
 
@@ -58,33 +59,44 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, �
 
 권장 Portainer stack은 위 두 폴더를 각각 컨테이너의 `/data`, `/config`에 연결합니다. 기존에 `/volume1/AI_MODELS` 같은 별도 모델 폴더를 쓰고 있다면 `portainer-stack.yml`의 `source` 값만 그 경로로 바꾸면 됩니다.
 
-## 가장 쉬운 설치: Portainer + GitHub
+로컬 Ubuntu나 개발 PC에서 바로 실행할 때는 [docker-compose.yml](docker-compose.yml)을 사용할 수 있지만, 운영 배포 기준은 [portainer-stack.yml](portainer-stack.yml)입니다.
 
-1. 이 프로젝트를 GitHub 저장소에 올립니다.
-2. NAS에 모델 저장 폴더를 만듭니다.
+## 설치 A: Portainer + Repository
+
+Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 이미지를 먼저 빌드해서 레지스트리에 push하고, [portainer-stack.yml](portainer-stack.yml)은 그 이미지를 `image:`로 참조합니다.
+
+1. 이 프로젝트를 빌드하고 컨테이너 레지스트리에 push합니다.
+
+```bash
+docker build -t ghcr.io/내계정/nas-model-archiver:latest .
+docker push ghcr.io/내계정/nas-model-archiver:latest
+```
+
+2. 이 프로젝트를 GitHub 저장소에 올립니다.
+3. NAS에 모델 저장 폴더를 만듭니다.
 
 ```text
 /volume1/docker/nas-model-archiver/models
 ```
 
-3. NAS에 설정 저장 폴더를 만듭니다.
+4. NAS에 설정 저장 폴더를 만듭니다.
 
 ```text
 /volume1/docker/nas-model-archiver/config
 ```
 
-4. Portainer에 접속합니다.
-5. 왼쪽 메뉴에서 `Stacks`를 누릅니다.
-6. `Add stack`을 누릅니다.
-7. `Repository` 방식을 선택합니다.
-8. GitHub 저장소 URL을 입력합니다.
-9. Compose path에 아래 값을 입력합니다.
+5. Portainer에 접속합니다.
+6. 왼쪽 메뉴에서 `Stacks`를 누릅니다.
+7. `Add stack`을 누릅니다.
+8. `Repository` 방식을 선택합니다.
+9. GitHub 저장소 URL을 입력합니다.
+10. Compose path에 아래 값을 입력합니다.
 
 ```text
 portainer-stack.yml
 ```
 
-10. Branch는 본인 저장소 브랜치에 맞춥니다.
+11. Branch는 본인 저장소 브랜치에 맞춥니다.
 
 ```text
 main
@@ -96,14 +108,37 @@ main
 master
 ```
 
-11. Environment variables에 최소한 아래 값을 추가합니다.
+12. Environment variables에 최소한 아래 값을 추가합니다.
 
 ```text
 APP_PASSWORD=원하는_긴_비밀번호
+HUGCIVI_IMAGE=ghcr.io/내계정/nas-model-archiver:latest
+PUID=1026
+PGID=100
+UMASK=022
 ```
 
-12. `Deploy the stack`을 누릅니다.
-13. 브라우저에서 접속합니다.
+Synology에서 `PUID`와 `PGID`는 파일을 소유할 DSM 사용자/그룹 ID로 맞춥니다. 권한이 맞지 않는 기존 폴더를 한 번 정리해야 하면 `HUGCIVI_CHOWN_ON_START=1`을 임시로 켤 수 있습니다.
+
+기본 NAS 경로 또는 포트를 바꾸려면 아래 값을 추가로 넣을 수 있습니다.
+
+```text
+HUGCIVI_DATA_DIR=/volume1/AI_MODELS
+HUGCIVI_CONFIG_DIR=/volume1/docker/nas-model-archiver/config
+HUGCIVI_HTTP_PORT=8088
+```
+
+YouTube/yt-dlp 쿠키를 Portainer 환경변수로 미리 넣으려면 아래 값을 추가합니다. 여러 줄 옵션은 웹 UI의 `YouTube/yt-dlp Extra Options`에 넣는 편이 관리하기 쉽습니다.
+
+```text
+YT_DLP_COOKIES_FILE=/config/yt-dlp/cookies.txt
+YT_DLP_COOKIES_FROM_BROWSER=
+YT_DLP_FORMAT=best[ext=mp4]/best
+YT_DLP_EXTRA_OPTIONS=
+```
+
+13. `Deploy the stack`을 누릅니다.
+14. 브라우저에서 접속합니다.
 
 ```text
 http://NAS_IP:8088
@@ -117,8 +152,26 @@ admin
 
 비밀번호는 `APP_PASSWORD`에 넣은 값입니다.
 
-Portainer가 `pull access denied for nas-model-archiver` 오류를 내면 스택이 원격 이미지를 받으려는 상태입니다.
-이 저장소의 [portainer-stack.yml](portainer-stack.yml)은 Git 저장소에서 Dockerfile을 직접 빌드하도록 `build`만 사용합니다.
+Portainer가 `pull access denied` 오류를 내면 `HUGCIVI_IMAGE`가 실제 push된 이미지 이름과 일치하는지, 레지스트리가 공개 이미지인지 또는 Portainer에 registry 인증이 설정되어 있는지 확인하세요.
+
+## 설치 B: 로컬 Docker Compose
+
+개발 PC나 Ubuntu 서버처럼 현재 폴더에서 직접 빌드할 수 있는 환경에서만 사용합니다.
+
+```bash
+mkdir -p data config
+APP_PASSWORD=원하는_긴_비밀번호 docker compose up -d --build
+```
+
+다른 저장 위치를 쓰려면 환경변수로 지정합니다.
+
+```bash
+HUGCIVI_DATA_DIR=/srv/hugcivi/models \
+HUGCIVI_CONFIG_DIR=/srv/hugcivi/config \
+PUID="$(id -u)" PGID="$(id -g)" \
+APP_PASSWORD=원하는_긴_비밀번호 \
+docker compose up -d --build
+```
 
 ## Portainer에서 꼭 확인할 값
 
@@ -126,11 +179,11 @@ Portainer가 `pull access denied for nas-model-archiver` 오류를 내면 스택
 
 ```yaml
 volumes:
-  - /volume1/docker/nas-model-archiver/models:/data
-  - /volume1/docker/nas-model-archiver/config:/config
+  - ${HUGCIVI_DATA_DIR:-/volume1/docker/nas-model-archiver/models}:/data
+  - ${HUGCIVI_CONFIG_DIR:-/volume1/docker/nas-model-archiver/config}:/config
 ```
 
-내 NAS 경로가 다르면 `portainer-stack.yml`에서 `source` 값을 바꾸세요.
+내 NAS 경로가 다르면 Portainer Environment variables에서 `HUGCIVI_DATA_DIR`, `HUGCIVI_CONFIG_DIR` 값을 넣거나 `portainer-stack.yml`에서 기본 `source` 값을 바꾸세요.
 
 예:
 
@@ -183,13 +236,13 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 
 1. 웹 UI에 로그인합니다.
 2. 왼쪽 아래 사용자 버튼을 누릅니다.
-3. 필요한 경우 Hugging Face Token, Civitai Token, gallery-dl 인증 정보를 입력합니다.
+3. 필요한 경우 Hugging Face Token, Civitai Token, gallery-dl, YouTube/yt-dlp 인증 정보를 입력합니다.
 4. 필요한 경우 기본 폴더 경로와 대기열 설정을 바꿉니다.
-5. 상단 입력창에 Hugging Face, Civitai, Hitomi, gallery-dl 또는 일반 URL을 붙여넣습니다.
+5. 상단 입력창에 Hugging Face, Civitai, Hitomi, gallery-dl, YouTube/yt-dlp 또는 일반 URL을 붙여넣습니다.
 6. 다운로드 버튼을 누릅니다.
 7. 작업 목록에서 진행률과 로그를 확인합니다.
 
-토큰과 인증 정보는 나중에 입력해도 됩니다. 공개 모델과 공개 갤러리는 인증 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델, Civitai 제한 모델, gallery-dl 사이트별 로그인/쿠키 요구사항, 속도 제한 완화에는 인증 정보가 도움이 됩니다.
+토큰과 인증 정보는 나중에 입력해도 됩니다. 공개 모델과 공개 갤러리는 인증 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델, Civitai 제한 모델, gallery-dl 사이트별 로그인/쿠키 요구사항, YouTube 연령/멤버십/비공개 권한 확인, 속도 제한 완화에는 인증 정보가 도움이 됩니다.
 
 ## 다운로드 입력 예시
 
@@ -223,7 +276,9 @@ hitomi 123456
 
 갤러리는 `/data/hitomi/{gallery_id}-{title}` 폴더에 페이지 이미지로 저장됩니다. 저장된 폴더는 라이브러리에서 다운로드하면 ZIP으로 받을 수 있습니다.
 
-Hitomi 다운로드는 기본적으로 `gallery-dl`을 우선 백엔드로 사용합니다. 컨테이너 시작 시 `gallery-dl` 패키지만 최신 안정 버전 범위로 업그레이드하고, 실패하면 이미지에 포함된 버전으로 계속 실행합니다. `gallery-dl` 실행이 실패했을 때는 내장 Hitomi 다운로더로 한 번 더 시도합니다.
+Hitomi 다운로드는 기본적으로 `gallery-dl`을 우선 백엔드로 사용합니다. 컨테이너 시작 시 `gallery-dl` 패키지만 최신 안정 버전 범위로 업그레이드할 수 있고, 실패하면 이미지에 포함된 버전으로 계속 실행합니다. `gallery-dl` 실행이 실패했을 때는 내장 Hitomi 다운로더로 한 번 더 시도합니다.
+
+컨테이너 로그와 작업 로그에는 실행된 `gallery-dl` 버전이 남습니다. 재시작 속도나 재현성이 더 중요하면 설정창의 `시작 시 gallery-dl 자동 업데이트`를 끄거나 `GALLERY_DL_AUTO_UPDATE=0`으로 두고 이미지 빌드 시점의 버전을 그대로 사용하세요. UI에서 저장한 값은 `/config/startup.env`에 기록되어 다음 컨테이너 시작부터 적용됩니다.
 
 ### gallery-dl 범용 다운로드
 
@@ -240,6 +295,8 @@ gdl https://example.com/gallery
 - `OAuth`, `API Key`: `gallery-dl Extra Options`에 `extractor.site.key=value` 형식으로 입력
 - `Supported`, `Required`: 사이트에 따라 Username/Password, Cookies File, Extra Options 중 필요한 값을 입력
 
+이 앱은 `gallery-dl`을 `--config-ignore`로 실행하므로 표준 gallery-dl config 파일은 자동으로 읽지 않습니다. UI 또는 환경변수의 Username/Password, Cookies File, Browser Cookies, Extra Options만 CLI 옵션으로 전달됩니다. Browser Cookies는 컨테이너에 브라우저 프로필을 별도로 마운트한 고급 구성에서만 동작하므로, 일반적인 Docker 배포에서는 Cookies File 사용을 권장합니다.
+
 2026-06-30 기준 공식 지원 목록은 358개 사이트이며, 인증 칼럼은 `none` 297개, `Supported` 32개, `Cookies` 11개, `OAuth` 10개, `API Key` 5개, `Required` 3개로 분류됩니다.
 전체 지원 사이트와 인증 분류별 목록은 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)에 정리되어 있습니다.
 
@@ -250,6 +307,29 @@ extractor.wallhaven.api-key=...
 extractor.deviantart.client-id=...
 extractor.deviantart.client-secret=...
 ```
+
+### YouTube / yt-dlp
+
+```text
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+https://youtu.be/dQw4w9WgXcQ
+yt-dlp https://www.youtube.com/watch?v=dQw4w9WgXcQ
+yt-dlp https://www.youtube.com/playlist?list=PL...
+```
+
+YouTube URL은 yt-dlp 백엔드로 처리합니다. 공개 영상 또는 본인 계정에 다운로드 권한이 있는 영상만 받으세요. 저작권, 서비스 약관, 지역 제한, 접근 제한을 우회하기 위한 용도로 사용하면 안 됩니다.
+
+로그인이 필요한 영상은 설정창의 YouTube/yt-dlp 인증 입력을 사용합니다.
+
+- `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.
+- `YouTube/yt-dlp Browser Cookies`: 브라우저 프로필을 컨테이너에 별도로 마운트한 고급 구성에서만 사용합니다.
+- `YouTube/yt-dlp Format`: 기본값은 `best[ext=mp4]/best`입니다.
+- `YouTube/yt-dlp Extra Options`: `cmdline-args=--max-filesize 500M`, `raw-options.writesubtitles=true`처럼 한 줄에 하나씩 입력합니다.
+  저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 차단됩니다.
+
+Docker 이미지에는 YouTube 추출 안정성을 위해 Deno, yt-dlp EJS 구성요소, ffmpeg가 포함됩니다. 앱은 기본적으로 `--js-runtimes deno`를 yt-dlp에 전달합니다. 다른 런타임을 쓰려면 Extra Options에 `cmdline-args=--js-runtimes ...`를 넣어 기본값을 덮어쓰면 됩니다.
+
+Docker/Portainer 배포에서는 Browser Cookies보다 Cookies File 방식이 더 예측 가능합니다.
 
 ### ComfyUI 워크플로우
 
@@ -378,6 +458,26 @@ gallery-dl이 지원하는 사이트 중 일부는 로그인, 쿠키, OAuth, API
 
 `gallery-dl Extra Options`에는 gallery-dl 설정 키를 `extractor.site.key=value` 형식으로 한 줄씩 입력합니다. 공식 지원 사이트별 인증 분류는 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)를 참고하세요.
 
+### YouTube/yt-dlp 인증 정보
+
+웹 UI의 API 토큰 패널에서 아래 값을 저장할 수 있습니다.
+
+- `YouTube/yt-dlp Cookies File`
+- `YouTube/yt-dlp Browser Cookies`
+- `YouTube/yt-dlp Format`
+- `YouTube/yt-dlp Extra Options`
+
+환경변수 이름:
+
+```text
+YT_DLP_COOKIES_FILE
+YT_DLP_COOKIES_FROM_BROWSER
+YT_DLP_FORMAT
+YT_DLP_EXTRA_OPTIONS
+```
+
+`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다.
+
 토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
 
 ## 다운로드 안전 설정
@@ -396,12 +496,17 @@ DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300
 HITOMI_BACKEND=auto
 GALLERY_DL_AUTO_UPDATE=1
 GALLERY_DL_UPDATE_SPEC=gallery-dl<2.0
+HUGCIVI_STARTUP_CONFIG_FILE=/config/startup.env
 GALLERY_DL_SLEEP_REQUEST_SECONDS=1.5
 GALLERY_DL_USERNAME=
 GALLERY_DL_PASSWORD=
 GALLERY_DL_COOKIES_FILE=
 GALLERY_DL_COOKIES_FROM_BROWSER=
 GALLERY_DL_EXTRA_OPTIONS=
+YT_DLP_COOKIES_FILE=
+YT_DLP_COOKIES_FROM_BROWSER=
+YT_DLP_FORMAT=best[ext=mp4]/best
+YT_DLP_EXTRA_OPTIONS=
 ```
 
 너무 많은 요청으로 차단될 가능성을 줄이기 위해 기본값을 보수적으로 잡았습니다.
@@ -413,6 +518,7 @@ GALLERY_DL_EXTRA_OPTIONS=
 - `/config` 폴더에는 작업 DB와 UI 저장 토큰이 들어갈 수 있습니다.
 - `/config` 폴더 권한을 NAS에서 제한하세요.
 - 모델 파일은 각 사이트의 라이선스와 이용약관을 확인한 뒤 보관하세요.
+- YouTube/yt-dlp는 공개 영상 또는 본인에게 명시적으로 다운로드 권한이 있는 영상에만 사용하세요.
 
 ## 미리보기 파일
 
@@ -466,6 +572,13 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
 
+테스트까지 실행할 때는 개발 의존성을 설치합니다.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q -p no:cacheprovider
+```
+
 ## 패치내역
 
 자세한 변경 내용은 [PATCH_NOTES.md](PATCH_NOTES.md)에 정리되어 있습니다.
@@ -508,4 +621,4 @@ uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 - 배포 설정 최신화
   - 다운로드 워커 기본값 `MAX_CONCURRENT_DOWNLOADS=3`
   - Portainer 권장 Synology 기본 폴더를 `/volume1/docker/nas-model-archiver/models`, `/volume1/docker/nas-model-archiver/config`로 정리
-  - Portainer stack은 Git 저장소에서 Dockerfile을 직접 빌드하도록 유지
+  - Portainer stack은 미리 빌드해 push한 `HUGCIVI_IMAGE`를 참조하도록 정리

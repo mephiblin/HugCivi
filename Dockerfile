@@ -1,4 +1,5 @@
 FROM python:3.12-slim
+ARG DENO_VERSION=2.9.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -32,8 +33,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg gosu \
     && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) deno_target="x86_64-unknown-linux-gnu" ;; \
+      arm64) deno_target="aarch64-unknown-linux-gnu" ;; \
+      *) echo "Unsupported Deno architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${deno_target}.zip" -o /tmp/deno.zip; \
+    python -m zipfile -e /tmp/deno.zip /usr/local/bin; \
+    chmod +x /usr/local/bin/deno; \
+    rm -f /tmp/deno.zip; \
+    deno --version
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

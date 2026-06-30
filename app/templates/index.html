@@ -176,7 +176,7 @@
                       {% if job.status == 'paused' %}
                         <button type="button" data-job-action="resume" data-job-id="{{ job.id }}">재개</button>
                       {% endif %}
-                      <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger">삭제</button>
+                      <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger" {% if job.status == 'deleting' %}disabled{% endif %}>삭제</button>
                     </div>
                   </td>
                 </tr>
@@ -272,13 +272,13 @@
             <label class="setting-field" for="hf_token">
               <span>Hugging Face Token</span>
               <input id="hf_token" name="hf_token" type="text" autocomplete="off"
-                     value="{{ settings.HF_TOKEN.value }}"
+                     value=""
                      placeholder="{% if settings.HF_TOKEN.configured %}설정됨 · {{ settings.HF_TOKEN.source }}{% else %}hf_...{% endif %}">
             </label>
             <label class="setting-field" for="civitai_token">
               <span>Civitai Token</span>
               <input id="civitai_token" name="civitai_token" type="text" autocomplete="off"
-                     value="{{ settings.CIVITAI_TOKEN.value }}"
+                     value=""
                      placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
             </label>
             <label class="setting-field" for="gallery_dl_username">
@@ -310,8 +310,35 @@
             <label class="setting-field wide" for="gallery_dl_extra_options">
               <span>gallery-dl Extra Options</span>
               <textarea id="gallery_dl_extra_options" name="gallery_dl_extra_options" rows="5" autocomplete="off"
-                        placeholder="{% if settings.GALLERY_DL_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.GALLERY_DL_EXTRA_OPTIONS.source }}{% else %}extractor.wallhaven.api-key=...\nextractor.deviantart.client-id=...\nextractor.deviantart.client-secret=...{% endif %}">{{ settings.GALLERY_DL_EXTRA_OPTIONS.value }}</textarea>
+                        placeholder="{% if settings.GALLERY_DL_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.GALLERY_DL_EXTRA_OPTIONS.source }}{% else %}extractor.wallhaven.api-key=...\nextractor.deviantart.client-id=...\nextractor.deviantart.client-secret=...{% endif %}"></textarea>
               <small>한 줄에 하나씩 gallery-dl `-o key=value` 옵션을 입력합니다. API Key, OAuth, 사이트별 토큰은 여기에 넣습니다.</small>
+            </label>
+            <label class="setting-field" for="yt_dlp_cookies_file">
+              <span>YouTube/yt-dlp Cookies File</span>
+              <input id="yt_dlp_cookies_file" name="yt_dlp_cookies_file" type="text" autocomplete="off"
+                     value=""
+                     placeholder="{% if settings.YT_DLP_COOKIES_FILE.configured %}설정됨 · {{ settings.YT_DLP_COOKIES_FILE.source }}{% else %}/config/yt-dlp/cookies.txt{% endif %}">
+              <small>Netscape cookies.txt 파일 경로입니다. 컨테이너 안에서 읽을 수 있어야 합니다.</small>
+            </label>
+            <label class="setting-field" for="yt_dlp_cookies_from_browser">
+              <span>YouTube/yt-dlp Browser Cookies</span>
+              <input id="yt_dlp_cookies_from_browser" name="yt_dlp_cookies_from_browser" type="text" autocomplete="off"
+                     value=""
+                     placeholder="{% if settings.YT_DLP_COOKIES_FROM_BROWSER.configured %}설정됨 · {{ settings.YT_DLP_COOKIES_FROM_BROWSER.source }}{% else %}firefox, chrome, chromium{% endif %}">
+              <small>브라우저 프로필을 컨테이너에 마운트한 경우에만 사용합니다.</small>
+            </label>
+            <label class="setting-field" for="yt_dlp_format">
+              <span>YouTube/yt-dlp Format</span>
+              <input id="yt_dlp_format" name="yt_dlp_format" type="text" autocomplete="off"
+                     value="{{ settings.youtube.YT_DLP_FORMAT.value }}"
+                     placeholder="best[ext=mp4]/best">
+              <small>기본값은 ffmpeg 병합 없이 받을 가능성이 높은 mp4 우선 포맷입니다.</small>
+            </label>
+            <label class="setting-field wide" for="yt_dlp_extra_options">
+              <span>YouTube/yt-dlp Extra Options</span>
+              <textarea id="yt_dlp_extra_options" name="yt_dlp_extra_options" rows="4" autocomplete="off"
+                        placeholder="{% if settings.YT_DLP_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.YT_DLP_EXTRA_OPTIONS.source }}{% else %}cmdline-args=--max-filesize 500M\ncmdline-args=--playlist-items 1\nraw-options.writesubtitles=true{% endif %}"></textarea>
+              <small>`cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식으로 입력합니다.</small>
             </label>
           </div>
         </section>
@@ -341,6 +368,13 @@
               <input id="queue_stall_timeout_seconds" name="queue_stall_timeout_seconds" type="number" min="0" step="1"
                      value="{{ settings.queue.DOWNLOAD_STALL_TIMEOUT_SECONDS.value }}" autocomplete="off">
               <small>초 단위입니다. 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
+            </label>
+            <label class="setting-field setting-toggle wide" for="gallery_dl_auto_update">
+              <span>시작 시 gallery-dl 자동 업데이트</span>
+              <input id="gallery_dl_auto_update" name="gallery_dl_auto_update" type="checkbox" value="1"
+                     {% if settings.startup.GALLERY_DL_AUTO_UPDATE.value == "1" %}checked{% endif %}>
+              <span class="setting-toggle-track" aria-hidden="true"></span>
+              <small>끄면 컨테이너 재시작이 빨라지고 이미지에 포함된 gallery-dl 버전을 그대로 사용합니다.</small>
             </label>
           </div>
         </section>
@@ -1024,7 +1058,7 @@
       if (status === 'paused') {
         buttons.push(jobActionButton(job.id, 'resume', '재개'));
       }
-      buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger'));
+      buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger', status === 'deleting'));
       return `<div class="job-action-buttons">${buttons.join('')}</div>`;
     }
 
@@ -1075,7 +1109,7 @@
 
     function renderLibrary() {
       const folder = activeLibraryPath || '';
-      const matches = sortLibraryJobs(currentJobs.filter(job => jobMatchesFolder(job, folder)));
+      const matches = sortLibraryJobs(currentJobs.filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder)));
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
       libraryCount.textContent = `${matches.length}개`;
       if (!matches.length) {
@@ -1091,7 +1125,7 @@
         const image = job.thumbnail_url
           ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
           : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
-        const targetPath = normalizePath(job.target_path || job.target_dir || '');
+        const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
         return `<article class="asset-card" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-workflow="${workflow ? 'true' : 'false'}">
           ${image}
@@ -1178,7 +1212,7 @@
         const data = await response.json();
         const normalized = normalizePath(data.path || path);
         currentJobs = currentJobs.map(job => {
-          const target = normalizePath(job.target_path || job.target_dir || '');
+          const target = libraryJobPath(job);
           return target === normalized ? {...job, favorite: Boolean(data.favorite)} : job;
         });
         renderLibrary();
@@ -1189,8 +1223,16 @@
 
     function jobMatchesFolder(job, folder) {
       if (!folder) return true;
-      const target = normalizePath(job.target_path || job.target_dir || '');
+      const target = libraryJobPath(job);
       return target === folder || target.startsWith(`${folder}/`);
+    }
+
+    function isLibraryJob(job) {
+      return job.status === 'done' && Boolean(libraryJobPath(job));
+    }
+
+    function libraryJobPath(job) {
+      return normalizePath(job.target_path || job.target_dir || '');
     }
 
     function normalizePath(value) {
@@ -1758,11 +1800,11 @@
         setTimeout(() => frame.remove(), 120000);
 
         item.status = 'started';
-        item.message = '브라우저 다운로드 시작';
+        item.message = '브라우저 다운로드 요청됨';
         renderDownloadQueue();
         setTimeout(() => {
-          item.status = 'done';
-          item.message = '요청 완료';
+          item.status = 'requested';
+          item.message = '다운로드 요청 전달됨';
           renderDownloadQueue();
           downloadQueueActive = false;
           processDownloadQueue();
@@ -1824,7 +1866,7 @@
 
     function shortSource(source) {
       if (source === 'huggingface') return 'HF';
-      if (source === 'civitai') return 'NAI';
+      if (source === 'civitai') return 'CIV';
       if (source === 'comfyui') return 'WF';
       if (source === 'hitomi') return 'HT';
       if (source === 'gallerydl') return 'GDL';

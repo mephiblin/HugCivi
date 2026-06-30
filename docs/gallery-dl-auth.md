@@ -25,6 +25,10 @@ Total supported sites listed: 358
 - `Supported`: use the site-appropriate setting: username/password, cookies, or extra options.
 - `Required`: provide the site-appropriate required credential before downloading.
 
+This app runs `gallery-dl` with `--config-ignore`; standard gallery-dl config files are not loaded automatically. Only the UI/env settings are converted into CLI flags. Browser Cookies also require the browser profile to be mounted inside the container, so Cookies File is the safer default for Docker deployments.
+
+YouTube/yt-dlp authentication is configured separately with `YouTube/yt-dlp Cookies File`, `YouTube/yt-dlp Browser Cookies`, `YouTube/yt-dlp Format`, and `YouTube/yt-dlp Extra Options`.
+
 ## Authentication Groups
 
 ### Supported

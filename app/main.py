@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
-from .downloader import enqueue_job, notify_queue_settings_changed, start_workers, update_job_workflow_info
+from .downloader import cleanup_job_partial_files, enqueue_job, notify_queue_settings_changed, start_workers, update_job_workflow_info
 from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
@@ -29,6 +29,7 @@ app = FastAPI(title="NAS Model Archiver", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
+STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PATH.parent / "startup.env")))
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
@@ -100,6 +101,10 @@ def save_settings(
     gallery_dl_cookies_file: str = Form(""),
     gallery_dl_cookies_from_browser: str = Form(""),
     gallery_dl_extra_options: str = Form(""),
+    yt_dlp_cookies_file: str = Form(""),
+    yt_dlp_cookies_from_browser: str = Form(""),
+    yt_dlp_format: str = Form(""),
+    yt_dlp_extra_options: str = Form(""),
     library_active: str = Form("ComfyUI"),
     route_llm_root: str = Form(""),
     route_lora_root: str = Form(""),
@@ -112,6 +117,7 @@ def save_settings(
     queue_global_limit: str = Form("3"),
     queue_per_provider_limit: str = Form("1"),
     queue_stall_timeout_seconds: str = Form("0"),
+    gallery_dl_auto_update: str = Form("0"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
     if hf_token.strip():
@@ -130,6 +136,16 @@ def save_settings(
     for key, value in gallery_dl_fields.items():
         if value.strip():
             db.set_setting(key, value.strip())
+
+    yt_dlp_fields = {
+        "YT_DLP_COOKIES_FILE": yt_dlp_cookies_file,
+        "YT_DLP_COOKIES_FROM_BROWSER": yt_dlp_cookies_from_browser,
+        "YT_DLP_EXTRA_OPTIONS": yt_dlp_extra_options,
+    }
+    for key, value in yt_dlp_fields.items():
+        if value.strip():
+            db.set_setting(key, value.strip())
+    db.set_setting("YT_DLP_FORMAT", yt_dlp_format.strip() or "best[ext=mp4]/best")
 
     db.set_setting("LIBRARY_ACTIVE", library_active.strip() or db.ROUTE_DEFAULTS["LIBRARY_ACTIVE"])
     route_fields = {
@@ -153,6 +169,9 @@ def save_settings(
         "DOWNLOAD_STALL_TIMEOUT_SECONDS",
         normalize_int_setting(queue_stall_timeout_seconds, 0, minimum=0),
     )
+    gallery_dl_auto_update_value = normalize_bool_setting(gallery_dl_auto_update, default=True)
+    db.set_setting("GALLERY_DL_AUTO_UPDATE", gallery_dl_auto_update_value)
+    write_startup_config({"GALLERY_DL_AUTO_UPDATE": gallery_dl_auto_update_value})
     notify_queue_settings_changed()
 
     return RedirectResponse(url="/", status_code=303)
@@ -223,7 +242,10 @@ def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     if status in {"running", "pausing"}:
         db.update_job(job_id, status="deleting", error=None)
         db.append_log(job_id, "delete requested")
+    elif status == "deleting":
+        pass
     else:
+        cleanup_job_partial_files(job_id)
         db.delete_job(job_id)
     return jobs_response()
 
@@ -241,7 +263,7 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     ensure_no_active_jobs(source)
 
     new_name = clean_item_name(str(payload.get("new_name") or ""))
-    target = safe_join(DATA_ROOT, source.parent.relative_to(DATA_ROOT.resolve()).as_posix(), new_name)
+    target = safe_join(DATA_ROOT, relative_data_path(source.parent), new_name)
     if target.exists():
         raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
     old_relative = relative_data_path(source)
@@ -263,7 +285,8 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     destination = existing_data_path(str(payload.get("destination") or ""))
     if not destination.is_dir():
         raise HTTPException(status_code=400, detail="이동 대상은 폴더여야 합니다.")
-    target = safe_join(DATA_ROOT, destination.relative_to(DATA_ROOT.resolve()).as_posix(), source.name)
+    ensure_real_directory_destination(destination)
+    target = safe_join(DATA_ROOT, relative_data_path(destination), source.name)
     if target == source:
         return JSONResponse({"ok": True, "path": relative_data_path(source), "folders": build_folder_tree(DATA_ROOT)})
     if source in target.parents:
@@ -288,7 +311,9 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     ensure_no_active_jobs(source)
     relative_path = relative_data_path(source)
 
-    if source.is_dir():
+    if source.is_symlink():
+        source.unlink()
+    elif source.is_dir():
         shutil.rmtree(source)
     else:
         source.unlink()
@@ -539,8 +564,12 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
             return parsed.hitomi_gallery_url or ""
         if parsed.hitomi_gallery_id:
             return f"https://hitomi.la/galleries/{quote(parsed.hitomi_gallery_id)}.html"
-    if parsed.source == "gallerydl" and is_http_url(parsed.gallerydl_url or ""):
-        return parsed.gallerydl_url or ""
+    if parsed.source == "gallerydl":
+        gallery_url = parsed.gallerydl_url or ""
+        if gallery_url.startswith("ytdl:"):
+            gallery_url = gallery_url.split(":", 1)[1]
+        if is_http_url(gallery_url):
+            return gallery_url
     return ""
 
 
@@ -554,6 +583,32 @@ def normalize_int_setting(value: str, default: int, *, minimum: int = 0) -> str:
         return str(max(minimum, int(str(value).strip())))
     except ValueError:
         return str(default)
+
+
+def normalize_bool_setting(value: str | None, *, default: bool = False) -> str:
+    if value is None:
+        return "1" if default else "0"
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "on", "yes", "y"}:
+        return "1"
+    if normalized in {"0", "false", "off", "no", "n", ""}:
+        return "0"
+    return "1" if default else "0"
+
+
+def write_startup_config(values: dict[str, str]) -> None:
+    gallery_dl_auto_update = normalize_bool_setting(values.get("GALLERY_DL_AUTO_UPDATE"), default=True)
+    STARTUP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".startup.", dir=STARTUP_CONFIG_PATH.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"GALLERY_DL_AUTO_UPDATE={gallery_dl_auto_update}\n")
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, STARTUP_CONFIG_PATH)
+    except Exception:
+        cleanup_file(temp_path)
+        raise
 
 
 def build_folder_tree(root: Path, max_depth: int = 4, max_entries: int = 300) -> dict[str, Any]:
@@ -594,15 +649,25 @@ def ensure_route_folders() -> None:
 
 
 def existing_data_path(path: str) -> Path:
-    target = safe_join(DATA_ROOT, path.strip())
+    try:
+        target = safe_join(DATA_ROOT, path.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="데이터 루트 밖의 경로는 사용할 수 없습니다.") from exc
     if not target.exists():
         raise HTTPException(status_code=404, detail="대상 경로를 찾을 수 없습니다.")
     return target
 
 
 def ensure_mutable_path(path: Path) -> None:
-    if path.resolve() == DATA_ROOT.resolve():
+    if lexical_absolute(path) == lexical_absolute(DATA_ROOT):
         raise HTTPException(status_code=400, detail="/data 루트는 이름변경, 이동, 삭제할 수 없습니다.")
+    if has_symlink_ancestor(path):
+        raise HTTPException(status_code=400, detail="symlink 폴더 내부 경로는 직접 변경할 수 없습니다.")
+
+
+def ensure_real_directory_destination(path: Path) -> None:
+    if path.is_symlink() or has_symlink_ancestor(path):
+        raise HTTPException(status_code=400, detail="symlink 폴더는 이동 대상으로 사용할 수 없습니다.")
 
 
 def ensure_downloadable_path(path: Path) -> None:
@@ -626,11 +691,37 @@ def clean_item_name(name: str) -> str:
 
 
 def relative_data_path(path: Path) -> str:
-    root = DATA_ROOT.resolve()
-    resolved = path.resolve()
-    if resolved == root:
+    root_resolved = DATA_ROOT.resolve()
+    root_lexical = lexical_absolute(DATA_ROOT)
+    path_lexical = lexical_absolute(path)
+    if path_lexical == root_lexical:
         return ""
-    return resolved.relative_to(root).as_posix()
+
+    resolved = path.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ValueError("Target path escapes data root")
+
+    try:
+        relative = path_lexical.relative_to(root_lexical)
+    except ValueError:
+        relative = resolved.relative_to(root_resolved)
+    return relative.as_posix()
+
+
+def lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(path))
+
+
+def has_symlink_ancestor(path: Path) -> bool:
+    relative = relative_data_path(path)
+    if not relative:
+        return False
+    current = DATA_ROOT
+    for part in Path(relative).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def download_filename(path: Path) -> str:
@@ -735,14 +826,18 @@ def create_zip_archive(source: Path) -> Path:
     os.close(fd)
     archive_path = Path(temp_name)
     source_root = source.resolve()
-    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
-        for item in sorted(source.rglob("*")):
-            if not item.is_file() or item.is_symlink():
-                continue
-            resolved = item.resolve()
-            if source_root not in resolved.parents and resolved != source_root:
-                continue
-            archive.write(resolved, resolved.relative_to(source_root).as_posix())
+    try:
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
+            for item in sorted(source.rglob("*")):
+                if not item.is_file() or item.is_symlink():
+                    continue
+                resolved = item.resolve()
+                if source_root not in resolved.parents and resolved != source_root:
+                    continue
+                archive.write(resolved, resolved.relative_to(source_root).as_posix())
+    except Exception:
+        cleanup_file(archive_path)
+        raise
     return archive_path
 
 
