@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from .models import ParsedDownload
 from .utils import redact_sensitive_text, safe_join
 
@@ -590,14 +591,14 @@ def settings_status() -> dict[str, Any]:
         for key, default in {
             "MAX_CONCURRENT_DOWNLOADS": "3",
             "QUEUE_PER_PROVIDER_LIMIT": "1",
-            "DOWNLOAD_STALL_TIMEOUT_SECONDS": "0",
+            "DOWNLOAD_STALL_TIMEOUT_SECONDS": str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS),
         }.items()
     }
     status["startup"] = {
         "GALLERY_DL_AUTO_UPDATE": settings_status_entry("GALLERY_DL_AUTO_UPDATE", "1", db_settings),
     }
     status["youtube"] = {
-        "YT_DLP_FORMAT": settings_status_entry("YT_DLP_FORMAT", "best[ext=mp4]/best", db_settings),
+        "YT_DLP_FORMAT": settings_status_entry("YT_DLP_FORMAT", YT_DLP_DEFAULT_FORMAT, db_settings),
     }
     return status
 

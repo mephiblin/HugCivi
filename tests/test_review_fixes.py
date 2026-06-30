@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from app.defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from app.models import ParsedDownload
 
 
@@ -64,7 +65,8 @@ def test_settings_status_never_returns_secret_values(
         assert status[key]["value"] == ""
     assert status["HF_TOKEN"]["configured"] is True
     assert status["CIVITAI_TOKEN"]["configured"] is True
-    assert status["youtube"]["YT_DLP_FORMAT"]["value"] == "best[ext=mp4]/best"
+    assert status["youtube"]["YT_DLP_FORMAT"]["value"] == YT_DLP_DEFAULT_FORMAT
+    assert status["queue"]["DOWNLOAD_STALL_TIMEOUT_SECONDS"]["value"] == str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
     assert status["startup"]["GALLERY_DL_AUTO_UPDATE"]["value"] == "1"
 
 

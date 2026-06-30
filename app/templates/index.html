@@ -331,8 +331,8 @@
               <span>YouTube/yt-dlp Format</span>
               <input id="yt_dlp_format" name="yt_dlp_format" type="text" autocomplete="off"
                      value="{{ settings.youtube.YT_DLP_FORMAT.value }}"
-                     placeholder="best[ext=mp4]/best">
-              <small>기본값은 ffmpeg 병합 없이 받을 가능성이 높은 mp4 우선 포맷입니다.</small>
+                     placeholder="best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best">
+              <small>기본값은 브라우저 재생 가능성이 높은 H.264 MP4 우선 포맷입니다.</small>
             </label>
             <label class="setting-field wide" for="yt_dlp_extra_options">
               <span>YouTube/yt-dlp Extra Options</span>
@@ -367,7 +367,7 @@
               <span>타임아웃 시간</span>
               <input id="queue_stall_timeout_seconds" name="queue_stall_timeout_seconds" type="number" min="0" step="1"
                      value="{{ settings.queue.DOWNLOAD_STALL_TIMEOUT_SECONDS.value }}" autocomplete="off">
-              <small>초 단위입니다. 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
+              <small>초 단위입니다. 기본값은 600초이며, 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
             </label>
             <label class="setting-field setting-toggle wide" for="gallery_dl_auto_update">
               <span>시작 시 gallery-dl 자동 업데이트</span>

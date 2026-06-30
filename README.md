@@ -119,7 +119,7 @@ YouTube/yt-dlp 쿠키를 Portainer 환경변수로 미리 넣으려면 아래 �
 ```text
 YT_DLP_COOKIES_FILE=/config/yt-dlp/cookies.txt
 YT_DLP_COOKIES_FROM_BROWSER=
-YT_DLP_FORMAT=best[ext=mp4]/best
+YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
 YT_DLP_EXTRA_OPTIONS=
 ```
 
@@ -309,7 +309,7 @@ YouTube URL은 yt-dlp 백엔드로 처리합니다. 공개 영상 또는 본인 
 
 - `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.
 - `YouTube/yt-dlp Browser Cookies`: 브라우저 프로필을 컨테이너에 별도로 마운트한 고급 구성에서만 사용합니다.
-- `YouTube/yt-dlp Format`: 기본값은 `best[ext=mp4]/best`입니다.
+- `YouTube/yt-dlp Format`: 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다.
 - `YouTube/yt-dlp Extra Options`: `cmdline-args=--max-filesize 500M`, `raw-options.writesubtitles=true`처럼 한 줄에 하나씩 입력합니다.
   저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 차단됩니다.
 
@@ -462,7 +462,7 @@ YT_DLP_FORMAT
 YT_DLP_EXTRA_OPTIONS
 ```
 
-`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다.
+`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다.
 
 토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
 
@@ -473,7 +473,7 @@ YT_DLP_EXTRA_OPTIONS
 ```text
 MAX_CONCURRENT_DOWNLOADS=3
 QUEUE_PER_PROVIDER_LIMIT=1
-DOWNLOAD_STALL_TIMEOUT_SECONDS=0
+DOWNLOAD_STALL_TIMEOUT_SECONDS=600
 HF_SNAPSHOT_MAX_WORKERS=2
 DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
 DOWNLOAD_HTTP_MAX_RETRIES=3
@@ -491,7 +491,7 @@ GALLERY_DL_COOKIES_FROM_BROWSER=
 GALLERY_DL_EXTRA_OPTIONS=
 YT_DLP_COOKIES_FILE=
 YT_DLP_COOKIES_FROM_BROWSER=
-YT_DLP_FORMAT=best[ext=mp4]/best
+YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
 YT_DLP_EXTRA_OPTIONS=
 ```
 

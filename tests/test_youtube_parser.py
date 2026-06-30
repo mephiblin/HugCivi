@@ -91,6 +91,23 @@ def test_yt_dlp_command_accepts_xhamster_url() -> None:
     assert parsed.gallerydl_url == f"ytdl:{url}"
 
 
+def test_plain_known_ytdlp_video_sites_route_to_gallerydl_ytdl() -> None:
+    urls = [
+        "https://www.pornhub.com/view_video.php?viewkey=abc123",
+        "https://www.xvideos.com/video123/test",
+        "https://www.xnxx.com/video-abc/test",
+        "https://www.redtube.com/12345",
+        "https://www.youporn.com/watch/12345/test/",
+        "https://spankbang.com/abc/video/test",
+    ]
+
+    for url in urls:
+        parsed = parse_input(url)
+
+        assert parsed.source == "gallerydl"
+        assert parsed.gallerydl_url == f"ytdl:{url}"
+
+
 def test_non_youtube_http_url_still_routes_to_generic() -> None:
     url = "https://example.com/video.mp4"
 

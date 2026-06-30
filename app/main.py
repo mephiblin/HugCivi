@@ -8,6 +8,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
+from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from .downloader import (
     cleanup_job_partial_files,
     enqueue_job,
@@ -49,6 +51,11 @@ security = HTTPBasic()
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+BROWSER_MP4_EXTENSIONS = {".m4v", ".mp4"}
+BROWSER_MP4_VIDEO_CODECS = {"h264"}
+BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
+MEDIA_TRANSCODE_LOCKS: dict[str, threading.Lock] = {}
+MEDIA_TRANSCODE_LOCKS_LOCK = threading.Lock()
 MODEL_EXTENSIONS = {
     ".bin",
     ".ckpt",
@@ -149,7 +156,7 @@ def save_settings(
     route_upscaler_root: str = Form(""),
     queue_global_limit: str = Form("3"),
     queue_per_provider_limit: str = Form("1"),
-    queue_stall_timeout_seconds: str = Form("0"),
+    queue_stall_timeout_seconds: str = Form(str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)),
     gallery_dl_auto_update: str = Form("0"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
@@ -178,7 +185,7 @@ def save_settings(
     for key, value in yt_dlp_fields.items():
         if value.strip():
             db.set_setting(key, value.strip())
-    db.set_setting("YT_DLP_FORMAT", yt_dlp_format.strip() or "best[ext=mp4]/best")
+    db.set_setting("YT_DLP_FORMAT", yt_dlp_format.strip() or YT_DLP_DEFAULT_FORMAT)
 
     db.set_setting("LIBRARY_ACTIVE", library_active.strip() or db.ROUTE_DEFAULTS["LIBRARY_ACTIVE"])
     route_fields = {
@@ -200,7 +207,7 @@ def save_settings(
     db.set_setting("QUEUE_PER_PROVIDER_LIMIT", normalize_int_setting(queue_per_provider_limit, 1, minimum=1))
     db.set_setting(
         "DOWNLOAD_STALL_TIMEOUT_SECONDS",
-        normalize_int_setting(queue_stall_timeout_seconds, 0, minimum=0),
+        normalize_int_setting(queue_stall_timeout_seconds, DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, minimum=0),
     )
     gallery_dl_auto_update_value = normalize_bool_setting(gallery_dl_auto_update, default=True)
     db.set_setting("GALLERY_DL_AUTO_UPDATE", gallery_dl_auto_update_value)
@@ -318,7 +325,16 @@ def api_media_file(path: str, _: str = Depends(require_auth)) -> FileResponse:
     source = existing_data_path(path)
     if not source.is_file() or not is_media_file(source):
         raise HTTPException(status_code=404, detail="미디어 파일을 찾지 못했습니다.")
-    return FileResponse(source, media_type=media_type_for_path(source), filename=source.name)
+    return FileResponse(source, media_type=media_type_for_path(source))
+
+
+@app.get("/api/media/play")
+def api_media_play(path: str, _: str = Depends(require_auth)) -> FileResponse:
+    source = existing_data_path(path)
+    if not source.is_file() or not is_video_file(source):
+        raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
+    playable = browser_playable_video_path(source)
+    return FileResponse(playable, media_type="video/mp4")
 
 
 @app.get("/api/media/poster")
@@ -908,15 +924,18 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
     relative_path = relative_data_path(path)
     media_type = media_kind(path)
     thumbnail_url = thumbnail_url_for_media(path)
+    file_url = f"/api/media/file?path={quote(relative_path, safe='/')}"
+    play_url = f"/api/media/play?path={quote(relative_path, safe='/')}" if media_type == "video" else file_url
     return {
         "index": index,
         "path": relative_path,
         "name": path.name,
         "type": media_type,
-        "url": f"/api/media/file?path={quote(relative_path, safe='/')}",
+        "url": play_url,
+        "original_url": file_url,
         "thumbnail_url": thumbnail_url,
         "poster_url": thumbnail_url if media_type == "video" else "",
-        "mime_type": media_type_for_path(path),
+        "mime_type": "video/mp4" if media_type == "video" else media_type_for_path(path),
         "size_bytes": path.stat().st_size,
     }
 
@@ -950,14 +969,134 @@ def media_type_for_path(path: Path) -> str:
     return "application/octet-stream"
 
 
+def browser_playable_video_path(source: Path) -> Path:
+    if is_browser_mp4_video(source):
+        return source
+    return transcode_video_for_browser(source)
+
+
+def is_browser_mp4_video(source: Path) -> bool:
+    if source.suffix.lower() not in BROWSER_MP4_EXTENSIONS:
+        return False
+    streams = ffprobe_streams(source)
+    if not streams:
+        return False
+    video_codecs = [stream.get("codec_name", "") for stream in streams if stream.get("codec_type") == "video"]
+    audio_codecs = [stream.get("codec_name", "") for stream in streams if stream.get("codec_type") == "audio"]
+    if not video_codecs or video_codecs[0] not in BROWSER_MP4_VIDEO_CODECS:
+        return False
+    return all(codec in BROWSER_MP4_AUDIO_CODECS for codec in audio_codecs)
+
+
+def ffprobe_streams(source: Path) -> list[dict[str, Any]]:
+    if not shutil.which("ffprobe"):
+        return []
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,codec_name",
+        "-of",
+        "json",
+        str(source),
+    ]
+    try:
+        completed = subprocess.run(command, check=True, timeout=15, capture_output=True, text=True)
+        data = json.loads(completed.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return []
+    streams = data.get("streams", [])
+    return streams if isinstance(streams, list) else []
+
+
+def transcode_video_for_browser(source: Path) -> Path:
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(status_code=500, detail="ffmpeg가 없어 동영상을 브라우저용 MP4로 변환할 수 없습니다.")
+
+    key = media_cache_key(source)
+    target = MEDIA_CACHE_DIR / f"{key}.play.mp4"
+    if target.exists() and target.stat().st_size > 0:
+        return target
+
+    lock = media_transcode_lock(key)
+    with lock:
+        if target.exists() and target.stat().st_size > 0:
+            return target
+        MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        temp = MEDIA_CACHE_DIR / f".{key}.play.tmp.mp4"
+        cleanup_file(temp)
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            os.getenv("MEDIA_TRANSCODE_PRESET", "veryfast"),
+            "-crf",
+            os.getenv("MEDIA_TRANSCODE_CRF", "23"),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            os.getenv("MEDIA_TRANSCODE_AUDIO_BITRATE", "160k"),
+            "-movflags",
+            "+faststart",
+            "-y",
+            str(temp),
+        ]
+        timeout = media_transcode_timeout_seconds()
+        try:
+            subprocess.run(command, check=True, timeout=timeout or None, capture_output=True)
+            os.replace(temp, target)
+        except subprocess.CalledProcessError as exc:
+            cleanup_file(temp)
+            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            message = f"동영상을 브라우저용 MP4로 변환하지 못했습니다: {detail or exc}"
+            raise HTTPException(status_code=500, detail=message[:1000]) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_file(temp)
+            raise HTTPException(status_code=500, detail=f"동영상을 브라우저용 MP4로 변환하지 못했습니다: {exc}") from exc
+    return target
+
+
+def media_cache_key(source: Path) -> str:
+    stat = source.stat()
+    return hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()[:24]
+
+
+def media_transcode_lock(key: str) -> threading.Lock:
+    with MEDIA_TRANSCODE_LOCKS_LOCK:
+        lock = MEDIA_TRANSCODE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            MEDIA_TRANSCODE_LOCKS[key] = lock
+        return lock
+
+
+def media_transcode_timeout_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("MEDIA_TRANSCODE_TIMEOUT_SECONDS", "1800")))
+    except ValueError:
+        return 1800
+
+
 def video_poster_path(source: Path) -> Path:
     MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    stat = source.stat()
-    key = hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()[:24]
+    key = media_cache_key(source)
     poster = MEDIA_CACHE_DIR / f"{key}.jpg"
     if poster.exists() and poster.stat().st_size > 0:
         return poster
-    temp = MEDIA_CACHE_DIR / f".{key}.jpg.tmp"
+    temp = MEDIA_CACHE_DIR / f".{key}.tmp.jpg"
     command = [
         "ffmpeg",
         "-hide_banner",

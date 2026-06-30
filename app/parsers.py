@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .models import ParsedDownload
 from .workflows import COMFYUI_WORKFLOW_EXTENSIONS
+from .ytdlp_sites import is_ytdlp_preferred_host
 
 CIVITAI_VERSION_ID_RE = re.compile(r"^\d{3,}$")
 CIVITAI_HOSTS = {
@@ -33,15 +34,6 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "www.youtube-nocookie.com",
 }
-XHAMSTER_BASE_HOSTS = {
-    "xhamster.com",
-    "xhamster.one",
-    "xhamster.desi",
-    "xhms.pro",
-    "xhday.com",
-    "xhvid.com",
-}
-XHAMSTER_NUMBERED_HOST_RE = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_RE = re.compile(
     r"^/(?:manga|doujinshi|cg|gamecg|imageset|galleries|reader)/(?:[^/?#]+-)?(\d+)(?:\.html)?/?$",
     re.IGNORECASE,
@@ -292,23 +284,11 @@ def is_youtube_host(host: str) -> bool:
 
 
 def is_ytdlp_preferred_url(url: str) -> bool:
-    return is_youtube_url(url) or is_xhamster_url(url)
-
-
-def is_xhamster_url(url: str) -> bool:
     parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and is_xhamster_host((parsed.hostname or "").lower().rstrip("."))
-
-
-def is_xhamster_host(host: str) -> bool:
-    while host:
-        if host in XHAMSTER_BASE_HOSTS or XHAMSTER_NUMBERED_HOST_RE.match(host):
-            return True
-        _subdomain, separator, remainder = host.partition(".")
-        if not separator:
-            return False
-        host = remainder
-    return False
+    return parsed.scheme in {"http", "https"} and (
+        is_youtube_host((parsed.hostname or "").lower().rstrip("."))
+        or is_ytdlp_preferred_host(parsed.hostname or "")
+    )
 
 
 def parse_comfyui_workflow_url(

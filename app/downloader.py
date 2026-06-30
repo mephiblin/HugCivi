@@ -22,10 +22,12 @@ from urllib.parse import parse_qsl, quote, urlparse, urlunparse, unquote
 import requests
 
 from . import db
+from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
 from .workflows import WorkflowParseError, save_workflow_bundle, workflow_max_bytes
+from .ytdlp_sites import is_ytdlp_preferred_host
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
@@ -78,15 +80,6 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "youtu.be",
 }
-XHAMSTER_BASE_HOSTS = {
-    "xhamster.com",
-    "xhamster.one",
-    "xhamster.desi",
-    "xhms.pro",
-    "xhday.com",
-    "xhvid.com",
-}
-XHAMSTER_NUMBERED_HOST_RE = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
     "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
@@ -672,7 +665,7 @@ def queue_per_provider_limit() -> int:
 
 
 def queue_stall_timeout_seconds() -> int:
-    return nonnegative_int_setting("DOWNLOAD_STALL_TIMEOUT_SECONDS", 0)
+    return nonnegative_int_setting("DOWNLOAD_STALL_TIMEOUT_SECONDS", DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
 
 
 def provider_key_for_job(job: dict[str, Any]) -> str:
@@ -1698,7 +1691,7 @@ def ytdl_gallery_dl_args() -> list[str]:
     if not has_ytdlp_cmdline_option(cmdline_args, "--js-runtimes"):
         cmdline_args.extend(default_ytdlp_js_runtime_args())
 
-    ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or "best[ext=mp4]/best"
+    ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or YT_DLP_DEFAULT_FORMAT
     if ytdlp_format:
         config_options["extractor.ytdl.format"] = ytdlp_format
         config_options["downloader.ytdl.format"] = ytdlp_format
@@ -1882,23 +1875,10 @@ def is_youtube_url(url: str) -> bool:
 
 
 def is_ytdlp_preferred_url(url: str) -> bool:
-    return is_youtube_url(url) or is_xhamster_url(url)
-
-
-def is_xhamster_url(url: str) -> bool:
     parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and is_xhamster_host((parsed.hostname or "").lower().rstrip("."))
-
-
-def is_xhamster_host(host: str) -> bool:
-    while host:
-        if host in XHAMSTER_BASE_HOSTS or XHAMSTER_NUMBERED_HOST_RE.match(host):
-            return True
-        _subdomain, separator, remainder = host.partition(".")
-        if not separator:
-            return False
-        host = remainder
-    return False
+    return parsed.scheme in {"http", "https"} and (
+        normalized_url_host(url) in YOUTUBE_HOSTS or is_ytdlp_preferred_host(parsed.hostname or "")
+    )
 
 
 def normalized_url_host(url: str) -> str:

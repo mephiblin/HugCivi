@@ -199,6 +199,21 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertEqual(json.loads(fake_stdin.value)["token"], "secret-token")
         stop_process.assert_called_once_with(77, fake_process, "HF download")
 
+    def test_gallery_dl_process_stops_child_when_job_is_deleted(self) -> None:
+        fake_process = mock.Mock()
+        fake_process.stdout = None
+        fake_process.poll.return_value = None
+
+        with (
+            mock.patch.object(downloader.subprocess, "Popen", return_value=fake_process),
+            mock.patch.object(downloader, "check_job_control", side_effect=downloader.JobControlStop("deleted")),
+            mock.patch.object(downloader, "stop_gallery_dl_process") as stop_process,
+        ):
+            with self.assertRaises(downloader.JobControlStop):
+                downloader.run_gallery_dl_process(88, ["gallery-dl", "ytdl:https://xhamster3.com/videos/1"], Path("/tmp"))
+
+        stop_process.assert_called_once_with(88, fake_process)
+
     def test_gallery_dl_ytdl_target_parts_unwrap_youtube_url(self) -> None:
         host, slug = downloader.gallery_dl_target_parts("ytdl:https://www.youtube.com/watch?v=abc123&t=30")
 
@@ -265,6 +280,10 @@ class DownloaderRuntimeTests(unittest.TestCase):
 
         self.assertIn("extractor.ytdl.enabled=true", command)
         self.assertEqual(command[-1], f"ytdl:{url}")
+
+    def test_stall_watchdog_defaults_to_enabled(self) -> None:
+        with mock.patch.object(downloader, "db", FakeDb({})):
+            self.assertEqual(downloader.queue_stall_timeout_seconds(), downloader.DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
 
     def test_ytdl_command_uses_yt_dlp_module_and_settings(self) -> None:
         fake_db = mock.Mock()
