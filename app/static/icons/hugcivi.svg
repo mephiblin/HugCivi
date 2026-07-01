@@ -1,6 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="hugcivi">
-  <rect width="512" height="512" rx="96" fill="#0b1220"/>
-  <path d="M126 155h78v74h104v-74h78v202h-78v-76H204v76h-78V155Z" fill="#ffffff"/>
-  <path d="M121 379h270v34H121v-34Z" fill="#3d66e8"/>
-  <path d="M348 105c40 0 72 32 72 72v14h-48v-14c0-13-11-24-24-24h-20v-48h20Z" fill="#4ade80"/>
+  <defs>
+    <linearGradient id="h" x1="80" x2="292" y1="76" y2="424" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff7a3"/>
+      <stop offset=".2" stop-color="#ffd20a"/>
+      <stop offset=".55" stop-color="#ff9400"/>
+      <stop offset="1" stop-color="#ff4b00"/>
+    </linearGradient>
+    <linearGradient id="c" x1="246" x2="480" y1="106" y2="406" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#86f3ff"/>
+      <stop offset=".35" stop-color="#00a6ff"/>
+      <stop offset=".78" stop-color="#005bff"/>
+      <stop offset="1" stop-color="#00d9ff"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M94 92v328M94 256h164M258 92v328" stroke="url(#h)" stroke-width="92"/>
+    <path d="M420 138a148 148 0 1 0 0 236" stroke="url(#c)" stroke-width="96"/>
+    <path d="M94 92v328M94 256h164M258 92v328" stroke="#fff7bf" stroke-width="14" opacity=".75"/>
+    <path d="M420 138a148 148 0 1 0 0 236" stroke="#9ff7ff" stroke-width="14" opacity=".65"/>
+  </g>
 </svg>

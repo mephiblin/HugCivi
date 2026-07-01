@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import zlib
 from pathlib import Path
 
 import pytest
@@ -275,7 +276,10 @@ def test_pwa_manifest_and_service_worker_are_declared(app_modules: tuple) -> Non
 
     template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
     assert '<link rel="manifest" href="/manifest.webmanifest">' in template
+    assert '<link rel="icon" type="image/png" href="/static/icons/hugcivi-192.png">' in template
     assert "navigator.serviceWorker.register('/sw.js')" in template
+    for filename in ("hugcivi-180.png", "hugcivi-192.png", "hugcivi-512.png", "hugcivi-maskable-512.png"):
+        assert png_top_left_alpha(main.BASE_DIR / "static" / "icons" / filename) == 0
 
     manifest_response = main.web_manifest()
     assert manifest_response.media_type == "application/manifest+json"
@@ -284,6 +288,34 @@ def test_pwa_manifest_and_service_worker_are_declared(app_modules: tuple) -> Non
     assert service_worker_response.media_type == "application/javascript"
     assert service_worker_response.headers["service-worker-allowed"] == "/"
     assert service_worker_response.headers["cache-control"] == "no-cache"
+
+
+def png_top_left_alpha(path: Path) -> int:
+    data = path.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    offset = 8
+    width = 0
+    color_type = None
+    compressed = bytearray()
+    while offset < len(data):
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_data = data[offset + 8 : offset + 8 + length]
+        offset += 12 + length
+        if chunk_type == b"IHDR":
+            width = int.from_bytes(chunk_data[0:4], "big")
+            bit_depth = chunk_data[8]
+            color_type = chunk_data[9]
+            assert bit_depth == 8
+            assert color_type == 6
+        elif chunk_type == b"IDAT":
+            compressed.extend(chunk_data)
+        elif chunk_type == b"IEND":
+            break
+    assert width > 0
+    assert color_type == 6
+    raw = zlib.decompress(bytes(compressed))
+    return raw[4]
 
 
 def test_storage_status_reports_data_volume_usage(

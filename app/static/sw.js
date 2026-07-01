@@ -1,4 +1,4 @@
-const HUGCIVI_CACHE = "hugcivi-static-v2";
+const HUGCIVI_CACHE = "hugcivi-static-v3";
 const HUGCIVI_STATIC_ASSETS = [
   "/manifest.webmanifest",
   "/static/style.css",
