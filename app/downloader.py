@@ -25,7 +25,9 @@ from . import db
 from .defaults import (
     CIVITAI_IMAGE_MAX_RESOURCE_JOBS_DEFAULT,
     DOWNLOAD_HTTP_MAX_RETRIES_HARD_LIMIT_DEFAULT,
+    DOWNLOAD_PROGRESS_SCAN_MAX_FILES_DEFAULT,
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    DOWNLOAD_WATCHDOG_SCAN_MAX_FILES_DEFAULT,
     HITOMI_LISTING_MAX_GALLERIES_DEFAULT,
     MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT,
     PROCESS_OUTPUT_QUEUE_MAX_LINES_DEFAULT,
@@ -777,14 +779,23 @@ def write_metadata(target_dir: Path, name: str, payload: dict[str, Any]) -> None
 
 
 def directory_size(path: Path) -> int:
+    size, _truncated = directory_size_limited(path, max_items=0)
+    return size
+
+
+def directory_size_limited(path: Path, *, max_items: int) -> tuple[int, bool]:
     total = 0
+    inspected = 0
     for item in path.rglob("*"):
+        if max_items > 0 and inspected >= max_items:
+            return total, True
+        inspected += 1
         try:
-            if item.is_file():
+            if item.is_file() and not item.is_symlink():
                 total += item.stat().st_size
         except OSError:
             continue
-    return total
+    return total, False
 
 
 def is_thumbnail_image_file(path: Path) -> bool:
@@ -983,6 +994,14 @@ def queue_stall_timeout_seconds() -> int:
     return nonnegative_int_setting("DOWNLOAD_STALL_TIMEOUT_SECONDS", DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
 
 
+def progress_scan_max_files() -> int:
+    return nonnegative_int_env("DOWNLOAD_PROGRESS_SCAN_MAX_FILES", DOWNLOAD_PROGRESS_SCAN_MAX_FILES_DEFAULT)
+
+
+def watchdog_scan_max_files() -> int:
+    return nonnegative_int_env("DOWNLOAD_WATCHDOG_SCAN_MAX_FILES", DOWNLOAD_WATCHDOG_SCAN_MAX_FILES_DEFAULT)
+
+
 def provider_key_for_job(job: dict[str, Any]) -> str:
     return provider_key_for_parsed(db.parse_job_payload(job))
 
@@ -1028,12 +1047,20 @@ def job_stall_watchdog(job_id: int, stop_event: threading.Event) -> None:
             return
 
         target_size = 0
+        target_scan_truncated = False
         target_dir = job.get("target_dir")
         if target_dir:
             try:
-                target_size = directory_size(Path(str(target_dir)))
+                target_size, target_scan_truncated = directory_size_limited(
+                    Path(str(target_dir)),
+                    max_items=watchdog_scan_max_files(),
+                )
             except OSError:
                 target_size = 0
+        if target_scan_truncated:
+            last_signature = None
+            last_progress_at = time.monotonic()
+            continue
         signature = (
             job.get("progress_bytes") or 0,
             job.get("total_bytes"),
@@ -1412,7 +1439,8 @@ def handle_huggingface_process_output(job_id: int, line: str, result: dict[str, 
 
 
 def update_huggingface_progress(job_id: int, target: Path) -> None:
-    db.update_job(job_id, progress_bytes=directory_size(target), total_bytes=None)
+    size, _truncated = directory_size_limited(target, max_items=progress_scan_max_files())
+    db.update_job(job_id, progress_bytes=size, total_bytes=None)
 
 
 def civitai_file_selector(parsed: ParsedDownload) -> dict[str, Any]:
@@ -3863,14 +3891,42 @@ def read_process_output(pipe: Any, output_queue: queue.Queue[tuple[str, str | No
 
 
 def update_gallery_dl_progress(job_id: int, target: Path) -> None:
-    page_files = gallery_dl_downloaded_files(target)
-    latest_name = page_files[-1].name if page_files else None
+    latest_name, size = gallery_dl_progress_snapshot(target, max_items=progress_scan_max_files())
     db.update_job(
         job_id,
         filename=latest_name,
-        progress_bytes=directory_size(target),
+        progress_bytes=size,
         total_bytes=None,
     )
+
+
+def gallery_dl_progress_snapshot(target: Path, *, max_items: int) -> tuple[str | None, int]:
+    ignored_suffixes = {".part", ".json", ".txt"}
+    latest_name: str | None = None
+    latest_mtime = -1.0
+    total_size = 0
+    inspected = 0
+    try:
+        iterator = target.rglob("*")
+        for item in iterator:
+            if max_items > 0 and inspected >= max_items:
+                break
+            inspected += 1
+            try:
+                if not item.is_file() or item.is_symlink():
+                    continue
+                if item.suffix.lower() in ignored_suffixes or item.name.endswith(".part"):
+                    continue
+                stat = item.stat()
+            except OSError:
+                continue
+            total_size += stat.st_size
+            if stat.st_mtime >= latest_mtime:
+                latest_mtime = stat.st_mtime
+                latest_name = item.name
+    except OSError:
+        return None, 0
+    return latest_name, total_size
 
 
 def gallery_dl_downloaded_files(target: Path) -> list[Path]:

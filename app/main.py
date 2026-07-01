@@ -26,10 +26,13 @@ from starlette.background import BackgroundTask
 
 from . import db
 from .defaults import (
+    DOWNLOAD_ARCHIVE_MAX_CONCURRENT_DEFAULT,
     DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS,
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    LIBRARY_ITEM_SIZE_SCAN_MAX_FILES_DEFAULT,
     MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT,
     MEDIA_CACHE_MAX_BYTES_DEFAULT,
+    MEDIA_FILE_SCAN_MAX_FILES_DEFAULT,
     MEDIA_CACHE_TTL_DEFAULT_SECONDS,
     MEDIA_TRANSCODE_MAX_CONCURRENT_DEFAULT,
     QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
@@ -83,6 +86,8 @@ MEDIA_TRANSCODE_LOCKS: dict[str, threading.Lock] = {}
 MEDIA_TRANSCODE_LOCKS_LOCK = threading.Lock()
 MEDIA_TRANSCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
 MEDIA_TRANSCODE_SEMAPHORE_LOCK = threading.Lock()
+DOWNLOAD_ARCHIVE_SEMAPHORE: threading.BoundedSemaphore | None = None
+DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK = threading.Lock()
 MODEL_EXTENSIONS = {
     ".bin",
     ".ckpt",
@@ -416,7 +421,11 @@ def require_job(job_id: int) -> dict[str, Any]:
 def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     cleanup_inactive_job_partial_files()
     deleted = db.clear_job_history()
-    return JSONResponse({"ok": True, "deleted": deleted, "jobs": decorate_jobs(db.list_jobs())})
+    vacuumed = False
+    if deleted and bool_env("SQLITE_VACUUM_AFTER_CLEAR", default=False):
+        db.vacuum_database()
+        vacuumed = True
+    return JSONResponse({"ok": True, "deleted": deleted, "vacuumed": vacuumed, "jobs": decorate_jobs(db.list_jobs())})
 
 
 def cleanup_inactive_job_partial_files(limit: int = 5000) -> int:
@@ -964,12 +973,12 @@ def is_subtitle_file(path: Path) -> bool:
 
 def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
     metadata = archive_metadata(path)
-    media_files = media_files_for_path(path, limit=1)
+    media_files = media_files_for_path(path, limit=1, max_scan_files=media_file_scan_max_files())
     first_media = media_files[0] if media_files else None
-    media_count = media_file_count(path)
+    media_count = media_file_count(path, max_scan_files=media_file_scan_max_files())
     relative_path = relative_data_path(path)
     stat = path.stat()
-    size = path_size(path)
+    size = path_size(path, max_items=library_item_size_scan_max_files())
     source = normalize_library_source(metadata.get("source") or ("media" if first_media else "filesystem"))
     title = library_item_title(path, metadata)
     category = library_item_category(path, metadata, first_media)
@@ -1325,27 +1334,43 @@ def stable_path_id(path: str) -> str:
     return hashlib.sha256(path.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
-def media_files_for_path(path: Path, limit: int = 500) -> list[Path]:
+def media_file_scan_max_files() -> int:
+    return nonnegative_int_env("MEDIA_FILE_SCAN_MAX_FILES", MEDIA_FILE_SCAN_MAX_FILES_DEFAULT)
+
+
+def library_item_size_scan_max_files() -> int:
+    return nonnegative_int_env("LIBRARY_ITEM_SIZE_SCAN_MAX_FILES", LIBRARY_ITEM_SIZE_SCAN_MAX_FILES_DEFAULT)
+
+
+def media_files_for_path(path: Path, limit: int = 500, *, max_scan_files: int = 0) -> list[Path]:
     if path.is_file():
         return [path] if is_media_file(path) else []
     files: list[Path] = []
+    scanned = 0
     try:
         for item in path.rglob("*"):
-            if len(files) >= 10000:
+            if max_scan_files > 0 and scanned >= max_scan_files:
                 break
+            scanned += 1
             if item.is_file() and not item.is_symlink() and is_media_file(item):
                 files.append(item)
+                if len(files) >= limit and limit <= 1:
+                    break
     except OSError:
         return files
     return sorted(files, key=natural_path_key)[:limit]
 
 
-def media_file_count(path: Path, limit: int = 10000) -> int:
+def media_file_count(path: Path, limit: int = 10000, *, max_scan_files: int = 0) -> int:
     if path.is_file():
         return 1 if is_media_file(path) else 0
     count = 0
+    scanned = 0
     try:
         for item in path.rglob("*"):
+            if max_scan_files > 0 and scanned >= max_scan_files:
+                return count
+            scanned += 1
             if item.is_file() and not item.is_symlink() and is_media_file(item):
                 count += 1
                 if count >= limit:
@@ -1753,6 +1778,13 @@ def nonnegative_int_env(name: str, default: int) -> int:
         return default
 
 
+def bool_env(name: str, *, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def normalize_bool_setting(value: str | None, *, default: bool = False) -> str:
     if value is None:
         return "1" if default else "0"
@@ -1924,11 +1956,15 @@ def download_filename(path: Path) -> str:
     return f"{name}.zip" if path.is_dir() else path.name
 
 
-def path_size(path: Path) -> int:
+def path_size(path: Path, *, max_items: int = 0) -> int:
     if path.is_file():
         return path.stat().st_size
     total = 0
+    inspected = 0
     for item in path.rglob("*"):
+        if max_items > 0 and inspected >= max_items:
+            break
+        inspected += 1
         try:
             if item.is_file() and not item.is_symlink():
                 total += item.stat().st_size
@@ -2100,6 +2136,18 @@ def cleanup_cache_quota(root: Path, max_bytes: int) -> int:
     return removed
 
 
+def download_archive_semaphore() -> threading.BoundedSemaphore:
+    global DOWNLOAD_ARCHIVE_SEMAPHORE
+    with DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK:
+        if DOWNLOAD_ARCHIVE_SEMAPHORE is None:
+            limit = max(
+                1,
+                nonnegative_int_env("DOWNLOAD_ARCHIVE_MAX_CONCURRENT", DOWNLOAD_ARCHIVE_MAX_CONCURRENT_DEFAULT),
+            )
+            DOWNLOAD_ARCHIVE_SEMAPHORE = threading.BoundedSemaphore(limit)
+        return DOWNLOAD_ARCHIVE_SEMAPHORE
+
+
 def removable_cache_file(path: Path) -> bool:
     try:
         return path.is_file() and not path.is_symlink()
@@ -2115,16 +2163,17 @@ def create_zip_archive(source: Path) -> Path:
     archive_path = Path(temp_name)
     source_root = source.resolve()
     try:
-        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
-            for item in sorted(source.rglob("*")):
-                if not item.is_file() or item.is_symlink():
-                    continue
-                if item.name.endswith(".part"):
-                    continue
-                resolved = item.resolve()
-                if source_root not in resolved.parents and resolved != source_root:
-                    continue
-                archive.write(resolved, resolved.relative_to(source_root).as_posix())
+        with download_archive_semaphore():
+            with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
+                for item in sorted(source.rglob("*")):
+                    if not item.is_file() or item.is_symlink():
+                        continue
+                    if item.name.endswith(".part"):
+                        continue
+                    resolved = item.resolve()
+                    if source_root not in resolved.parents and resolved != source_root:
+                        continue
+                    archive.write(resolved, resolved.relative_to(source_root).as_posix())
     except Exception:
         cleanup_file(archive_path)
         raise

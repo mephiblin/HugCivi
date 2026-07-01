@@ -78,6 +78,30 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertNotEqual(first, third)
 
+    def test_directory_size_limited_reports_truncation_without_affecting_exact_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(5):
+                (root / f"{index}.bin").write_bytes(b"x" * 10)
+
+            limited_size, truncated = downloader.directory_size_limited(root, max_items=2)
+
+            self.assertTrue(truncated)
+            self.assertLessEqual(limited_size, 20)
+            self.assertEqual(downloader.directory_size(root), 50)
+
+    def test_gallery_progress_snapshot_obeys_scan_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(5):
+                path = root / f"{index}.jpg"
+                path.write_bytes(b"x" * 10)
+                os.utime(path, (100 + index, 100 + index))
+
+            _latest_name, limited_size = downloader.gallery_dl_progress_snapshot(root, max_items=2)
+
+            self.assertLessEqual(limited_size, 20)
+
     def test_partial_metadata_registration_and_cleanup_are_job_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

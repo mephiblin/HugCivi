@@ -84,6 +84,12 @@
 - `MEDIA_CACHE_TTL_SECONDS=2592000`
 - `MEDIA_CACHE_MAX_BYTES=0`
 - `MEDIA_TRANSCODE_MAX_CONCURRENT=1`
+- `DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1`
+- `DOWNLOAD_PROGRESS_SCAN_MAX_FILES=2000`
+- `DOWNLOAD_WATCHDOG_SCAN_MAX_FILES=2000`
+- `MEDIA_FILE_SCAN_MAX_FILES=5000`
+- `LIBRARY_ITEM_SIZE_SCAN_MAX_FILES=2000`
+- `SQLITE_VACUUM_AFTER_CLEAR=0`
 
 환경변수로 낮추는 것은 허용한다. hard limit은 올릴 수 있지만, 기본값은 NAS 운용을 우선한다.
 
@@ -118,9 +124,30 @@
 - media ffmpeg 변환/포스터 생성 semaphore.
 - ZIP archive `.part` 제외.
 
+추가 구현:
+
+- gallery-dl/yt-dlp 진행률 스캔에 `DOWNLOAD_PROGRESS_SCAN_MAX_FILES` budget 적용.
+- HF 진행률 스캔에 `DOWNLOAD_PROGRESS_SCAN_MAX_FILES` budget 적용.
+- watchdog directory size 스캔에 `DOWNLOAD_WATCHDOG_SCAN_MAX_FILES` budget 적용.
+- watchdog 스캔이 budget에 걸리면 stall로 오판하지 않도록 해당 cycle은 진행 중으로 처리.
+- 라이브러리 카드 생성용 media/size scan에 `MEDIA_FILE_SCAN_MAX_FILES`, `LIBRARY_ITEM_SIZE_SCAN_MAX_FILES` budget 적용.
+- 폴더 속성 상세 조회와 다운로드 완료 후 최종 size 계산은 정확도 우선으로 기존 전체 스캔 유지.
+- 폴더 ZIP 생성에 `DOWNLOAD_ARCHIVE_MAX_CONCURRENT` semaphore 적용.
+- `SQLITE_VACUUM_AFTER_CLEAR=1`일 때 작업 기록 삭제 후 VACUUM 실행.
+
 검증:
 
 - `python3 -m pytest -q`
-- 결과: 102 passed, FastAPI `on_event` deprecation warning만 남음.
+- 결과: 107 passed, FastAPI `on_event` deprecation warning만 남음.
 
 이번 구현에서 인터넷 검색은 사용하지 않았다. 변경 대상은 코드 내부 큐/cleanup/retry 정책이고, 외부 downloader 최신 동작 확인이 필요한 수정은 아니었다.
+
+## 남은 구조 변경
+
+다음은 의도적으로 즉시 변경하지 않았다.
+
+- ZIP 생성과 미디어 transcode를 별도 DB job 타입으로 완전히 이동.
+- 라이브러리 전체를 DB-backed 증분 index로 전환.
+- Hitomi listing 결과 확인 UI.
+
+현재는 semaphore, scan budget, child job limit으로 운영 위험을 낮춘 상태다. 위 구조 변경은 UX/API 변화가 크므로 별도 기능 설계 후 진행하는 편이 안전하다.

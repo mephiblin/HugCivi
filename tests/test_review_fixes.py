@@ -191,6 +191,30 @@ def test_zip_archive_excludes_partial_files(app_modules: tuple) -> None:
         assert archive.namelist() == ["file.txt"]
 
 
+def test_zip_archive_uses_archive_semaphore(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "folder"
+    source.mkdir()
+    (source / "file.txt").write_text("content", encoding="utf-8")
+    entered = []
+
+    class FakeSemaphore:
+        def __enter__(self) -> None:
+            entered.append(True)
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(main, "download_archive_semaphore", lambda: FakeSemaphore())
+
+    main.create_zip_archive(source)
+
+    assert entered == [True]
+
+
 def test_startup_cleanup_removes_stale_archives_and_media_cache(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,6 +293,44 @@ def test_clear_history_removes_failed_partial_files_before_deleting_rows(app_mod
     assert payload["deleted"] == 1
     assert not part_path.exists()
     assert db.get_job(job_id) is None
+
+
+def test_clear_history_can_vacuum_when_enabled(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="done")
+    called = []
+    monkeypatch.setenv("SQLITE_VACUUM_AFTER_CLEAR", "1")
+    monkeypatch.setattr(db, "vacuum_database", lambda: called.append(True))
+
+    payload = json.loads(main.api_clear_jobs("_").body.decode("utf-8"))
+
+    assert payload["deleted"] == 1
+    assert payload["vacuumed"] is True
+    assert called == [True]
+
+
+def test_library_item_uses_scan_budgets_for_large_folders(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    folder = data_root / "media"
+    folder.mkdir()
+    for index in range(5):
+        (folder / f"{index}.mp4").write_bytes(b"x" * 10)
+    monkeypatch.setenv("MEDIA_FILE_SCAN_MAX_FILES", "2")
+    monkeypatch.setenv("LIBRARY_ITEM_SIZE_SCAN_MAX_FILES", "2")
+
+    item = main.library_item_for_path(folder, set())
+
+    assert item["media_count"] <= 2
+    assert item["progress_bytes"] <= 20
+    assert main.path_size(folder) == 50
 
 
 def test_partial_download_path_is_job_and_url_scoped(app_modules: tuple) -> None:

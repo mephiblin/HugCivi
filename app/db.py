@@ -194,6 +194,16 @@ def clear_job_history() -> int:
         return int(cur.rowcount or 0)
 
 
+def vacuum_database() -> None:
+    with _DB_LOCK:
+        conn = connect()
+        try:
+            conn.isolation_level = None
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+
+
 def delete_job(job_id: int) -> bool:
     with _DB_LOCK, connect() as conn:
         cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
