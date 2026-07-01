@@ -1566,6 +1566,8 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
     if parsed.source == "comfyui" and is_http_url(parsed.comfyui_workflow_url or ""):
         return parsed.comfyui_workflow_url or ""
     if parsed.source == "hitomi":
+        if is_http_url(parsed.hitomi_listing_url or ""):
+            return parsed.hitomi_listing_url or ""
         if is_http_url(parsed.hitomi_gallery_url or ""):
             return parsed.hitomi_gallery_url or ""
         if parsed.hitomi_gallery_id:

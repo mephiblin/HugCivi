@@ -47,6 +47,8 @@ class ParsedDownload:
     # Hitomi gallery
     hitomi_gallery_id: str | None = None
     hitomi_gallery_url: str | None = None
+    hitomi_listing_url: str | None = None
+    hitomi_listing_kind: str | None = None
 
     # gallery-dl generic archive
     gallerydl_url: str | None = None

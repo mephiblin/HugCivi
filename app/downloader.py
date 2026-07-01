@@ -137,6 +137,11 @@ YOUTUBE_AUTO_SUBTITLE_LANGS = ("en",)
 YOUTUBE_SUBTITLE_FORMAT = "vtt/srt/best"
 YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
+HITOMI_GALLERY_OUTPUT_RE = re.compile(
+    r"https?://(?:www\.)?hitomi\.la/(?:galleries|reader)/(?:[^/?#]+-)?(?P<id>\d+)(?:\.html)?",
+    re.IGNORECASE,
+)
+HITOMI_ACTIVE_OR_PRESENT_STATUSES = {"queued", "running", "paused", "pausing", "canceling", "done", "deleting"}
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
     "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
@@ -2440,6 +2445,10 @@ def download_comfyui(job_id: int, parsed: ParsedDownload) -> None:
 
 
 def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
+    if parsed.hitomi_listing_url and not parsed.hitomi_gallery_id:
+        download_hitomi_listing(job_id, parsed)
+        return
+
     gallery_id = parsed.hitomi_gallery_id
     if not gallery_id:
         raise ValueError("Hitomi gallery ID is missing.")
@@ -2556,6 +2565,293 @@ def download_hitomi(job_id: int, parsed: ParsedDownload) -> None:
         thumbnail_url=thumbnail_url or thumbnail_url_for_path(target) or None,
     )
     db.append_log(job_id, f"saved gallery: {target} ({human_bytes(final_size)})")
+
+
+def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
+    source_url = parsed.hitomi_listing_url
+    if not source_url:
+        raise ValueError("Hitomi listing URL is missing.")
+    if not gallery_dl_available():
+        raise RuntimeError("gallery-dl is not available in this container.")
+
+    target_root = base_target(parsed, "hitomi")
+    target = safe_join(target_root, "listings", hitomi_listing_slug(source_url, parsed.hitomi_listing_kind))
+    target.mkdir(parents=True, exist_ok=True)
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        model_title=hitomi_listing_title(source_url),
+        model_category="Hitomi Listing",
+        model_type=parsed.hitomi_listing_kind or "listing",
+        file_format="queue",
+        filename="discovering galleries",
+    )
+    db.append_log(job_id, f"Hitomi listing discovery: {redact_sensitive_text(source_url)}")
+
+    gallery_urls = discover_hitomi_listing_gallery_urls(job_id, source_url)
+    entries = create_hitomi_listing_gallery_jobs(job_id, parsed, gallery_urls)
+    queued = [entry for entry in entries if entry["status"] == "queued"]
+    skipped = [entry for entry in entries if entry["status"] != "queued"]
+    payload = {
+        **metadata_stamp(),
+        "source": "hitomi",
+        "kind": parsed.hitomi_listing_kind or "listing",
+        "source_url": source_url,
+        "raw_input": parsed.raw_input,
+        "gallery_dl_version": gallery_dl_version(),
+        "discovered_count": len({entry["gallery_id"] for entry in entries}),
+        "queued_count": len(queued),
+        "skipped_count": len(skipped),
+        "galleries": entries,
+    }
+    write_metadata(target, "_hitomi_listing_metadata.json", payload)
+    metadata_summary = {
+        key: value
+        for key, value in payload.items()
+        if key != "galleries"
+    }
+    db.update_job(
+        job_id,
+        filename=f"{len(queued)} queued / {len(entries)} discovered",
+        progress_bytes=len(queued),
+        total_bytes=len(entries),
+        precision=f"{len(queued)} queued, {len(skipped)} skipped",
+        metadata_json=json.dumps(redact_metadata(metadata_summary), ensure_ascii=False),
+    )
+    db.append_log(
+        job_id,
+        f"queued Hitomi listing galleries: queued={len(queued)} skipped={len(skipped)} discovered={len(entries)}",
+    )
+
+
+def hitomi_listing_slug(source_url: str, kind: str | None = None) -> str:
+    parsed = urlparse(source_url)
+    path = unquote(parsed.path.strip("/")) or "listing"
+    prefix = sanitize_segment(kind or "listing", "listing")
+    if parsed.query:
+        return sanitize_segment(f"{prefix}-{path}-{stable_hash(parsed.query, 8)}", "listing")
+    return sanitize_segment(f"{prefix}-{path}", "listing")
+
+
+def hitomi_listing_title(source_url: str) -> str:
+    parsed = urlparse(source_url)
+    name = Path(unquote(parsed.path.strip("/"))).name or "listing"
+    if parsed.query:
+        return f"{name}?{stable_hash(parsed.query, 8)}"
+    return name
+
+
+def discover_hitomi_listing_gallery_urls(job_id: int, source_url: str) -> list[str]:
+    command = gallery_dl_get_urls_command(source_url)
+    db.append_log(
+        job_id,
+        (
+            f"gallery-dl discovery start: source={redact_sensitive_text(source_url)} "
+            f"version={gallery_dl_version()} auth={gallery_dl_auth_summary(source_url)}"
+        ),
+    )
+    urls = run_gallery_dl_get_urls_process(job_id, command)
+    if not urls:
+        raise RuntimeError("No Hitomi gallery URLs were discovered from the listing.")
+    db.append_log(job_id, f"gallery-dl discovery found {len(urls)} gallery URLs")
+    return urls
+
+
+def gallery_dl_get_urls_command(source_url: str) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "gallery_dl",
+        "--config-ignore",
+        "--no-input",
+        "-g",
+    ]
+    sleep_request = os.getenv("GALLERY_DL_SLEEP_REQUEST_SECONDS", "").strip()
+    if sleep_request:
+        command.extend(["--sleep-request", sleep_request])
+    command.extend(gallery_dl_auth_args())
+    command.append(gallery_dl_extractor_url(source_url))
+    return command
+
+
+def run_gallery_dl_get_urls_process(job_id: int, command: list[str]) -> list[str]:
+    process: subprocess.Popen[str] | None = None
+    urls: list[str] = []
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **gallery_dl_process_kwargs(),
+        )
+        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_done = process.stdout is None
+        if process.stdout:
+            reader = threading.Thread(
+                target=read_process_output,
+                args=(process.stdout, output_queue),
+                name=f"gallery-dl-discovery-output-{job_id}",
+                daemon=True,
+            )
+            reader.start()
+
+        while True:
+            check_job_control(job_id)
+            try:
+                event = output_queue.get(timeout=1.0)
+            except queue.Empty:
+                event = None
+            if event is not None and event[0] == "done":
+                output_done = True
+            elif event is not None and event[1] is not None:
+                message = event[1].strip()
+                if not message:
+                    continue
+                gallery_url = normalized_hitomi_gallery_url_from_text(message)
+                if gallery_url:
+                    urls.append(gallery_url)
+                else:
+                    db.append_log(job_id, f"gallery-dl.discovery: {message[:1000]}")
+
+            if process.poll() is not None and output_done and output_queue.empty():
+                break
+
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError(f"gallery-dl discovery exited with code {return_code}")
+    except JobControlStop:
+        if process and process.poll() is None:
+            stop_gallery_dl_process(job_id, process)
+        raise
+    except Exception:
+        if process and process.poll() is None:
+            stop_gallery_dl_process(job_id, process)
+        raise
+
+    return unique_hitomi_gallery_urls(urls)
+
+
+def normalized_hitomi_gallery_url_from_text(value: str) -> str | None:
+    match = HITOMI_GALLERY_OUTPUT_RE.search(value)
+    if not match:
+        return None
+    return hitomi_gallery_url_for_id(match.group("id"))
+
+
+def unique_hitomi_gallery_urls(urls: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        gallery_id = hitomi_gallery_id_from_url(url)
+        if not gallery_id or gallery_id in seen:
+            continue
+        seen.add(gallery_id)
+        unique.append(hitomi_gallery_url_for_id(gallery_id))
+    return unique
+
+
+def hitomi_gallery_url_for_id(gallery_id: str) -> str:
+    return f"https://hitomi.la/galleries/{quote(str(gallery_id), safe='')}.html"
+
+
+def hitomi_gallery_id_from_url(url: str) -> str | None:
+    match = HITOMI_GALLERY_OUTPUT_RE.search(url)
+    return match.group("id") if match else None
+
+
+def create_hitomi_listing_gallery_jobs(
+    job_id: int,
+    parsed: ParsedDownload,
+    gallery_urls: list[str],
+) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for gallery_url in gallery_urls:
+        gallery_id = hitomi_gallery_id_from_url(gallery_url)
+        if not gallery_id or gallery_id in seen:
+            continue
+        seen.add(gallery_id)
+        existing = hitomi_existing_gallery_state(gallery_id)
+        if existing:
+            entry = {
+                "gallery_id": gallery_id,
+                "gallery_url": gallery_url,
+                **existing,
+            }
+            entries.append(entry)
+            db.append_log(
+                job_id,
+                f"hitomi.listing.skip gallery_id={gallery_id} status={entry['status']} "
+                f"reason={entry.get('reason') or '-'}",
+            )
+            continue
+
+        child = ParsedDownload(
+            source="hitomi",
+            raw_input=gallery_url,
+            target_subdir=parsed.target_subdir,
+            hitomi_gallery_id=gallery_id,
+            hitomi_gallery_url=gallery_url,
+        )
+        child_job_id = db.create_job(child)
+        enqueue_job(child_job_id)
+        entries.append(
+            {
+                "gallery_id": gallery_id,
+                "gallery_url": gallery_url,
+                "status": "queued",
+                "child_job_id": child_job_id,
+            }
+        )
+        db.append_log(job_id, f"hitomi.listing.queue gallery_id={gallery_id} child_job_id={child_job_id}")
+    return entries
+
+
+def hitomi_existing_gallery_state(gallery_id: str) -> dict[str, Any] | None:
+    for job in db.list_jobs(limit=5000):
+        if str(job.get("source") or "") != "hitomi":
+            continue
+        if hitomi_gallery_id_from_job(job) != gallery_id:
+            continue
+        status = str(job.get("status") or "")
+        if status not in HITOMI_ACTIVE_OR_PRESENT_STATUSES:
+            continue
+        job_id = int(job["id"]) if job.get("id") is not None else None
+        if status == "done":
+            state: dict[str, Any] = {
+                "status": "present",
+                "reason": "already downloaded",
+                "existing_job_id": job_id,
+            }
+            target_dir = str(job.get("target_dir") or "").strip()
+            if target_dir:
+                state["target_path"] = data_root_relative_path(Path(target_dir)) or target_dir
+            return state
+        return {
+            "status": "already_queued",
+            "reason": f"existing job is {status}",
+            "existing_job_id": job_id,
+        }
+    return None
+
+
+def hitomi_gallery_id_from_job(job: dict[str, Any]) -> str | None:
+    payload = parse_metadata_json(job.get("parsed_json"))
+    if payload.get("source") == "hitomi":
+        gallery_id = payload.get("hitomi_gallery_id")
+        if gallery_id:
+            return str(gallery_id)
+    metadata = parse_metadata_json(job.get("metadata_json"))
+    gallery_id = metadata.get("gallery_id")
+    if gallery_id:
+        return str(gallery_id)
+    nested = metadata.get("metadata")
+    if isinstance(nested, dict) and nested.get("id"):
+        return str(nested["id"])
+    return None
 
 
 def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:

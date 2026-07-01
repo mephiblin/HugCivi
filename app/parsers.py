@@ -38,6 +38,11 @@ HITOMI_GALLERY_RE = re.compile(
     r"^/(?:manga|doujinshi|cg|gamecg|imageset|galleries|reader)/(?:[^/?#]+-)?(\d+)(?:\.html)?/?$",
     re.IGNORECASE,
 )
+HITOMI_LISTING_RE = re.compile(
+    r"^/(?P<kind>tag|artist|group|series|type|character)/[^/?#]+\.html/?$",
+    re.IGNORECASE,
+)
+HITOMI_INDEX_RE = re.compile(r"^/index-[A-Za-z0-9_]+\.html/?$", re.IGNORECASE)
 
 
 class InputParseError(ValueError):
@@ -549,16 +554,45 @@ def parse_hitomi_url(
 ) -> ParsedDownload:
     parsed = urlparse(url)
     match = HITOMI_GALLERY_RE.match(parsed.path)
-    if not match:
-        raise InputParseError("Hitomi URL에서 gallery ID를 찾지 못했습니다.")
-    gallery_id = match.group(1)
-    return ParsedDownload(
-        source="hitomi",
-        raw_input=raw_input or url,
-        target_subdir=target_subdir,
-        hitomi_gallery_id=gallery_id,
-        hitomi_gallery_url=url,
-    )
+    if match:
+        gallery_id = match.group(1)
+        return ParsedDownload(
+            source="hitomi",
+            raw_input=raw_input or url,
+            target_subdir=target_subdir,
+            hitomi_gallery_id=gallery_id,
+            hitomi_gallery_url=url,
+        )
+
+    listing_match = HITOMI_LISTING_RE.match(parsed.path)
+    if listing_match:
+        return ParsedDownload(
+            source="hitomi",
+            raw_input=raw_input or url,
+            target_subdir=target_subdir,
+            hitomi_listing_url=url,
+            hitomi_listing_kind=listing_match.group("kind").lower(),
+        )
+
+    if HITOMI_INDEX_RE.match(parsed.path):
+        return ParsedDownload(
+            source="hitomi",
+            raw_input=raw_input or url,
+            target_subdir=target_subdir,
+            hitomi_listing_url=url,
+            hitomi_listing_kind="index",
+        )
+
+    if parsed.path.rstrip("/") == "/search.html" and parsed.query:
+        return ParsedDownload(
+            source="hitomi",
+            raw_input=raw_input or url,
+            target_subdir=target_subdir,
+            hitomi_listing_url=url,
+            hitomi_listing_kind="search",
+        )
+
+    raise InputParseError("Hitomi URL에서 gallery ID 또는 지원되는 목록 URL을 찾지 못했습니다.")
 
 
 def first_query(query: dict[str, list[str]], *keys: str) -> str | None:
