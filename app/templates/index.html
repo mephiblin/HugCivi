@@ -1745,13 +1745,15 @@
         const meta = [job.base_model, job.precision, job.file_format].filter(Boolean).join(' · ');
         const sourceUrl = job.source_url || '';
         const favorite = Boolean(job.favorite);
-        const image = job.thumbnail_url
+        const hasThumbnail = Boolean(job.thumbnail_url);
+        const image = hasThumbnail
           ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
-          : `<div class="asset-placeholder">${escapeHtml((category || 'AI').slice(0, 2).toUpperCase())}</div>`;
+          : `<div class="asset-placeholder">${escapeHtml(libraryPlaceholderLabel(job))}</div>`;
         const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
         const mediaArchive = isMediaArchiveJob(job);
-        return `<article class="asset-card ${mediaArchive ? 'media-archive' : ''}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
+        const classes = ['asset-card', hasThumbnail ? '' : 'no-thumb', mediaArchive ? 'media-archive' : ''].filter(Boolean).join(' ');
+        return `<article class="${classes}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" data-has-thumbnail="${hasThumbnail ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
           ${image}
           <div class="asset-topline">
             <span class="asset-source-badge">${escapeHtml(shortSource(job.source))}</span>
@@ -1777,6 +1779,15 @@
           </div>
         </article>`;
       }).join('');
+    }
+
+    function libraryPlaceholderLabel(job) {
+      const raw = String(job.model_category || job.model_type || job.file_format || job.source || job.filename || 'FILE').trim();
+      if (!raw) return 'FILE';
+      if (/^[a-z0-9.+_-]{1,5}$/i.test(raw)) {
+        return raw.toUpperCase();
+      }
+      return raw.slice(0, 2).toUpperCase();
     }
 
     function libraryCards() {

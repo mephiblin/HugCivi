@@ -1479,6 +1479,10 @@ a:hover {
   font-weight: 900;
 }
 
+.asset-card.no-thumb .asset-placeholder {
+  min-height: 238px;
+}
+
 .asset-topline {
   position: absolute;
   top: 0;
@@ -3948,6 +3952,11 @@ a:hover {
 
   .asset-card {
     min-height: 198px;
+  }
+
+  .asset-card.no-thumb .asset-placeholder {
+    min-height: 198px;
+    font-size: 28px;
   }
 
   .context-menu {
