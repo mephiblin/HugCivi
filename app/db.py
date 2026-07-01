@@ -10,6 +10,7 @@ from typing import Any
 
 from .defaults import (
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    JOB_LOG_MAX_CHARS_DEFAULT,
     QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
     QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
     YT_DLP_DEFAULT_FORMAT,
@@ -165,6 +166,16 @@ def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
             "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [redact_job_row(dict(row)) for row in rows]
+
+
+def list_inactive_jobs(limit: int = 5000) -> list[dict[str, Any]]:
+    placeholders = ", ".join("?" for _ in ACTIVE_JOB_STATUSES)
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM jobs WHERE status NOT IN ({placeholders}) ORDER BY id DESC LIMIT ?",
+            (*ACTIVE_JOB_STATUSES, limit),
         ).fetchall()
         return [redact_job_row(dict(row)) for row in rows]
 
@@ -498,12 +509,33 @@ def normalized_path_text(path: str | Path) -> str:
 def append_log(job_id: int, message: str) -> None:
     stamp = utc_now()
     line = f"[{stamp}] {redact_sensitive_text(message)}\n"
+    max_chars = job_log_max_chars()
     with _DB_LOCK, connect() as conn:
-        conn.execute(
-            "UPDATE jobs SET log = COALESCE(log, '') || ?, updated_at = ? WHERE id = ?",
-            (line, stamp, job_id),
-        )
+        if max_chars > 0:
+            conn.execute(
+                "UPDATE jobs SET log = substr(COALESCE(log, '') || ?, ?), updated_at = ? WHERE id = ?",
+                (line, -max_chars, stamp, job_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET log = COALESCE(log, '') || ?, updated_at = ? WHERE id = ?",
+                (line, stamp, job_id),
+            )
         conn.commit()
+
+
+def job_log_max_chars() -> int:
+    return nonnegative_int_env("JOB_LOG_MAX_CHARS", JOB_LOG_MAX_CHARS_DEFAULT)
+
+
+def nonnegative_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        return default
 
 
 def parse_job_payload(job: dict[str, Any]) -> ParsedDownload:

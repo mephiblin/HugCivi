@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,9 +26,15 @@ from starlette.background import BackgroundTask
 
 from . import db
 from .defaults import (
+    DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS,
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT,
+    MEDIA_CACHE_MAX_BYTES_DEFAULT,
+    MEDIA_CACHE_TTL_DEFAULT_SECONDS,
+    MEDIA_TRANSCODE_MAX_CONCURRENT_DEFAULT,
     QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
     QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT_DEFAULT,
     YT_DLP_DEFAULT_FORMAT,
 )
 from .downloader import (
@@ -74,6 +81,8 @@ BROWSER_MP4_VIDEO_CODECS = {"h264"}
 BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
 MEDIA_TRANSCODE_LOCKS: dict[str, threading.Lock] = {}
 MEDIA_TRANSCODE_LOCKS_LOCK = threading.Lock()
+MEDIA_TRANSCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
+MEDIA_TRANSCODE_SEMAPHORE_LOCK = threading.Lock()
 MODEL_EXTENSIONS = {
     ".bin",
     ".ckpt",
@@ -117,6 +126,8 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
 def on_startup() -> None:
     db.init_db()
     ensure_route_folders()
+    cleanup_stale_download_archives()
+    cleanup_stale_media_cache()
     start_workers()
 
 
@@ -313,8 +324,30 @@ def save_settings(
         db.set_setting(key, route_path)
         safe_join(DATA_ROOT, route_path).mkdir(parents=True, exist_ok=True)
 
-    db.set_setting("MAX_CONCURRENT_DOWNLOADS", normalize_int_setting(queue_global_limit, 3, minimum=1))
-    db.set_setting("QUEUE_PER_PROVIDER_LIMIT", normalize_int_setting(queue_per_provider_limit, 1, minimum=1))
+    db.set_setting(
+        "MAX_CONCURRENT_DOWNLOADS",
+        normalize_int_setting(
+            queue_global_limit,
+            3,
+            minimum=1,
+            maximum=max(
+                1,
+                nonnegative_int_env("MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT", MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT),
+            ),
+        ),
+    )
+    db.set_setting(
+        "QUEUE_PER_PROVIDER_LIMIT",
+        normalize_int_setting(
+            queue_per_provider_limit,
+            1,
+            minimum=1,
+            maximum=max(
+                1,
+                nonnegative_int_env("QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT", QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT_DEFAULT),
+            ),
+        ),
+    )
     cooldown_min = int(
         normalize_int_setting(
             queue_provider_cooldown_min_seconds,
@@ -381,8 +414,20 @@ def require_job(job_id: int) -> dict[str, Any]:
 
 @app.post("/api/jobs/clear")
 def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
+    cleanup_inactive_job_partial_files()
     deleted = db.clear_job_history()
     return JSONResponse({"ok": True, "deleted": deleted, "jobs": decorate_jobs(db.list_jobs())})
+
+
+def cleanup_inactive_job_partial_files(limit: int = 5000) -> int:
+    cleaned = 0
+    for job in db.list_inactive_jobs(limit=limit):
+        try:
+            cleanup_job_partial_files(int(job["id"]))
+            cleaned += 1
+        except (KeyError, TypeError, ValueError, OSError):
+            continue
+    return cleaned
 
 
 @app.post("/api/jobs/{job_id}/pause")
@@ -765,12 +810,12 @@ def job_log(job_id: int, _: str = Depends(require_auth)) -> PlainTextResponse:
     return PlainTextResponse(job.get("log") or "")
 
 
-def decorate_jobs(jobs: list[dict]) -> list[dict]:
+def decorate_jobs(jobs: list[dict], *, include_log: bool = False) -> list[dict]:
     favorites = db.favorite_paths()
-    return [decorate_job(job, favorites) for job in jobs]
+    return [decorate_job(job, favorites, include_log=include_log) for job in jobs]
 
 
-def decorate_job(job: dict, favorites: set[str] | None = None) -> dict:
+def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: bool = True) -> dict:
     progress = job.get("progress_bytes") or 0
     total = job.get("total_bytes")
     percent = None
@@ -781,6 +826,9 @@ def decorate_job(job: dict, favorites: set[str] | None = None) -> dict:
     existing_source_url = str(job.get("source_url") or "")
     job = dict(job)
     job.pop("parsed_json", None)
+    if not include_log:
+        job.pop("log", None)
+        job.pop("metadata_json", None)
     job["progress_human"] = human_bytes(progress)
     job["total_human"] = human_bytes(total)
     job["percent"] = percent
@@ -1532,7 +1580,8 @@ def transcode_video_for_browser(source: Path) -> Path:
         ]
         timeout = media_transcode_timeout_seconds()
         try:
-            subprocess.run(command, check=True, timeout=timeout or None, capture_output=True)
+            with media_transcode_semaphore():
+                subprocess.run(command, check=True, timeout=timeout or None, capture_output=True)
             os.replace(temp, target)
         except subprocess.CalledProcessError as exc:
             cleanup_file(temp)
@@ -1566,6 +1615,18 @@ def media_transcode_timeout_seconds() -> int:
         return 1800
 
 
+def media_transcode_semaphore() -> threading.BoundedSemaphore:
+    global MEDIA_TRANSCODE_SEMAPHORE
+    with MEDIA_TRANSCODE_SEMAPHORE_LOCK:
+        if MEDIA_TRANSCODE_SEMAPHORE is None:
+            limit = max(
+                1,
+                nonnegative_int_env("MEDIA_TRANSCODE_MAX_CONCURRENT", MEDIA_TRANSCODE_MAX_CONCURRENT_DEFAULT),
+            )
+            MEDIA_TRANSCODE_SEMAPHORE = threading.BoundedSemaphore(limit)
+        return MEDIA_TRANSCODE_SEMAPHORE
+
+
 def video_poster_path(source: Path) -> Path:
     MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     key = media_cache_key(source)
@@ -1592,7 +1653,8 @@ def video_poster_path(source: Path) -> Path:
         str(temp),
     ]
     try:
-        subprocess.run(command, check=True, timeout=30, capture_output=True)
+        with media_transcode_semaphore():
+            subprocess.run(command, check=True, timeout=30, capture_output=True)
         os.replace(temp, poster)
     except (OSError, subprocess.SubprocessError) as exc:
         cleanup_file(temp)
@@ -1671,11 +1733,24 @@ def is_http_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def normalize_int_setting(value: str, default: int, *, minimum: int = 0) -> str:
+def normalize_int_setting(value: str, default: int, *, minimum: int = 0, maximum: int | None = None) -> str:
     try:
-        return str(max(minimum, int(str(value).strip())))
+        parsed = max(minimum, int(str(value).strip()))
     except ValueError:
-        return str(default)
+        parsed = default
+    if maximum is not None and maximum >= minimum:
+        parsed = min(parsed, maximum)
+    return str(parsed)
+
+
+def nonnegative_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        return default
 
 
 def normalize_bool_setting(value: str | None, *, default: bool = False) -> str:
@@ -1939,6 +2014,99 @@ def paths_overlap(first: Path, second: Path) -> bool:
     )
 
 
+def cleanup_stale_download_archives(now: float | None = None) -> int:
+    return cleanup_stale_files(
+        DOWNLOAD_ARCHIVE_DIR,
+        patterns=("*.zip",),
+        ttl_seconds=nonnegative_int_env("DOWNLOAD_ARCHIVE_TTL_SECONDS", DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS),
+        now=now,
+    )
+
+
+def cleanup_stale_media_cache(now: float | None = None) -> int:
+    ttl_seconds = nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS)
+    max_bytes = nonnegative_int_env("MEDIA_CACHE_MAX_BYTES", MEDIA_CACHE_MAX_BYTES_DEFAULT)
+    removed = cleanup_stale_files(
+        MEDIA_CACHE_DIR,
+        patterns=("*",),
+        ttl_seconds=ttl_seconds,
+        temp_ttl_seconds=min(ttl_seconds, 24 * 60 * 60) if ttl_seconds > 0 else 24 * 60 * 60,
+        now=now,
+    )
+    if max_bytes > 0:
+        removed += cleanup_cache_quota(MEDIA_CACHE_DIR, max_bytes)
+    return removed
+
+
+def cleanup_stale_files(
+    root: Path,
+    *,
+    patterns: tuple[str, ...],
+    ttl_seconds: int,
+    temp_ttl_seconds: int | None = None,
+    now: float | None = None,
+) -> int:
+    if ttl_seconds <= 0 and not temp_ttl_seconds:
+        return 0
+    if not root.exists():
+        return 0
+    current_time = time.time() if now is None else now
+    removed = 0
+    seen: set[Path] = set()
+    for pattern in patterns:
+        for path in root.rglob(pattern):
+            if path in seen:
+                continue
+            seen.add(path)
+            if not removable_cache_file(path):
+                continue
+            try:
+                age = current_time - path.stat().st_mtime
+            except OSError:
+                continue
+            is_temp = path.name.startswith(".") or ".tmp" in path.name
+            if is_temp and temp_ttl_seconds is not None and age >= temp_ttl_seconds:
+                cleanup_file(path)
+                removed += 1
+            elif ttl_seconds > 0 and age >= ttl_seconds:
+                cleanup_file(path)
+                removed += 1
+    return removed
+
+
+def cleanup_cache_quota(root: Path, max_bytes: int) -> int:
+    if max_bytes <= 0 or not root.exists():
+        return 0
+    files: list[tuple[float, int, Path]] = []
+    total = 0
+    for path in root.rglob("*"):
+        if not removable_cache_file(path):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        total += stat.st_size
+        files.append((stat.st_mtime, stat.st_size, path))
+    if total <= max_bytes:
+        return 0
+    removed = 0
+    for _mtime, size, path in sorted(files):
+        cleanup_file(path)
+        total -= size
+        removed += 1
+        if total <= max_bytes:
+            break
+    return removed
+
+
+def removable_cache_file(path: Path) -> bool:
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        return False
+
+
 def create_zip_archive(source: Path) -> Path:
     DOWNLOAD_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"{sanitize_segment(source.name, 'download')}_"
@@ -1950,6 +2118,8 @@ def create_zip_archive(source: Path) -> Path:
         with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
             for item in sorted(source.rglob("*")):
                 if not item.is_file() or item.is_symlink():
+                    continue
+                if item.name.endswith(".part"):
                     continue
                 resolved = item.resolve()
                 if source_root not in resolved.parents and resolved != source_root:

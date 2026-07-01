@@ -885,6 +885,22 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 downloader._PENDING_JOB_IDS.clear()
                 downloader._PROVIDER_COOLDOWN_UNTIL.clear()
 
+    def test_queue_limits_are_clamped_by_hard_caps(self) -> None:
+        fake_db = FakeDb({}, settings={"MAX_CONCURRENT_DOWNLOADS": "99", "QUEUE_PER_PROVIDER_LIMIT": "99"})
+
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT": "5",
+                    "QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT": "2",
+                },
+            ),
+        ):
+            self.assertEqual(downloader.queue_global_limit(), 5)
+            self.assertEqual(downloader.queue_per_provider_limit(), 2)
+
     def test_same_provider_cooldown_can_be_disabled(self) -> None:
         parsed = ParsedDownload(source="generic", raw_input="https://example.test/a.bin", url="https://example.test/a.bin")
         job = {"status": "queued", "parsed_json": json.dumps(parsed.to_dict())}
@@ -1037,6 +1053,54 @@ class DownloaderRuntimeTests(unittest.TestCase):
         session.request.assert_not_called()
         with downloader._HOST_THROTTLE_LOCK:
             downloader._HOST_NEXT_REQUEST_AT.clear()
+
+    def test_retry_after_header_is_not_shortened_by_max_retry_sleep(self) -> None:
+        response = requests.Response()
+        response.status_code = 429
+        response.headers["Retry-After"] = "3600"
+
+        with mock.patch.dict(os.environ, {"DOWNLOAD_MAX_RETRY_SLEEP_SECONDS": "10"}):
+            self.assertEqual(downloader.retry_delay(response, 0), 3600.0)
+
+    def test_retry_backoff_without_header_still_uses_max_retry_sleep(self) -> None:
+        response = requests.Response()
+        response.status_code = 503
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "DOWNLOAD_RETRY_BACKOFF_SECONDS": "20",
+                    "DOWNLOAD_MAX_RETRY_SLEEP_SECONDS": "10",
+                },
+            ),
+            mock.patch.object(downloader.random, "uniform", return_value=0.0),
+        ):
+            self.assertEqual(downloader.retry_delay(response, 0), 10.0)
+
+    def test_process_output_queue_is_bounded(self) -> None:
+        with mock.patch.dict(os.environ, {"PROCESS_OUTPUT_QUEUE_MAX_LINES": "7"}):
+            self.assertEqual(downloader.process_output_queue().maxsize, 7)
+
+    def test_civitai_image_resource_job_creation_obeys_limit(self) -> None:
+        fake_db = FakeDb({})
+        resources = [
+            {"name": "A", "model_id": "10", "model_version_id": "101"},
+            {"name": "B", "model_id": "20", "model_version_id": "202"},
+            {"name": "C", "model_id": "30", "model_version_id": "303"},
+        ]
+
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader, "civitai_existing_resource_state", return_value=None),
+            mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            mock.patch.dict(os.environ, {"CIVITAI_IMAGE_MAX_RESOURCE_JOBS": "2"}),
+        ):
+            entries = downloader.create_civitai_image_resource_jobs(55, resources)
+
+        self.assertEqual([entry["status"] for entry in entries], ["queued", "queued", "skipped_limit"])
+        self.assertEqual([job.civitai_version_id for job in fake_db.created_jobs], ["101", "202"])
+        self.assertEqual([call.args[0] for call in enqueue_job.call_args_list], [501, 502])
 
     def test_gallery_dl_ytdl_target_parts_unwrap_youtube_url(self) -> None:
         host, slug = downloader.gallery_dl_target_parts("ytdl:https://www.youtube.com/watch?v=abc123&t=30")

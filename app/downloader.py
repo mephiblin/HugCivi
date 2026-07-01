@@ -23,9 +23,15 @@ import requests
 
 from . import db
 from .defaults import (
+    CIVITAI_IMAGE_MAX_RESOURCE_JOBS_DEFAULT,
+    DOWNLOAD_HTTP_MAX_RETRIES_HARD_LIMIT_DEFAULT,
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    HITOMI_LISTING_MAX_GALLERIES_DEFAULT,
+    MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT,
+    PROCESS_OUTPUT_QUEUE_MAX_LINES_DEFAULT,
     QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
     QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT_DEFAULT,
     YT_DLP_DEFAULT_FORMAT,
 )
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
@@ -881,24 +887,42 @@ def redact_metadata(value: Any) -> Any:
     return value
 
 
-def positive_int_env(name: str, default: int) -> int:
+def positive_int_env(name: str, default: int, *, maximum: int | None = None) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        value = default
+    else:
+        try:
+            value = max(1, int(raw_value))
+        except ValueError:
+            value = default
+    if maximum is not None and maximum >= 1:
+        value = min(value, maximum)
+    return value
+
+
+def nonnegative_int_env(name: str, default: int) -> int:
     raw_value = os.getenv(name)
     if raw_value is None:
         return default
     try:
-        return max(1, int(raw_value))
+        return max(0, int(raw_value))
     except ValueError:
         return default
 
 
-def positive_int_setting(name: str, default: int) -> int:
+def positive_int_setting(name: str, default: int, *, maximum: int | None = None) -> int:
     raw_value = db.get_setting(name) or os.getenv(name)
     if raw_value is None:
-        return default
-    try:
-        return max(1, int(raw_value))
-    except ValueError:
-        return default
+        value = default
+    else:
+        try:
+            value = max(1, int(raw_value))
+        except ValueError:
+            value = default
+    if maximum is not None and maximum >= 1:
+        value = min(value, maximum)
+    return value
 
 
 def nonnegative_int_setting(name: str, default: int) -> int:
@@ -912,11 +936,19 @@ def nonnegative_int_setting(name: str, default: int) -> int:
 
 
 def queue_global_limit() -> int:
-    return positive_int_setting("MAX_CONCURRENT_DOWNLOADS", 3)
+    return positive_int_setting(
+        "MAX_CONCURRENT_DOWNLOADS",
+        3,
+        maximum=positive_int_env("MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT", MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT),
+    )
 
 
 def queue_per_provider_limit() -> int:
-    return positive_int_setting("QUEUE_PER_PROVIDER_LIMIT", 1)
+    return positive_int_setting(
+        "QUEUE_PER_PROVIDER_LIMIT",
+        1,
+        maximum=positive_int_env("QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT", QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT_DEFAULT),
+    )
 
 
 def queue_provider_cooldown_range_seconds() -> tuple[int, int]:
@@ -1089,10 +1121,9 @@ def retry_after_seconds(response: requests.Response) -> float | None:
 def retry_delay(response: requests.Response, attempt: int) -> float:
     header_delay = retry_after_seconds(response)
     if header_delay is not None:
-        delay = header_delay
-    else:
-        base = float_env("DOWNLOAD_RETRY_BACKOFF_SECONDS", 5.0)
-        delay = base * (2 ** attempt) + random.uniform(0, min(base, 3.0))
+        return header_delay
+    base = float_env("DOWNLOAD_RETRY_BACKOFF_SECONDS", 5.0)
+    delay = base * (2 ** attempt) + random.uniform(0, min(base, 3.0))
     return min(delay, float_env("DOWNLOAD_MAX_RETRY_SLEEP_SECONDS", 300.0))
 
 
@@ -1104,7 +1135,11 @@ def request_with_safety(
     job_id: int | None = None,
     **kwargs: Any,
 ) -> requests.Response:
-    max_retries = positive_int_env("DOWNLOAD_HTTP_MAX_RETRIES", 3)
+    max_retries = positive_int_env(
+        "DOWNLOAD_HTTP_MAX_RETRIES",
+        3,
+        maximum=positive_int_env("DOWNLOAD_HTTP_MAX_RETRIES_HARD_LIMIT", DOWNLOAD_HTTP_MAX_RETRIES_HARD_LIMIT_DEFAULT),
+    )
     retry_statuses = {429, 500, 502, 503, 504}
     response: requests.Response | None = None
     for attempt in range(max_retries + 1):
@@ -1311,7 +1346,7 @@ def run_huggingface_download_process(job_id: int, spec: dict[str, Any], target: 
             except OSError:
                 pass
 
-        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_queue = process_output_queue()
         output_done = process.stdout is None
         if process.stdout:
             reader = threading.Thread(
@@ -1999,6 +2034,10 @@ def civitai_resource_retry_delay_seconds() -> int:
     )
 
 
+def civitai_image_max_resource_jobs() -> int:
+    return nonnegative_int_env("CIVITAI_IMAGE_MAX_RESOURCE_JOBS", CIVITAI_IMAGE_MAX_RESOURCE_JOBS_DEFAULT)
+
+
 def civitai_resource_download_entry(
     resource: dict[str, Any],
     version_id: str,
@@ -2232,6 +2271,8 @@ def create_civitai_image_resource_jobs(
 ) -> list[dict[str, Any]]:
     downloads: list[dict[str, Any]] = []
     seen: set[str] = set()
+    queued_count = 0
+    max_resource_jobs = civitai_image_max_resource_jobs()
     for resource in resources:
         version_id = id_value(resource.get("model_version_id"))
         if not version_id or version_id in seen:
@@ -2260,6 +2301,21 @@ def create_civitai_image_resource_jobs(
             )
             continue
 
+        if queued_count >= max_resource_jobs:
+            entry = civitai_resource_download_entry(
+                resource,
+                version_id,
+                status="skipped_limit",
+                reason=f"resource queue limit reached ({max_resource_jobs})",
+            )
+            downloads.append(entry)
+            db.append_log(
+                job_id,
+                f"civitai.image.resource.skip modelVersionId={version_id} status=skipped_limit "
+                f"reason=resource queue limit reached ({max_resource_jobs})",
+            )
+            continue
+
         model_id = id_value(resource.get("model_id"))
         if model_id:
             raw_input = f"https://civitai.com/models/{quote(model_id, safe='')}?modelVersionId={quote(version_id, safe='')}"
@@ -2274,6 +2330,7 @@ def create_civitai_image_resource_jobs(
         )
         child_job_id = db.create_job(child)
         enqueue_job(child_job_id)
+        queued_count += 1
         entry = civitai_resource_download_entry(
             resource,
             version_id,
@@ -2648,10 +2705,11 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
     )
     db.append_log(job_id, f"Hitomi listing discovery: {redact_sensitive_text(source_url)}")
 
-    gallery_urls = discover_hitomi_listing_gallery_urls(job_id, source_url)
+    gallery_urls = unique_hitomi_gallery_urls(discover_hitomi_listing_gallery_urls(job_id, source_url))
     entries = create_hitomi_listing_gallery_jobs(job_id, parsed, gallery_urls)
     queued = [entry for entry in entries if entry["status"] == "queued"]
     skipped = [entry for entry in entries if entry["status"] != "queued"]
+    capped_count = max(0, len(gallery_urls) - len(entries))
     payload = {
         **metadata_stamp(),
         "source": "hitomi",
@@ -2659,9 +2717,12 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
         "source_url": source_url,
         "raw_input": parsed.raw_input,
         "gallery_dl_version": gallery_dl_version(),
-        "discovered_count": len({entry["gallery_id"] for entry in entries}),
+        "discovered_count": len(gallery_urls),
+        "processed_count": len(entries),
         "queued_count": len(queued),
         "skipped_count": len(skipped),
+        "capped_count": capped_count,
+        "queue_limit": hitomi_listing_max_galleries(),
         "galleries": entries,
     }
     write_metadata(target, "_hitomi_listing_metadata.json", payload)
@@ -2670,17 +2731,23 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
         for key, value in payload.items()
         if key != "galleries"
     }
+    precision = f"{len(queued)} queued, {len(skipped)} skipped"
+    if capped_count:
+        precision = f"{precision}, {capped_count} capped"
     db.update_job(
         job_id,
-        filename=f"{len(queued)} queued / {len(entries)} discovered",
+        filename=f"{len(queued)} queued / {len(gallery_urls)} discovered",
         progress_bytes=len(queued),
-        total_bytes=len(entries),
-        precision=f"{len(queued)} queued, {len(skipped)} skipped",
+        total_bytes=len(gallery_urls),
+        precision=precision,
         metadata_json=json.dumps(redact_metadata(metadata_summary), ensure_ascii=False),
     )
     db.append_log(
         job_id,
-        f"queued Hitomi listing galleries: queued={len(queued)} skipped={len(skipped)} discovered={len(entries)}",
+        (
+            "queued Hitomi listing galleries: "
+            f"queued={len(queued)} skipped={len(skipped)} capped={capped_count} discovered={len(gallery_urls)}"
+        ),
     )
 
 
@@ -2747,7 +2814,7 @@ def run_gallery_dl_get_urls_process(job_id: int, command: list[str]) -> list[str
             errors="replace",
             **gallery_dl_process_kwargs(),
         )
-        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_queue = process_output_queue()
         output_done = process.stdout is None
         if process.stdout:
             reader = threading.Thread(
@@ -2829,11 +2896,15 @@ def create_hitomi_listing_gallery_jobs(
 ) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
+    max_galleries = hitomi_listing_max_galleries()
     for gallery_url in gallery_urls:
         gallery_id = hitomi_gallery_id_from_url(gallery_url)
         if not gallery_id or gallery_id in seen:
             continue
         seen.add(gallery_id)
+        if len(entries) >= max_galleries:
+            db.append_log(job_id, f"hitomi.listing.limit reached max_galleries={max_galleries}")
+            break
         existing = hitomi_existing_gallery_state(gallery_id)
         if existing:
             entry = {
@@ -2868,6 +2939,10 @@ def create_hitomi_listing_gallery_jobs(
         )
         db.append_log(job_id, f"hitomi.listing.queue gallery_id={gallery_id} child_job_id={child_job_id}")
     return entries
+
+
+def hitomi_listing_max_galleries() -> int:
+    return nonnegative_int_env("HITOMI_LISTING_MAX_GALLERIES", HITOMI_LISTING_MAX_GALLERIES_DEFAULT)
 
 
 def hitomi_existing_gallery_state(gallery_id: str) -> dict[str, Any] | None:
@@ -3727,7 +3802,7 @@ def run_external_download_process(job_id: int, command: list[str], target: Path,
             errors="replace",
             **gallery_dl_process_kwargs(),
         )
-        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        output_queue = process_output_queue()
         output_done = process.stdout is None
         if process.stdout:
             reader = threading.Thread(
@@ -3771,6 +3846,12 @@ def run_external_download_process(job_id: int, command: list[str], target: Path,
         if process and process.poll() is None:
             stop_controlled_process(job_id, process, label)
         raise
+
+
+def process_output_queue() -> queue.Queue[tuple[str, str | None]]:
+    return queue.Queue(
+        maxsize=positive_int_env("PROCESS_OUTPUT_QUEUE_MAX_LINES", PROCESS_OUTPUT_QUEUE_MAX_LINES_DEFAULT)
+    )
 
 
 def read_process_output(pipe: Any, output_queue: queue.Queue[tuple[str, str | None]]) -> None:

@@ -198,3 +198,48 @@ def test_hitomi_listing_download_skips_existing_gallery_jobs() -> None:
         payload = json.loads((Path(str(fake_db.job["target_dir"])) / "_hitomi_listing_metadata.json").read_text())
         statuses = {entry["gallery_id"]: entry["status"] for entry in payload["galleries"]}
         assert statuses == {"111": "already_queued", "222": "present", "333": "queued"}
+
+
+def test_hitomi_listing_download_caps_child_jobs() -> None:
+    url = "https://hitomi.la/artist/sample-artist-english-1.html"
+    parsed = ParsedDownload(
+        source="hitomi",
+        raw_input=url,
+        hitomi_listing_url=url,
+        hitomi_listing_kind="artist",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "data"
+        fake_db = FakeDb({"status": "running", "source": "hitomi"})
+
+        with (
+            mock.patch.dict(downloader.os.environ, {"HITOMI_LISTING_MAX_GALLERIES": "2"}),
+            mock.patch.object(downloader, "DATA_ROOT", root),
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader, "gallery_dl_available", return_value=True),
+            mock.patch.object(downloader, "gallery_dl_version", return_value="1.32.5"),
+            mock.patch.object(
+                downloader,
+                "discover_hitomi_listing_gallery_urls",
+                return_value=[
+                    "https://hitomi.la/galleries/111.html",
+                    "https://hitomi.la/galleries/222.html",
+                    "https://hitomi.la/galleries/333.html",
+                ],
+            ),
+            mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+        ):
+            downloader.download_hitomi(79, parsed)
+
+        assert len(fake_db.created_jobs) == 2
+        assert [child.hitomi_gallery_id for child in fake_db.created_jobs] == ["111", "222"]
+        assert [call.args[0] for call in enqueue_job.call_args_list] == [501, 502]
+        assert fake_db.job["filename"] == "2 queued / 3 discovered"
+        assert fake_db.job["precision"] == "2 queued, 0 skipped, 1 capped"
+        payload = json.loads((Path(str(fake_db.job["target_dir"])) / "_hitomi_listing_metadata.json").read_text())
+        assert payload["discovered_count"] == 3
+        assert payload["processed_count"] == 2
+        assert payload["queued_count"] == 2
+        assert payload["capped_count"] == 1
+        assert payload["queue_limit"] == 2

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -28,6 +30,7 @@ def app_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("DATA_ROOT", str(data_root))
     monkeypatch.setenv("DB_PATH", str(config_root / "jobs.sqlite3"))
     monkeypatch.setenv("DOWNLOAD_ARCHIVE_DIR", str(archive_root))
+    monkeypatch.setenv("MEDIA_CACHE_DIR", str(config_root / "media-cache"))
     monkeypatch.setenv("APP_PASSWORD", "test-password-that-is-long")
 
     import app.utils as utils
@@ -173,6 +176,99 @@ def test_zip_archive_failure_removes_temp_file(
         main.create_zip_archive(source)
 
     assert list((config_root / "downloads").glob("*.zip")) == []
+
+
+def test_zip_archive_excludes_partial_files(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "folder"
+    source.mkdir()
+    (source / "file.txt").write_text("content", encoding="utf-8")
+    (source / "file.txt.job-1-deadbeef.part").write_text("partial", encoding="utf-8")
+
+    archive_path = main.create_zip_archive(source)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["file.txt"]
+
+
+def test_startup_cleanup_removes_stale_archives_and_media_cache(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, _data_root, config_root = app_modules
+    archive_root = config_root / "downloads"
+    media_cache = config_root / "media-cache"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    media_cache.mkdir(parents=True, exist_ok=True)
+
+    old_zip = archive_root / "old.zip"
+    fresh_zip = archive_root / "fresh.zip"
+    old_media = media_cache / "old.play.mp4"
+    fresh_media = media_cache / "fresh.play.mp4"
+    temp_media = media_cache / ".stale.tmp.mp4"
+    for path in (old_zip, fresh_zip, old_media, fresh_media, temp_media):
+        path.write_bytes(b"x")
+    os.utime(old_zip, (100, 100))
+    os.utime(old_media, (100, 100))
+    os.utime(temp_media, (100, 100))
+    os.utime(fresh_zip, (990, 990))
+    os.utime(fresh_media, (990, 990))
+    monkeypatch.setenv("DOWNLOAD_ARCHIVE_TTL_SECONDS", "500")
+    monkeypatch.setenv("MEDIA_CACHE_TTL_SECONDS", "500")
+
+    assert main.cleanup_stale_download_archives(now=1000) == 1
+    assert main.cleanup_stale_media_cache(now=1000) == 2
+
+    assert not old_zip.exists()
+    assert fresh_zip.exists()
+    assert not old_media.exists()
+    assert fresh_media.exists()
+    assert not temp_media.exists()
+
+
+def test_job_list_payload_omits_log_but_detail_and_log_endpoint_keep_it(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    monkeypatch.setenv("JOB_LOG_MAX_CHARS", "120")
+    parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
+    job_id = db.create_job(parsed)
+
+    db.append_log(job_id, "x" * 240)
+
+    job = db.get_job(job_id)
+    assert job is not None
+    assert len(job["log"]) <= 120
+    assert "x" * 20 in job["log"]
+
+    summary = main.decorate_jobs(db.list_jobs())[0]
+    assert "log" not in summary
+    assert "metadata_json" not in summary
+
+    detail_payload = json.loads(main.api_job(job_id, "_").body.decode("utf-8"))
+    assert "log" in detail_payload
+    assert "metadata_json" in detail_payload
+    assert main.job_log(job_id, "_").body.decode("utf-8") == detail_payload["log"]
+
+
+def test_clear_history_removes_failed_partial_files_before_deleting_rows(app_modules: tuple) -> None:
+    _utils, db, downloader, main, data_root, _config_root = app_modules
+    target = data_root / "generic"
+    target.mkdir()
+    final_path = target / "model.bin"
+    parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="failed", target_dir=str(target))
+    part_path = downloader.partial_download_path(final_path, job_id, "https://example.com/model.bin")
+    part_path.write_bytes(b"partial")
+    downloader.register_job_partial_path(job_id, part_path, final_path, "https://example.com/model.bin")
+
+    payload = json.loads(main.api_clear_jobs("_").body.decode("utf-8"))
+
+    assert payload["deleted"] == 1
+    assert not part_path.exists()
+    assert db.get_job(job_id) is None
 
 
 def test_partial_download_path_is_job_and_url_scoped(app_modules: tuple) -> None:
