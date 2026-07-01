@@ -15,6 +15,8 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 외부 다운로드는 provider별 제한과 cooldown이 있는 다운로드 큐에서 처리하고, ZIP 생성, 비디오 transcode, poster 생성처럼 NAS CPU/I/O를 많이 쓰는 작업은 별도 internal job 큐에서 처리합니다. 라이브러리는 DB-backed 증분 index를 우선 사용하고, 필요할 때 파일시스템 scan으로 보완합니다.
 
+상단 스토리지 표시는 기본적으로 `/data`가 올라간 볼륨 사용량을 보여주고, `계산` 버튼을 누르면 HugCivi archive가 `/data` 안에서 차지하는 용량을 background scan 후 캐시해서 보여줍니다.
+
 상세 문서:
 
 - [아키텍처](docs/architecture.md)
@@ -511,6 +513,8 @@ DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300
 DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1
 DOWNLOAD_ARCHIVE_TTL_SECONDS=86400
 DOWNLOAD_ARCHIVE_MAX_FILES=50000
+STORAGE_USAGE_SCAN_BATCH_SIZE=1000
+STORAGE_USAGE_SCAN_SLEEP_SECONDS=0.02
 MEDIA_TRANSCODE_MAX_CONCURRENT=1
 MEDIA_TRANSCODE_TIMEOUT_SECONDS=1800
 MEDIA_CACHE_TTL_SECONDS=2592000

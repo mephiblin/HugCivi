@@ -144,6 +144,21 @@ Operational notes:
 - App-driven rename/move/delete updates the index and path-linked state.
 - NAS-side manual file changes are picked up by later indexer passes or live fallback.
 
+## Storage Readout
+
+The top storage readout always includes `/data` volume usage from the filesystem that backs the `/data` mount. This is volume usage, not the exact HugCivi folder size.
+
+The `계산` button starts a manual background scan of `/data` and caches the HugCivi archive usage in SQLite. The UI reads the cached value; it does not recursively scan `/data` on every refresh.
+
+NAS-safe scan controls:
+
+```text
+STORAGE_USAGE_SCAN_BATCH_SIZE=1000
+STORAGE_USAGE_SCAN_SLEEP_SECONDS=0.02
+```
+
+Lower the batch size or raise the sleep value if the NAS feels busy during a manual calculation.
+
 ## Database Maintenance
 
 Maintenance APIs are Basic Auth protected:

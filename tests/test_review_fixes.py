@@ -793,6 +793,56 @@ def test_storage_status_reports_data_volume_usage(
     assert response_payload["used_bytes"] == 375
 
 
+def test_storage_status_includes_cached_hugcivi_usage(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    db.set_library_scan_state(
+        main.STORAGE_USAGE_STATE_KEY,
+        json.dumps(
+            {
+                "status": "done",
+                "path": "/data",
+                "used_bytes": 1536,
+                "file_count": 2,
+                "dir_count": 1,
+                "skipped_count": 0,
+                "scanned_entries": 3,
+                "scanned_at": "2026-07-02T00:00:00+00:00",
+            }
+        ),
+    )
+
+    payload = main.storage_status()
+
+    assert payload["archive_usage"]["status"] == "done"
+    assert payload["archive_usage"]["used_bytes"] == 1536
+    assert payload["archive_usage"]["used_human"] == "1.5 KB"
+    assert payload["archive_usage"]["file_count"] == 2
+
+
+def test_storage_usage_scan_counts_data_files_without_following_symlinks(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, config_root = app_modules
+    monkeypatch.setenv("STORAGE_USAGE_SCAN_BATCH_SIZE", "1")
+    monkeypatch.setenv("STORAGE_USAGE_SCAN_SLEEP_SECONDS", "0")
+    (data_root / "a.bin").write_bytes(b"abc")
+    nested = data_root / "nested"
+    nested.mkdir()
+    (nested / "b.bin").write_bytes(b"de")
+    (data_root / "escape").symlink_to(config_root, target_is_directory=True)
+
+    progress: list[dict[str, int]] = []
+    result = main.scan_data_root_usage(progress_callback=progress.append)
+
+    assert result["used_bytes"] == 5
+    assert result["file_count"] == 2
+    assert result["dir_count"] == 1
+    assert result["skipped_count"] == 1
+    assert result["scanned_entries"] == 4
+    assert progress
+
+
 def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "generic"

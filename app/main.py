@@ -15,7 +15,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, unquote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
@@ -137,6 +137,9 @@ DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK = threading.Lock()
 LIBRARY_INDEXER_THREAD: threading.Thread | None = None
 LIBRARY_INDEXER_STOP = threading.Event()
 LIBRARY_INDEXER_LOCK = threading.Lock()
+STORAGE_USAGE_STATE_KEY = "storage.data_usage"
+STORAGE_USAGE_THREAD: threading.Thread | None = None
+STORAGE_USAGE_LOCK = threading.Lock()
 MODEL_EXTENSIONS = {
     ".bin",
     ".ckpt",
@@ -199,6 +202,7 @@ def storage_status() -> dict[str, Any]:
         return {
             "path": "/data",
             "error": str(exc),
+            "archive_usage": storage_usage_state(),
         }
     percent = round((usage.used / usage.total) * 100, 1) if usage.total else None
     return {
@@ -210,6 +214,182 @@ def storage_status() -> dict[str, Any]:
         "free_human": human_bytes(usage.free),
         "total_human": human_bytes(usage.total),
         "percent": percent,
+        "archive_usage": storage_usage_state(),
+    }
+
+
+def storage_usage_state() -> dict[str, Any]:
+    raw_value = db.get_library_scan_state(STORAGE_USAGE_STATE_KEY, "")
+    if not raw_value:
+        state: dict[str, Any] = {"status": "not_calculated"}
+    else:
+        try:
+            parsed = json.loads(raw_value)
+            state = parsed if isinstance(parsed, dict) else {"status": "not_calculated"}
+        except json.JSONDecodeError:
+            state = {"status": "not_calculated"}
+    status = str(state.get("status") or "not_calculated")
+    if status == "scanning" and not storage_usage_scan_is_running():
+        state["status"] = "interrupted"
+        state.setdefault("error", "이전 계산이 완료되기 전에 중단되었습니다.")
+    used_bytes = state.get("used_bytes")
+    if isinstance(used_bytes, int):
+        state["used_human"] = human_bytes(used_bytes)
+    return state
+
+
+def set_storage_usage_state(state: dict[str, Any]) -> None:
+    db.set_library_scan_state(STORAGE_USAGE_STATE_KEY, json.dumps(state, ensure_ascii=False))
+
+
+def storage_usage_scan_is_running() -> bool:
+    with STORAGE_USAGE_LOCK:
+        return STORAGE_USAGE_THREAD is not None and STORAGE_USAGE_THREAD.is_alive()
+
+
+def start_storage_usage_scan() -> dict[str, Any]:
+    global STORAGE_USAGE_THREAD
+    with STORAGE_USAGE_LOCK:
+        if STORAGE_USAGE_THREAD is not None and STORAGE_USAGE_THREAD.is_alive():
+            return {
+                **storage_usage_state_without_thread_check(),
+                "status": "scanning",
+            }
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        set_storage_usage_state(
+            {
+                "status": "scanning",
+                "path": "/data",
+                "used_bytes": 0,
+                "file_count": 0,
+                "dir_count": 0,
+                "skipped_count": 0,
+                "scanned_entries": 0,
+                "started_at": now,
+                "updated_at": now,
+            }
+        )
+        thread = threading.Thread(target=storage_usage_scan_worker, name="storage-usage-scan", daemon=True)
+        STORAGE_USAGE_THREAD = thread
+        thread.start()
+    return storage_usage_state()
+
+
+def storage_usage_state_without_thread_check() -> dict[str, Any]:
+    raw_value = db.get_library_scan_state(STORAGE_USAGE_STATE_KEY, "")
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def storage_usage_scan_worker() -> None:
+    global STORAGE_USAGE_THREAD
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    def update_progress(progress: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        set_storage_usage_state(
+            {
+                "status": "scanning",
+                "path": "/data",
+                "started_at": started_at,
+                "updated_at": now,
+                **progress,
+            }
+        )
+
+    try:
+        result = scan_data_root_usage(progress_callback=update_progress)
+    except Exception as exc:  # noqa: BLE001 - background scan must report failure instead of killing the app
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        set_storage_usage_state(
+            {
+                "status": "failed",
+                "path": "/data",
+                "started_at": started_at,
+                "finished_at": now,
+                "updated_at": now,
+                "error": str(exc),
+            }
+        )
+    else:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        set_storage_usage_state(
+            {
+                "status": "done",
+                "path": "/data",
+                "started_at": started_at,
+                "finished_at": now,
+                "scanned_at": now,
+                "updated_at": now,
+                **result,
+            }
+        )
+    finally:
+        with STORAGE_USAGE_LOCK:
+            if STORAGE_USAGE_THREAD is threading.current_thread():
+                STORAGE_USAGE_THREAD = None
+
+
+def scan_data_root_usage(progress_callback: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+    if not DATA_ROOT.exists() or not DATA_ROOT.is_dir():
+        raise FileNotFoundError(f"{DATA_ROOT} does not exist")
+    batch_size = max(1, nonnegative_int_env("STORAGE_USAGE_SCAN_BATCH_SIZE", 1000))
+    sleep_seconds = storage_usage_scan_sleep_seconds()
+    stack = [DATA_ROOT]
+    used_bytes = 0
+    file_count = 0
+    dir_count = 0
+    skipped_count = 0
+    scanned_entries = 0
+    last_progress_at = 0.0
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    scanned_entries += 1
+                    try:
+                        if entry.is_symlink():
+                            skipped_count += 1
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            dir_count += 1
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            file_count += 1
+                            used_bytes += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        skipped_count += 1
+                    if scanned_entries % batch_size == 0:
+                        now = time.monotonic()
+                        if progress_callback is not None and now - last_progress_at >= 1.0:
+                            progress_callback(
+                                {
+                                    "used_bytes": used_bytes,
+                                    "file_count": file_count,
+                                    "dir_count": dir_count,
+                                    "skipped_count": skipped_count,
+                                    "scanned_entries": scanned_entries,
+                                }
+                            )
+                            last_progress_at = now
+                        if sleep_seconds > 0:
+                            time.sleep(sleep_seconds)
+        except OSError:
+            skipped_count += 1
+
+    return {
+        "used_bytes": used_bytes,
+        "file_count": file_count,
+        "dir_count": dir_count,
+        "skipped_count": skipped_count,
+        "scanned_entries": scanned_entries,
     }
 
 
@@ -457,6 +637,12 @@ def api_jobs(
 @app.get("/api/storage")
 def api_storage(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(storage_status())
+
+
+@app.post("/api/storage/archive-usage")
+def api_start_storage_archive_usage(_: str = Depends(require_auth)) -> JSONResponse:
+    start_storage_usage_scan()
+    return JSONResponse({"ok": True, "storage": storage_status()})
 
 
 @app.post("/api/maintenance/db/wal")
@@ -2454,6 +2640,16 @@ def nonnegative_int_env(name: str, default: int) -> int:
         return max(0, int(raw_value))
     except ValueError:
         return default
+
+
+def storage_usage_scan_sleep_seconds() -> float:
+    raw_value = os.getenv("STORAGE_USAGE_SCAN_SLEEP_SECONDS")
+    if raw_value is None:
+        return 0.02
+    try:
+        return max(0.0, float(raw_value))
+    except ValueError:
+        return 0.02
 
 
 def bool_env(name: str, *, default: bool = False) -> bool:

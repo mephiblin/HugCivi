@@ -80,10 +80,13 @@
     <main class="content">
       <div class="top-corner-actions">
         <div class="storage-readout" id="storage-readout" title="저장소 용량 확인 중" aria-live="polite">
-          <span class="storage-label">DATA</span>
+          <span class="storage-label" id="storage-label">DATA</span>
           <strong id="storage-used">-</strong>
           <span id="storage-total">/ -</span>
         </div>
+        <button type="button" class="storage-calc-button" id="storage-calc-button" title="HugCivi 사용량 계산" aria-label="HugCivi 사용량 계산">
+          계산
+        </button>
         <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
           <svg viewBox="0 0 24 24" focusable="false">
             <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
@@ -123,7 +126,7 @@
         </div>
       </section>
 
-      <section class="view active mobile-panel" id="home-view" data-mobile-panel="jobs" aria-label="작업 목록">
+      <section class="view active mobile-panel" id="home-view" data-mobile-panel="download" aria-label="작업 목록">
         <section class="jobs-section">
           <div class="jobs-heading">
             <h2>작업 목록</h2>
@@ -204,6 +207,7 @@
               </tbody>
             </table>
           </div>
+          <div class="mobile-jobs-list" id="mobile-jobs-list" aria-live="polite"></div>
         </section>
       </section>
 
@@ -229,8 +233,7 @@
   </div>
 
   <nav class="mobile-tabbar" aria-label="모바일 탭">
-    <button type="button" class="active" data-mobile-tab="download">입력</button>
-    <button type="button" data-mobile-tab="jobs">작업</button>
+    <button type="button" class="active" data-mobile-tab="download">입력/작업</button>
     <button type="button" data-mobile-tab="library">보관함</button>
     <button type="button" data-mobile-tab="folders">폴더</button>
     <button type="button" data-mobile-action="settings">설정</button>
@@ -677,8 +680,10 @@
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const refreshButton = document.getElementById('refresh-button');
     const storageReadout = document.getElementById('storage-readout');
+    const storageLabel = document.getElementById('storage-label');
     const storageUsed = document.getElementById('storage-used');
     const storageTotal = document.getElementById('storage-total');
+    const storageCalcButton = document.getElementById('storage-calc-button');
     const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
     const bulkAddButton = document.getElementById('bulk-add-button');
     const bulkAddModal = document.getElementById('bulk-add-modal');
@@ -708,6 +713,7 @@
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
     const clearJobsButton = document.getElementById('clear-jobs-button');
+    const mobileJobsList = document.getElementById('mobile-jobs-list');
     const propertiesModal = document.getElementById('properties-modal');
     const propertiesClose = document.getElementById('properties-close');
     const propertiesTitle = document.getElementById('properties-title');
@@ -744,6 +750,7 @@
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
+    let storageUsagePollTimer = null;
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
@@ -856,6 +863,7 @@
     });
 
     refreshButton.addEventListener('click', refreshData);
+    storageCalcButton.addEventListener('click', calculateStorageUsage);
     thumbnailBlurToggle.addEventListener('click', () => {
       applyThumbnailBlurPreference(!thumbnailBlurEnabled, true);
     });
@@ -884,6 +892,12 @@
     hitomiListingQueueAll.addEventListener('click', () => queueHitomiListing(true));
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
+      const button = event.target.closest('[data-job-action]');
+      if (!button) return;
+      event.preventDefault();
+      handleJobAction(Number(button.dataset.jobId), button.dataset.jobAction || '');
+    });
+    mobileJobsList.addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
       if (!button) return;
       event.preventDefault();
@@ -1461,20 +1475,94 @@
     }
 
     function renderStorage(storage) {
-      if (!storageReadout || !storageUsed || !storageTotal) return;
+      if (!storageReadout || !storageLabel || !storageUsed || !storageTotal) return;
       if (!storage || storage.error) {
         storageReadout.classList.add('storage-error');
+        storageLabel.textContent = 'DATA';
         storageUsed.textContent = '용량 확인 실패';
         storageTotal.textContent = '';
         storageReadout.title = storage?.error || '저장소 용량을 확인하지 못했습니다.';
+        setStorageCalcButtonState(storage?.archive_usage?.status || 'not_calculated');
         return;
       }
       storageReadout.classList.remove('storage-error');
-      storageUsed.textContent = storage.used_human || '-';
-      storageTotal.textContent = storage.total_human ? `/ ${storage.total_human}` : '';
+      const archiveUsage = storage.archive_usage || {};
+      const archiveStatus = archiveUsage.status || 'not_calculated';
       const percent = storage.percent !== null && storage.percent !== undefined ? `${storage.percent}%` : '-';
       const free = storage.free_human || '-';
-      storageReadout.title = `${storage.path || '/data'} 사용 ${storage.used_human || '-'} / ${storage.total_human || '-'} · 여유 ${free} · ${percent}`;
+      const volumeTitle = `${storage.path || '/data'} 볼륨 사용 ${storage.used_human || '-'} / ${storage.total_human || '-'} · 여유 ${free} · ${percent}`;
+      setStorageCalcButtonState(archiveStatus);
+      if (archiveStatus === 'done' && archiveUsage.used_human) {
+        storageLabel.textContent = 'HUGCIVI';
+        storageUsed.textContent = archiveUsage.used_human;
+        storageTotal.textContent = free ? `· 여유 ${free}` : '';
+        const scannedAt = archiveUsage.scanned_at ? ` · 계산 ${formatDate(archiveUsage.scanned_at)}` : '';
+        storageReadout.title = `HugCivi archive ${archiveUsage.used_human} · 파일 ${formatCount(archiveUsage.file_count)}개 · 폴더 ${formatCount(archiveUsage.dir_count)}개${scannedAt}\n${volumeTitle}`;
+      } else if (archiveStatus === 'scanning') {
+        storageLabel.textContent = 'HUGCIVI';
+        storageUsed.textContent = '계산 중';
+        storageTotal.textContent = archiveUsage.used_human ? `· ${archiveUsage.used_human}` : '';
+        storageReadout.title = `HugCivi archive 사용량 계산 중 · 스캔 ${formatCount(archiveUsage.scanned_entries)}개 항목\n${volumeTitle}`;
+      } else {
+        storageLabel.textContent = 'DATA';
+        storageUsed.textContent = storage.used_human || '-';
+        storageTotal.textContent = storage.total_human ? `/ ${storage.total_human}` : '';
+        const archiveNote = archiveStatus === 'failed' || archiveStatus === 'interrupted'
+          ? `\nHugCivi 계산 상태: ${archiveUsage.error || archiveStatus}`
+          : '\nHugCivi 사용량은 계산 버튼으로 갱신합니다.';
+        storageReadout.title = `${volumeTitle}${archiveNote}`;
+      }
+      if (archiveStatus === 'scanning') {
+        startStorageUsagePolling();
+      } else {
+        stopStorageUsagePolling();
+      }
+    }
+
+    function setStorageCalcButtonState(status) {
+      if (!storageCalcButton) return;
+      const scanning = status === 'scanning';
+      storageCalcButton.disabled = scanning;
+      storageCalcButton.textContent = scanning ? '계산중' : '계산';
+      storageCalcButton.title = scanning ? 'HugCivi 사용량 계산 중' : 'HugCivi 사용량 계산';
+    }
+
+    async function calculateStorageUsage(event) {
+      event?.stopPropagation();
+      if (!storageCalcButton || storageCalcButton.disabled) return;
+      setStorageCalcButtonState('scanning');
+      try {
+        const response = await fetch('/api/storage/archive-usage', {method: 'POST'});
+        if (!response.ok) {
+          window.alert('HugCivi 사용량 계산을 시작하지 못했습니다.');
+          setStorageCalcButtonState(currentStorage?.archive_usage?.status || 'not_calculated');
+          return;
+        }
+        const data = await response.json();
+        currentStorage = data.storage || data;
+        renderStorage(currentStorage);
+        startStorageUsagePolling();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+        setStorageCalcButtonState(currentStorage?.archive_usage?.status || 'not_calculated');
+      }
+    }
+
+    function startStorageUsagePolling() {
+      if (storageUsagePollTimer !== null) return;
+      storageUsagePollTimer = window.setInterval(refreshStorage, 2000);
+    }
+
+    function stopStorageUsagePolling() {
+      if (storageUsagePollTimer === null) return;
+      window.clearInterval(storageUsagePollTimer);
+      storageUsagePollTimer = null;
+    }
+
+    function formatCount(value) {
+      const number = Number(value || 0);
+      if (!Number.isFinite(number)) return '0';
+      return number.toLocaleString();
     }
 
     async function clearJobHistory() {
@@ -1504,6 +1592,7 @@
       const body = document.getElementById('jobs-body');
       if (!jobs.length) {
         body.innerHTML = '<tr><td colspan="9" class="empty-row">아직 작업이 없습니다.</td></tr>';
+        renderMobileJobs(jobs);
         return;
       }
       body.innerHTML = jobs.map(job => {
@@ -1523,6 +1612,50 @@
           <td data-label="제어" class="job-actions-cell">${renderJobActions(job)}</td>
         </tr>`;
       }).join('');
+      renderMobileJobs(jobs);
+    }
+
+    function renderMobileJobs(jobs) {
+      if (!mobileJobsList) return;
+      if (!jobs.length) {
+        mobileJobsList.innerHTML = '<div class="mobile-jobs-empty">아직 작업이 없습니다.</div>';
+        return;
+      }
+      mobileJobsList.innerHTML = jobs.map(renderMobileJobCard).join('');
+    }
+
+    function renderMobileJobCard(job) {
+      const title = job.model_title || job.filename || job.input_text || '-';
+      const detail = job.filename || job.input_text || '';
+      const thumb = job.thumbnail_url
+        ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
+        : `<span>${escapeHtml(shortSource(job.source || 'URL'))}</span>`;
+      return `<article class="mobile-job-card">
+        <div class="mobile-job-main">
+          <div class="mobile-job-thumb ${job.thumbnail_url ? '' : 'no-thumb'}">${thumb}</div>
+          <div class="mobile-job-copy">
+            <div class="mobile-job-topline">
+              <span class="status ${escapeHtml(job.status || '')}">${escapeHtml(job.status || '-')}</span>
+              <small>#${escapeHtml(job.id)} · ${escapeHtml(job.source || '-')}</small>
+            </div>
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(detail)}</span>
+          </div>
+        </div>
+        <div class="mobile-job-progress">${renderJobProgress(job)}</div>
+        <div class="mobile-job-actions">
+          ${renderJobActions(job)}
+          <a href="/jobs/${escapeHtml(job.id)}/log" target="_blank" rel="noopener">로그</a>
+        </div>
+      </article>`;
+    }
+
+    function renderJobProgress(job) {
+      const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
+      if (pct !== null && Number.isFinite(pct)) {
+        return `<div class="progress-readout"><div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div><span>${pct}% · ${escapeHtml(job.progress_human)} / ${escapeHtml(job.total_human)}</span></div>`;
+      }
+      return `<div class="progress-readout"><span>${escapeHtml(job.progress_human || '')}</span></div>`;
     }
 
     function renderJobActions(job) {

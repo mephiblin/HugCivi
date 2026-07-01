@@ -875,6 +875,31 @@ a:hover {
   color: #991b1b;
 }
 
+.storage-calc-button {
+  height: 32px;
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.storage-calc-button:hover {
+  border-color: #b8c2d2;
+  background: #ffffff;
+}
+
+.storage-calc-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .refresh-corner,
 .thumbnail-blur-toggle {
   display: inline-flex;
@@ -1117,6 +1142,10 @@ a:hover {
 
 .table-shell {
   overflow: auto;
+}
+
+.mobile-jobs-list {
+  display: none;
 }
 
 .jobs-table {
@@ -3171,7 +3200,7 @@ a:hover {
     left: 0;
     z-index: 90;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 2px;
     border-top: 1px solid #dce3ee;
     padding: 6px 7px calc(6px + env(safe-area-inset-bottom));
@@ -3214,15 +3243,17 @@ a:hover {
 
   .sidebar {
     width: auto;
-    margin: 58px 12px 88px;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: #ffffff;
+    min-height: calc(100dvh - 88px);
+    margin: 0 0 88px;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    padding-top: 58px;
+    background: transparent;
   }
 
   .brand-button {
-    padding: 10px 12px 8px;
+    padding: 10px 16px 8px;
   }
 
   .brand-title {
@@ -3236,16 +3267,49 @@ a:hover {
   }
 
   .folder-section {
-    padding: 0 10px 10px;
+    min-height: 0;
+    padding: 0 12px 12px;
   }
 
   .folder-tree {
-    height: 176px;
-    min-height: 176px;
+    height: auto;
+    min-height: clamp(320px, calc(100dvh - 300px), 620px);
+    margin: 0 -12px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .folder-row {
+    min-height: 30px;
+  }
+
+  .folder-toggle,
+  .folder-toggle-spacer {
+    width: 22px;
+    height: 28px;
+    flex-basis: 22px;
+  }
+
+  .folder-toggle::before {
+    margin-top: 10px;
+    margin-bottom: 10px;
+  }
+
+  .folder-picker {
+    min-height: 28px;
+    padding: 3px 8px 3px 2px;
+    font-size: 14px;
   }
 
   .new-folder-form {
+    margin: 0 12px;
+    border: 1px solid var(--soft-line);
+    border-radius: 8px;
     padding: 10px;
+    background: #ffffff;
   }
 
   .account-button {
@@ -3258,8 +3322,15 @@ a:hover {
   }
 
   .storage-readout {
-    max-width: calc(100vw - 116px);
+    max-width: calc(100vw - 166px);
     padding: 0 8px;
+  }
+
+  .storage-calc-button {
+    width: 42px;
+    padding: 0;
+    overflow: hidden;
+    text-overflow: clip;
   }
 
   .storage-readout span:last-child {
@@ -3404,7 +3475,7 @@ a:hover {
   }
 
   .jobs-section {
-    margin-top: 52px;
+    margin-top: 18px;
   }
 
   .jobs-heading {
@@ -3418,80 +3489,149 @@ a:hover {
   }
 
   .table-shell {
-    overflow: visible;
-  }
-
-  .jobs-table {
-    min-width: 0;
-    border-collapse: separate;
-    border-spacing: 0 10px;
-  }
-
-  .jobs-table thead {
     display: none;
   }
 
-  .jobs-table tbody,
-  .jobs-table tr,
-  .jobs-table td {
-    display: block;
-    width: 100%;
-  }
-
-  .jobs-table tr {
-    overflow: hidden;
-    border: 1px solid #e3e8ef;
-    border-radius: 10px;
-    background: #ffffff;
-    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
-  }
-
-  .jobs-table td {
+  .mobile-jobs-list {
     display: grid;
-    grid-template-columns: 74px minmax(0, 1fr);
     gap: 10px;
-    align-items: start;
-    border-bottom: 0;
-    padding: 8px 10px;
-    font-size: 13px;
   }
 
-  .jobs-table td::before {
-    content: attr(data-label);
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 800;
-    line-height: 20px;
-  }
-
-  .jobs-table td:first-child {
-    padding-top: 12px;
-  }
-
-  .jobs-table td:last-child {
-    padding-bottom: 12px;
-  }
-
-  .jobs-table td[data-label="정보"] {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .jobs-table td[data-label="정보"]::before {
-    line-height: 16px;
-  }
-
-  .jobs-table .empty-row {
+  .mobile-jobs-empty {
     display: flex;
     min-height: 120px;
     align-items: center;
     justify-content: center;
     border: 1px dashed #cbd5e1;
     border-radius: 10px;
+    color: #64748b;
+    background: #ffffff;
+    font-weight: 800;
   }
 
-  .jobs-table .empty-row::before {
-    content: none;
+  .mobile-job-card {
+    display: grid;
+    gap: 10px;
+    overflow: hidden;
+    border: 1px solid #e3e8ef;
+    border-radius: 10px;
+    padding: 12px;
+    background: #ffffff;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
+  }
+
+  .mobile-job-main {
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+  }
+
+  .mobile-job-thumb {
+    display: flex;
+    width: 46px;
+    height: 46px;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 8px;
+    color: #475569;
+    background: #eef2f7;
+    font-size: 11px;
+    font-weight: 900;
+  }
+
+  .mobile-job-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .mobile-job-copy {
+    min-width: 0;
+  }
+
+  .mobile-job-topline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin-bottom: 5px;
+  }
+
+  .mobile-job-topline small {
+    min-width: 0;
+    overflow: hidden;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-job-copy strong {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    color: #0f172a;
+    font-size: 14px;
+    line-height: 18px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-job-copy > span {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    margin-top: 2px;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-job-progress .progress-readout {
+    display: grid;
+    gap: 5px;
+  }
+
+  .mobile-job-progress .progress-readout span {
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-job-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .mobile-job-actions .job-action-buttons {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .mobile-job-actions a {
+    flex: 0 0 auto;
+    min-height: 30px;
+    border: 1px solid #d7dde7;
+    border-radius: 8px;
+    padding: 7px 9px;
+    color: #334155;
+    background: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .mobile-job-actions a:hover {
+    border-color: #b8c2d2;
   }
 
   .model-card {
