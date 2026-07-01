@@ -128,6 +128,27 @@ def service_worker() -> FileResponse:
     )
 
 
+def storage_status() -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(DATA_ROOT)
+    except OSError as exc:
+        return {
+            "path": "/data",
+            "error": str(exc),
+        }
+    percent = round((usage.used / usage.total) * 100, 1) if usage.total else None
+    return {
+        "path": "/data",
+        "used_bytes": usage.used,
+        "free_bytes": usage.free,
+        "total_bytes": usage.total,
+        "used_human": human_bytes(usage.used),
+        "free_human": human_bytes(usage.free),
+        "total_human": human_bytes(usage.total),
+        "percent": percent,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
     jobs = decorate_jobs(db.list_jobs())
@@ -140,6 +161,7 @@ def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
             "library_items": library_items(),
             "folder_tree": build_folder_tree(DATA_ROOT),
             "settings": db.settings_status(),
+            "storage": storage_status(),
         },
     )
 
@@ -254,6 +276,11 @@ def create_folder(folder_path: str = Form(...), _: str = Depends(require_auth)) 
 @app.get("/api/jobs")
 def api_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(decorate_jobs(db.list_jobs()))
+
+
+@app.get("/api/storage")
+def api_storage(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(storage_status())
 
 
 def jobs_response() -> JSONResponse:

@@ -79,6 +79,11 @@
 
     <main class="content">
       <div class="top-corner-actions">
+        <div class="storage-readout" id="storage-readout" title="저장소 용량 확인 중" aria-live="polite">
+          <span class="storage-label">DATA</span>
+          <strong id="storage-used">-</strong>
+          <span id="storage-total">/ -</span>
+        </div>
         <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
           <svg viewBox="0 0 24 24" focusable="false">
             <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
@@ -586,6 +591,7 @@
   <script>
     const initialJobs = {{ jobs|tojson }};
     const initialLibraryItems = {{ library_items|tojson }};
+    const initialStorage = {{ storage|tojson }};
     const targetInput = document.getElementById('target_subdir');
     const selectedFolder = document.getElementById('selected-folder');
     const homeView = document.getElementById('home-view');
@@ -607,6 +613,9 @@
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
     const refreshButton = document.getElementById('refresh-button');
+    const storageReadout = document.getElementById('storage-readout');
+    const storageUsed = document.getElementById('storage-used');
+    const storageTotal = document.getElementById('storage-total');
     const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
     const commandInput = document.getElementById('input_text');
     const workflowDropZone = document.querySelector('[data-workflow-drop-zone]');
@@ -653,6 +662,7 @@
     let downloadQueueId = 1;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
+    let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let activeLibraryPath = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
@@ -678,6 +688,7 @@
     }
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
+    renderStorage(currentStorage);
     setupWorkflowDropImport();
 
     document.getElementById('home-button').addEventListener('click', () => {
@@ -1172,8 +1183,36 @@
       }
     }
 
+    async function refreshStorage() {
+      try {
+        const response = await fetch('/api/storage');
+        if (!response.ok) return;
+        currentStorage = await response.json();
+        renderStorage(currentStorage);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
     async function refreshData() {
-      await Promise.all([refreshJobs(), refreshLibraryItems()]);
+      await Promise.all([refreshJobs(), refreshLibraryItems(), refreshStorage()]);
+    }
+
+    function renderStorage(storage) {
+      if (!storageReadout || !storageUsed || !storageTotal) return;
+      if (!storage || storage.error) {
+        storageReadout.classList.add('storage-error');
+        storageUsed.textContent = '용량 확인 실패';
+        storageTotal.textContent = '';
+        storageReadout.title = storage?.error || '저장소 용량을 확인하지 못했습니다.';
+        return;
+      }
+      storageReadout.classList.remove('storage-error');
+      storageUsed.textContent = storage.used_human || '-';
+      storageTotal.textContent = storage.total_human ? `/ ${storage.total_human}` : '';
+      const percent = storage.percent !== null && storage.percent !== undefined ? `${storage.percent}%` : '-';
+      const free = storage.free_human || '-';
+      storageReadout.title = `${storage.path || '/data'} 사용 ${storage.used_human || '-'} / ${storage.total_human || '-'} · 여유 ${free} · ${percent}`;
     }
 
     async function clearJobHistory() {
@@ -3028,6 +3067,7 @@
 
     renderJobs(currentJobs);
     setInterval(refreshJobs, 2500);
+    setInterval(refreshStorage, 30000);
   </script>
 </body>
 </html>

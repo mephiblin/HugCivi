@@ -700,6 +700,56 @@ a:hover {
   gap: 8px;
 }
 
+.storage-readout {
+  display: inline-flex;
+  max-width: min(42vw, 290px);
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border: 1px solid #d8dee8;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.storage-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.storage-readout strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+}
+
+.storage-readout span:last-child {
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+}
+
+.storage-readout.storage-error {
+  border-color: #fecaca;
+  color: #991b1b;
+  background: #fff5f5;
+}
+
+.storage-readout.storage-error strong {
+  color: #991b1b;
+}
+
 .refresh-corner,
 .thumbnail-blur-toggle {
   display: inline-flex;
@@ -3058,6 +3108,15 @@ a:hover {
   .top-corner-actions {
     top: 12px;
     right: 12px;
+  }
+
+  .storage-readout {
+    max-width: calc(100vw - 116px);
+    padding: 0 8px;
+  }
+
+  .storage-readout span:last-child {
+    display: none;
   }
 
   .hero {

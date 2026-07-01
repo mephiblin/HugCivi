@@ -286,6 +286,40 @@ def test_pwa_manifest_and_service_worker_are_declared(app_modules: tuple) -> Non
     assert service_worker_response.headers["cache-control"] == "no-cache"
 
 
+def test_storage_status_reports_data_volume_usage(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+
+    class Usage:
+        total = 1000
+        used = 375
+        free = 625
+
+    seen_paths: list[Path] = []
+
+    def fake_disk_usage(path: Path) -> Usage:
+        seen_paths.append(path)
+        return Usage()
+
+    monkeypatch.setattr(main.shutil, "disk_usage", fake_disk_usage)
+
+    payload = main.storage_status()
+
+    assert seen_paths == [data_root]
+    assert payload["path"] == "/data"
+    assert payload["used_bytes"] == 375
+    assert payload["free_bytes"] == 625
+    assert payload["total_bytes"] == 1000
+    assert payload["used_human"] == "375.0 B"
+    assert payload["total_human"] == "1000.0 B"
+    assert payload["percent"] == 37.5
+
+    response_payload = json.loads(main.api_storage("tester").body.decode("utf-8"))
+    assert response_payload["used_bytes"] == 375
+
+
 def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "generic"
