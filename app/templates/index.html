@@ -3,7 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="hugcivi">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>hugcivi</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/hugcivi.svg">
+  <link rel="apple-touch-icon" href="/static/icons/hugcivi-180.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -662,6 +670,12 @@
     let workflowDropDepth = 0;
     let workflowDropTimer = null;
     let workflowImportActive = false;
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    }
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
     setupWorkflowDropImport();

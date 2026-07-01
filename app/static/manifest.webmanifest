@@ -1,0 +1,31 @@
+{
+  "name": "hugcivi",
+  "short_name": "hugcivi",
+  "description": "Save and browse AI model archives from your NAS.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fbfbfc",
+  "theme_color": "#0b1220",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/static/icons/hugcivi-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/hugcivi-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/hugcivi-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

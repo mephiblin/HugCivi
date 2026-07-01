@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="hugcivi">
+  <rect width="512" height="512" rx="96" fill="#0b1220"/>
+  <path d="M126 155h78v74h104v-74h78v202h-78v-76H204v76h-78V155Z" fill="#ffffff"/>
+  <path d="M121 379h270v34H121v-34Z" fill="#3d66e8"/>
+  <path d="M348 105c40 0 72 32 72 72v14h-48v-14c0-13-11-24-24-24h-20v-48h20Z" fill="#4ade80"/>
+</svg>

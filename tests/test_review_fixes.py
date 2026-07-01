@@ -262,6 +262,30 @@ def test_retry_failed_job_requeues_existing_job(
     assert enqueued == [job_id]
 
 
+def test_pwa_manifest_and_service_worker_are_declared(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    manifest_path = main.BASE_DIR / "static" / "manifest.webmanifest"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "hugcivi"
+    assert manifest["display"] == "standalone"
+    assert manifest["start_url"].startswith("/")
+    assert any(icon["sizes"] == "192x192" for icon in manifest["icons"])
+    assert any(icon["purpose"] == "maskable" for icon in manifest["icons"])
+
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    assert '<link rel="manifest" href="/manifest.webmanifest">' in template
+    assert "navigator.serviceWorker.register('/sw.js')" in template
+
+    manifest_response = main.web_manifest()
+    assert manifest_response.media_type == "application/manifest+json"
+
+    service_worker_response = main.service_worker()
+    assert service_worker_response.media_type == "application/javascript"
+    assert service_worker_response.headers["service-worker-allowed"] == "/"
+    assert service_worker_response.headers["cache-control"] == "no-cache"
+
+
 def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "generic"

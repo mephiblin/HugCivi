@@ -51,6 +51,8 @@ STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PA
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
+PWA_MANIFEST_PATH = BASE_DIR / "static" / "manifest.webmanifest"
+PWA_SERVICE_WORKER_PATH = BASE_DIR / "static" / "sw.js"
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
@@ -108,6 +110,22 @@ def on_startup() -> None:
     db.init_db()
     ensure_route_folders()
     start_workers()
+
+
+@app.head("/manifest.webmanifest", include_in_schema=False)
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def web_manifest() -> FileResponse:
+    return FileResponse(PWA_MANIFEST_PATH, media_type="application/manifest+json")
+
+
+@app.head("/sw.js", include_in_schema=False)
+@app.get("/sw.js", include_in_schema=False)
+def service_worker() -> FileResponse:
+    return FileResponse(
+        PWA_SERVICE_WORKER_PATH,
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
