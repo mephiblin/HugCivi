@@ -772,13 +772,17 @@
     });
     document.addEventListener('fullscreenchange', syncMediaFullscreenState);
     if (mediaMobileQuery) {
-      const syncMediaViewportMode = () => syncMediaMobileMode();
+      const syncMediaViewportMode = () => {
+        syncMediaMobileMode();
+        applyMediaImageFit();
+      };
       if (typeof mediaMobileQuery.addEventListener === 'function') {
         mediaMobileQuery.addEventListener('change', syncMediaViewportMode);
       } else if (typeof mediaMobileQuery.addListener === 'function') {
         mediaMobileQuery.addListener(syncMediaViewportMode);
       }
     }
+    window.addEventListener('resize', applyMediaImageFit);
     mediaPrev.addEventListener('click', showPreviousMedia);
     mediaNext.addEventListener('click', showNextMedia);
     mediaStrip.addEventListener('click', event => {
@@ -1716,7 +1720,7 @@
       mediaRequestId += 1;
       mediaItems = [];
       mediaIndex = 0;
-      mediaDisplay.classList.remove('video-active');
+      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       document.body.classList.remove('modal-open');
       restoreMediaReturnFocus();
     }
@@ -1724,7 +1728,7 @@
     function setMediaLoading(message) {
       stopMediaPlayback();
       mediaCounter.textContent = '0 / 0';
-      mediaDisplay.classList.remove('video-active');
+      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = message;
@@ -1736,7 +1740,7 @@
     function setMediaError(message) {
       stopMediaPlayback();
       mediaCounter.textContent = '0 / 0';
-      mediaDisplay.classList.remove('video-active');
+      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = '불러오기 실패';
@@ -1835,13 +1839,51 @@
       mediaPrev.disabled = mediaIndex <= 0;
       mediaNext.disabled = mediaIndex >= mediaItems.length - 1;
       mediaDisplay.classList.toggle('video-active', item.type === 'video');
+      mediaDisplay.classList.remove('image-scroll-active');
       mediaDisplay.innerHTML = renderMediaDisplay(item);
       if (item.type === 'video') {
         setupMediaPlayer(item);
+      } else {
+        setupMediaImageFit();
       }
       mediaItemTitle.textContent = item.name || `${mediaIndex + 1}`;
       mediaItemMeta.textContent = mediaItemMetaText(item);
       renderMediaStrip();
+    }
+
+    function setupMediaImageFit() {
+      const image = mediaDisplay.querySelector('.media-image');
+      if (!image) {
+        mediaDisplay.classList.remove('image-scroll-active');
+        return;
+      }
+      if (image.complete && image.naturalWidth) {
+        applyMediaImageFit();
+        return;
+      }
+      image.addEventListener('load', applyMediaImageFit, {once: true});
+      image.addEventListener('error', () => mediaDisplay.classList.remove('image-scroll-active'), {once: true});
+    }
+
+    function applyMediaImageFit() {
+      const item = mediaItems[mediaIndex];
+      const image = mediaDisplay.querySelector('.media-image');
+      if (!item || item.type !== 'image' || !image || !mediaMobileQuery?.matches) {
+        mediaDisplay.classList.remove('image-scroll-active');
+        return;
+      }
+      const imageWidth = image.naturalWidth || item.width || 0;
+      const imageHeight = image.naturalHeight || item.height || 0;
+      const displayWidth = mediaDisplay.clientWidth || window.innerWidth || 1;
+      const displayHeight = mediaDisplay.clientHeight || window.innerHeight || 1;
+      const imageRatio = imageWidth > 0 ? imageHeight / imageWidth : 0;
+      const displayRatio = displayHeight / displayWidth;
+      const shouldScroll = imageRatio > displayRatio * 1.08;
+      const wasScrollActive = mediaDisplay.classList.contains('image-scroll-active');
+      mediaDisplay.classList.toggle('image-scroll-active', shouldScroll);
+      if (shouldScroll && !wasScrollActive) {
+        mediaDisplay.scrollTop = 0;
+      }
     }
 
     function renderMediaDisplay(item) {

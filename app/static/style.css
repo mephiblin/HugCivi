@@ -3062,12 +3062,55 @@ a:hover {
     grid-template-rows: minmax(0, 1fr);
   }
 
+  .media-modal.is-mobile-fullscreen .media-stage {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .media-modal.is-mobile-fullscreen .media-display {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-image {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    object-fit: contain;
+    object-position: center center;
+    box-shadow: none;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-display.image-scroll-active {
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-display.image-scroll-active::-webkit-scrollbar {
+    display: none;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-display.image-scroll-active .media-image {
+    width: 100%;
+    height: auto;
+    max-height: none;
+  }
+
   .media-modal.is-mobile-fullscreen .media-sidebar {
     display: none;
   }
 
   .media-head {
+    justify-content: flex-end;
     padding: max(12px, env(safe-area-inset-top)) 12px 58px;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-head > div:first-child {
+    display: none;
   }
 
   .media-head h2 {
@@ -3098,10 +3141,6 @@ a:hover {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) auto;
     height: 100%;
-  }
-
-  .media-display {
-    padding: 70px 46px 14px;
   }
 
   .media-display.video-active {
@@ -3145,8 +3184,18 @@ a:hover {
   }
 
   .media-caption {
-    min-height: 62px;
-    padding: 12px 14px 13px;
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    min-height: 76px;
+    padding: 26px 14px max(13px, env(safe-area-inset-bottom));
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.86), rgba(0, 0, 0, 0.48) 62%, rgba(0, 0, 0, 0));
+    pointer-events: none;
+  }
+
+  .media-modal.is-mobile-fullscreen .media-caption {
+    display: none;
   }
 
   .media-sidebar {
