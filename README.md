@@ -4,6 +4,24 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, Y
 
 브라우저에서 URL을 붙여넣으면 모델과 갤러리 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
+## 현재 구조 요약
+
+HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
+
+- `/data`: 장기 보관할 실제 archive 파일
+- `/config/jobs.sqlite3`: 작업, 설정, 즐겨찾기, 메모, 라이브러리 인덱스, 내부 작업 artifact 상태
+- `/config/downloads`: 폴더 ZIP 준비 파일
+- `/config/media-cache`: 비디오 transcode와 poster cache
+
+외부 다운로드는 provider별 제한과 cooldown이 있는 다운로드 큐에서 처리하고, ZIP 생성, 비디오 transcode, poster 생성처럼 NAS CPU/I/O를 많이 쓰는 작업은 별도 internal job 큐에서 처리합니다. 라이브러리는 DB-backed 증분 index를 우선 사용하고, 필요할 때 파일시스템 scan으로 보완합니다.
+
+상세 문서:
+
+- [아키텍처](docs/architecture.md)
+- [운영 가이드](docs/operations.md)
+- [개발 가이드](docs/development.md)
+- [프로젝트 철학](docs/philosophy.md)
+
 ## 이런 용도입니다
 
 - NAS에 AI 모델 파일을 모아두고 싶을 때
@@ -18,9 +36,11 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, Y
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
+- Hitomi artist, language, search, index listing URL discovery와 선택 queue confirm UI
 - gallery-dl 지원 사이트 범용 다운로드
 - YouTube/yt-dlp URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
+- 여러 줄 bulk URL 입력과 부분 실패 보고
 - ComfyUI 워크플로우 `.json` URL 다운로드
 - ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
 - 홈 화면 드래그 앤 드롭으로 ComfyUI 워크플로우 PNG/JSON 저장
@@ -36,6 +56,10 @@ Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, Y
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
 - 작업 목록에서 다운로드 정지, 재개, 삭제
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
+- 공급자별 cooldown 최소/최대 랜덤 대기 설정
+- 폴더 ZIP, 비디오 transcode, poster 생성을 internal job으로 처리
+- DB-backed 라이브러리 증분 index
+- SQLite WAL, checkpoint, optimize, compact, online backup maintenance API
 - 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
 - HF 토큰, Civitai 토큰, gallery-dl, YouTube/yt-dlp 인증 정보를 웹 UI에서 저장
@@ -392,6 +416,8 @@ Upscaler: stable-diffusion/upscalers
 
 폴더 다운로드는 ZIP 파일로 준비됩니다. 모델 카드가 가리키는 저장 폴더에 파일이 여러 개 있으면 하나의 ZIP으로 내려받습니다.
 
+파일은 즉시 다운로드하고, 폴더 ZIP은 `archive_zip` internal job으로 준비한 뒤 완료되면 내려받습니다. 큰 폴더를 HTTP 요청 안에서 바로 압축하지 않기 때문에 NAS가 여러 요청으로 갑자기 묶이는 위험을 줄입니다.
+
 워크플로우 카드에는 `워크플로 보기`가 추가로 표시됩니다. 속성에서는 용량, 확장자, 날짜, 원본 URL, 메모를 확인할 수 있고 메모를 저장할 수 있습니다.
 
 안전 장치:
@@ -473,13 +499,24 @@ YT_DLP_EXTRA_OPTIONS
 ```text
 MAX_CONCURRENT_DOWNLOADS=3
 QUEUE_PER_PROVIDER_LIMIT=1
+QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS=2
+QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS=2
 DOWNLOAD_STALL_TIMEOUT_SECONDS=600
+INTERNAL_JOB_MAX_CONCURRENT=2
 HF_SNAPSHOT_MAX_WORKERS=2
 DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
 DOWNLOAD_HTTP_MAX_RETRIES=3
 DOWNLOAD_RETRY_BACKOFF_SECONDS=5
 DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300
+DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1
+DOWNLOAD_ARCHIVE_TTL_SECONDS=86400
+DOWNLOAD_ARCHIVE_MAX_FILES=50000
+MEDIA_TRANSCODE_MAX_CONCURRENT=1
+MEDIA_TRANSCODE_TIMEOUT_SECONDS=1800
+MEDIA_CACHE_TTL_SECONDS=2592000
+MEDIA_CACHE_MAX_BYTES=0
 HITOMI_BACKEND=auto
+HITOMI_LISTING_QUEUE_MODE=auto
 GALLERY_DL_AUTO_UPDATE=1
 GALLERY_DL_UPDATE_SPEC=gallery-dl<2.0
 HUGCIVI_STARTUP_CONFIG_FILE=/config/startup.env
@@ -497,11 +534,16 @@ YT_DLP_EXTRA_OPTIONS=
 
 너무 많은 요청으로 차단될 가능성을 줄이기 위해 기본값을 보수적으로 잡았습니다.
 
+다운로드 큐 설정은 외부 provider 다운로드에 적용됩니다. ZIP, transcode, poster 같은 서버-local 작업은 `INTERNAL_JOB_MAX_CONCURRENT`와 작업별 semaphore 설정을 사용합니다. Synology NAS가 약하거나 동영상 transcode가 무겁다면 `INTERNAL_JOB_MAX_CONCURRENT=1`을 권장합니다.
+
+운영 기준인 `portainer-stack.yml`과 로컬 개발용 `docker-compose.yml`은 일부 기본값이 다릅니다. 특히 Portainer stack의 `DOWNLOAD_STALL_TIMEOUT_SECONDS` 기본값은 현재 `0`이며, 이는 watchdog timeout 비활성화를 의미합니다. 운영에서 무진행 job을 자동으로 끊고 싶으면 Portainer 환경변수나 UI 설정에서 `600` 같은 값을 명시하세요.
+
 ## 보안 주의
 
 - 이 앱을 인터넷에 직접 공개하지 않는 것을 권장합니다.
 - `APP_PASSWORD`는 반드시 긴 비밀번호로 바꾸세요.
 - `/config` 폴더에는 작업 DB와 UI 저장 토큰이 들어갈 수 있습니다.
+- `/config/jobs.sqlite3` 백업은 credential 백업입니다. 백업 파일도 토큰/비밀번호/cookie path를 포함할 수 있습니다.
 - `/config` 폴더 권한을 NAS에서 제한하세요.
 - 모델 파일은 각 사이트의 라이선스와 이용약관을 확인한 뒤 보관하세요.
 - YouTube/yt-dlp는 공개 영상 또는 본인에게 명시적으로 다운로드 권한이 있는 영상에만 사용하세요.
@@ -512,8 +554,13 @@ YT_DLP_EXTRA_OPTIONS=
 
 실제 Docker 컨테이너에는 포함되지 않습니다. 삭제하지 않아도 설치에는 영향이 없습니다.
 
-## 검토 문서
+## 문서
 
+- [아키텍처](docs/architecture.md)
+- [운영 가이드](docs/operations.md)
+- [개발 가이드](docs/development.md)
+- [프로젝트 철학](docs/philosophy.md)
+- [gallery-dl 인증 분류](docs/gallery-dl-auth.md)
 - [2026-06-30 코드 검토 결과](docs/code-review-findings-2026-06-30.md)
 
 ## 자주 막히는 부분

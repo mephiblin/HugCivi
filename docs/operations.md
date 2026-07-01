@@ -1,0 +1,235 @@
+# HugCivi Operations Guide
+
+Last updated: 2026-07-02
+
+This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
+
+## Persistent Volumes
+
+HugCivi needs two persistent mounts:
+
+```text
+/data
+/config
+```
+
+Recommended Synology defaults from `portainer-stack.yml`:
+
+```text
+/volume1/docker/nas-model-archiver/models  -> /data
+/volume1/docker/nas-model-archiver/config  -> /config
+```
+
+`/data` contains the archive files. If downloaded local files are the only thing that must survive, protect this mount first.
+
+`/config` contains the DB, settings, cached ZIP/media artifacts, and backups. Keep it if you want job history, settings, favorites, notes, and library index state.
+
+Do not run two HugCivi containers against the same `/config/jobs.sqlite3` at the same time.
+
+`portainer-stack.yml` is the production/NAS reference. `docker-compose.yml` is for local development or hosts where building from the checkout is intentional. Some defaults differ between them; document and set the values you care about in Portainer environment variables instead of relying on implicit image defaults.
+
+## Upgrade Checklist
+
+1. Stop the existing HugCivi container.
+2. Confirm the `/data` bind mount points to the expected NAS folder.
+3. Back up `/config/jobs.sqlite3`.
+4. Pull or deploy the new image.
+5. Start exactly one container with the same `/data` and `/config` mounts.
+6. Open the UI and confirm the library and job list load.
+
+Container deletion is safe for archive files only if Portainer does not delete the bind-mounted host folders or named volumes. Avoid options such as removing volumes or deleting persistent data unless you have a separate backup.
+
+## Recommended NAS Defaults
+
+For a small or older NAS:
+
+```text
+MAX_CONCURRENT_DOWNLOADS=2
+QUEUE_PER_PROVIDER_LIMIT=1
+QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS=2
+QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS=5
+DOWNLOAD_STALL_TIMEOUT_SECONDS=600
+INTERNAL_JOB_MAX_CONCURRENT=1
+HF_SNAPSHOT_MAX_WORKERS=2
+DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
+GALLERY_DL_SLEEP_REQUEST_SECONDS=2
+YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
+```
+
+For a stronger box, increase one value at a time. If the UI, disk, or network becomes unstable, lower internal jobs first for CPU/I/O pressure and download concurrency first for provider/network pressure.
+
+## Queue Controls
+
+Download queue settings apply to external downloads:
+
+- Hugging Face
+- Civitai
+- Hitomi gallery child jobs
+- gallery-dl
+- yt-dlp/YouTube
+- generic HTTP/HTTPS files
+- ComfyUI workflow URL downloads
+
+Settings:
+
+| Setting | Meaning |
+| --- | --- |
+| `MAX_CONCURRENT_DOWNLOADS` | Global external download job limit. |
+| `QUEUE_PER_PROVIDER_LIMIT` | Concurrent jobs allowed for the same provider bucket. |
+| `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS` | Minimum cooldown after a provider job finishes. |
+| `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS` | Maximum cooldown after a provider job finishes. |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Watchdog timeout for jobs with no detected progress. `0` disables the timeout. |
+
+Internal server-local jobs use a separate limit:
+
+| Setting | Meaning |
+| --- | --- |
+| `INTERNAL_JOB_MAX_CONCURRENT` | Concurrent ZIP/transcode/poster jobs. Default is `2`; `1` is recommended on modest NAS hardware. |
+
+Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
+
+## Expensive Local Work
+
+Folder downloads:
+
+- Direct file downloads use `/api/fs/download`.
+- Folder downloads create an `archive_zip` internal job.
+- ZIP files are written under `/config/downloads`.
+- Stale ZIP cleanup uses `DOWNLOAD_ARCHIVE_TTL_SECONDS`.
+
+Media:
+
+- Browser-playable videos are served directly.
+- Unplayable videos create `media_transcode` jobs on demand.
+- Missing video posters create `media_poster` jobs on demand.
+- Media cache files live under `/config/media-cache`.
+
+Useful media/cache settings:
+
+```text
+MEDIA_TRANSCODE_MAX_CONCURRENT=1
+MEDIA_TRANSCODE_TIMEOUT_SECONDS=1800
+MEDIA_TRANSCODE_PRESET=veryfast
+MEDIA_TRANSCODE_CRF=23
+MEDIA_TRANSCODE_AUDIO_BITRATE=160k
+MEDIA_CACHE_TTL_SECONDS=2592000
+MEDIA_CACHE_MAX_BYTES=0
+DOWNLOAD_ARCHIVE_TTL_SECONDS=86400
+DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1
+DOWNLOAD_ARCHIVE_MAX_FILES=50000
+DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES=0
+DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
+```
+
+`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight.
+
+## Library Index
+
+The library UI uses `library_items` when indexed rows are available.
+
+Background controls:
+
+```text
+LIBRARY_INDEXER_START_DELAY_SECONDS=5
+LIBRARY_INDEXER_INTERVAL_SECONDS=300
+LIBRARY_INDEX_BATCH_SIZE=300
+LIBRARY_REINDEX_BATCH_SIZE=5000
+```
+
+Operational notes:
+
+- First indexing pass may take time on large archives.
+- `/api/library?mode=live` can force live filesystem scanning.
+- `/api/library/reindex` resets and scans a large batch.
+- App-driven rename/move/delete updates the index and path-linked state.
+- NAS-side manual file changes are picked up by later indexer passes or live fallback.
+
+## Database Maintenance
+
+Maintenance APIs are Basic Auth protected:
+
+| Endpoint | Operation |
+| --- | --- |
+| `POST /api/maintenance/db/wal` | Set `journal_mode=WAL` or `DELETE`. |
+| `POST /api/maintenance/db/checkpoint` | Run SQLite WAL checkpoint. |
+| `POST /api/maintenance/db/optimize` | Run `PRAGMA optimize`. |
+| `POST /api/maintenance/db/compact` | Run `VACUUM`. |
+| `POST /api/maintenance/db/backup` | Use SQLite online backup API into `/config/backups`. |
+
+Recommended backup approach:
+
+1. Use `/api/maintenance/db/backup`, or stop the container before copying the DB.
+2. Back up `/data` separately.
+3. Treat DB backups as credential backups because settings may include tokens, passwords, cookie paths, and extra options.
+
+If WAL is enabled, do not rely on copying only `jobs.sqlite3` while the app is running. Use the online backup API or checkpoint and copy the DB files consistently.
+
+`GALLERY_DL_AUTO_UPDATE` is also written to `/config/startup.env` so the next container start can honor the UI setting. Treat that file as operational configuration and keep `/config` permissions restricted.
+
+## Security
+
+Minimum requirements:
+
+- Set a long `APP_PASSWORD`.
+- Keep the app off the public internet when possible.
+- Put it behind VPN, private LAN, or a trusted reverse proxy.
+- Restrict NAS permissions on `/config`.
+- Back up `/config` carefully because it may contain credentials.
+- Review site licenses and terms before archiving content.
+
+The app refuses insecure placeholder passwords and does not echo saved secret values back to the UI.
+
+## Recovery Notes
+
+If `/config` is lost but `/data` remains:
+
+- archive files survive
+- job history, UI settings, favorites, notes, and index state are lost
+- the library can still rebuild from filesystem scan and sidecar metadata where available
+
+If `/data` is lost but `/config` remains:
+
+- job history and notes may still exist
+- archive files are gone unless restored from NAS backup
+- library index rows may become stale
+
+If both are backed up:
+
+- restore `/data`
+- restore `/config/jobs.sqlite3`
+- start one container
+- run or wait for library reindex if paths changed
+
+## Troubleshooting
+
+Slow downloads:
+
+- add provider tokens/cookies where appropriate
+- keep `QUEUE_PER_PROVIDER_LIMIT=1`
+- increase `MAX_CONCURRENT_DOWNLOADS` slowly
+- check provider rate limits before increasing retry pressure
+
+NAS becomes sluggish:
+
+- set `INTERNAL_JOB_MAX_CONCURRENT=1`
+- keep `MEDIA_TRANSCODE_MAX_CONCURRENT=1`
+- reduce download concurrency
+- avoid huge folder ZIP jobs during active downloads
+
+Library looks incomplete:
+
+- wait for indexer batches
+- call `/api/library?mode=live`
+- trigger `/api/library/reindex`
+- check whether files were moved outside the app
+
+Old container after upgrade:
+
+- avoid downgrading after schema changes unless you have a DB backup
+- never run old and new containers simultaneously on the same DB
+
+Portainer pull failure:
+
+- confirm `HUGCIVI_IMAGE`
+- confirm GHCR package visibility or registry authentication
+- redeploy after Portainer registry credentials are fixed

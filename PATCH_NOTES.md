@@ -1,5 +1,33 @@
 # 패치내역
 
+## 2026-07-02
+
+### 구조 안정화
+
+- FastAPI startup/shutdown을 lifespan 중심으로 정리했습니다.
+- 외부 다운로드 job과 서버-local internal job을 `job_kind`로 분리했습니다.
+- ZIP 생성, 비디오 transcode, poster 생성을 internal job으로 처리하도록 바꿨습니다.
+- 다운로드 큐와 internal job 큐를 분리해 provider rate limit과 NAS CPU/I/O 보호 설정을 따로 관리합니다.
+- `/api/jobs`는 기본 호환 배열 응답을 유지하면서 cursor pagination과 summary query를 지원합니다.
+
+### DB와 라이브러리
+
+- `job_artifacts`, `job_content_refs`, `library_items`, `library_scan_state`, `maintenance_runs` 테이블을 추가했습니다.
+- 라이브러리는 DB-backed 증분 index를 우선 사용하고, 필요 시 filesystem scan으로 보완합니다.
+- WAL, checkpoint, optimize, compact, online backup maintenance API를 추가했습니다.
+- DB backup은 UI 저장 credential을 포함할 수 있으므로 credential backup으로 취급해야 합니다.
+
+### Hitomi와 미디어 UX
+
+- Hitomi listing URL은 기존 자동 queue 외에 확인 후 선택 queue하는 `confirm` 모드를 지원합니다.
+- 미디어 viewer는 cache miss 시 transcode/poster job을 만들고 polling 후 재생/표시합니다.
+- 폴더 다운로드는 ZIP 준비 job을 만들고 완료 후 artifact를 다운로드합니다.
+
+### 문서
+
+- README에 현재 구조 요약과 최신 기능을 반영했습니다.
+- [아키텍처](docs/architecture.md), [운영 가이드](docs/operations.md), [개발 가이드](docs/development.md), [프로젝트 철학](docs/philosophy.md)을 추가했습니다.
+
 ## 2026-06-30
 
 ### 다운로드 기능 확장

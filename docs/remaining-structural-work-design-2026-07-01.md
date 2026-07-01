@@ -6,10 +6,30 @@
 
 - 운영 리스크 1차 안정화는 완료됨.
 - 기능 기준 커밋: `39fe61a Limit expensive maintenance scans`
+- 구조 문서 기준 커밋: `e162eba Detail structural implementation plan`
+- 구현 기준 커밋: `893fbbf Implement structural job and database updates`
 - 남은 항목은 즉시 장애를 막는 패치가 아니라 UX/API/DB 구조를 바꾸는 장기 개선이다.
 - 2026-07-01 기준 GitHub 후보 프로젝트와 FastAPI 공식 문서를 재검토했다.
+- 2026-07-01 기준 워커 3명으로 프로젝트 목적, backend/DB/job queue, frontend/API/UX 문서 정합성을 검산했다.
 
-## 남은 항목
+## 현재 상태 업데이트
+
+이 문서는 구현 전 구조 변경 설계와 검토 기록이다. 2026-07-02 현재 핵심 구조 작업은 `893fbbf` 이후 코드에 반영되어 있으며, 상시 문서는 [아키텍처](architecture.md), [운영 가이드](operations.md), [개발 가이드](development.md), [프로젝트 철학](philosophy.md)을 기준으로 읽는다.
+
+구현 완료된 항목:
+
+- FastAPI lifespan 전환과 worker shutdown 경로
+- download job과 internal job의 `job_kind` 분리
+- ZIP, media transcode, poster의 internal job화
+- Hitomi listing confirm UI/API
+- `/api/jobs` summary query와 cursor pagination
+- `job_content_refs`, `job_artifacts`, `library_items`, `library_scan_state`, `maintenance_runs`
+- WAL/checkpoint/optimize/compact/online backup maintenance API
+- DB-backed library incremental index
+
+이 문서의 “남은 항목”, “미구현”, “구현 계획” 표현은 작성 당시 설계 기준이다.
+
+## 원 설계 항목
 
 1. ZIP 생성과 미디어 transcode를 별도 DB job 타입으로 이동
 2. 라이브러리 전체를 DB-backed 증분 index로 전환
@@ -107,6 +127,37 @@
 4. media transcode/poster async job 전환
 5. Hitomi listing 확인 UI
 6. DB-backed 라이브러리 증분 index
+
+## 프로젝트 구조/문서 검산 결과
+
+검산 결론:
+
+- HugCivi의 실제 용도는 NAS/Docker에서 `/data`를 장기 archive로 쓰고 `/config/jobs.sqlite3`에 작업/설정/즐겨찾기/메모를 저장하는 개인 archive service다.
+- 이 문서의 큰 방향은 현재 프로젝트 목적과 맞다.
+- 이미 구현된 기능과 앞으로 구현할 구조 변경을 분리해서 읽어야 한다.
+
+현재 이미 구현된 것:
+
+- bulk URL 입력은 프론트 `+` 버튼, modal, `/api/jobs/bulk` API, queue 등록까지 구현되어 있다.
+- 같은 공급자 cooldown은 최소/최대 초 설정과 랜덤 대기까지 구현되어 있다.
+- Hitomi artist/language/search/index listing URL은 `gallery-dl -g` discovery 후 child gallery job을 즉시 queue한다.
+- library card는 job row와 filesystem/sidecar scan을 합쳐 보여주며, job row 삭제 후에도 filesystem card를 복원할 수 있다.
+
+2026-07-01 설계 당시 미구현이었고 현재는 구현된 것:
+
+- Hitomi listing 결과를 먼저 보여주고 선택 queue하는 confirm UI/API.
+- `/api/jobs` summary query, cursor pagination, `list_job_summaries()`.
+- `job_content_refs`, `job_artifacts`, `library_items`, `maintenance_runs`.
+- WAL mode 적용, online backup API, DB checkpoint/compact maintenance API.
+- DB-backed library incremental index.
+- internal job abstraction과 ZIP/transcode/poster background job화.
+
+문서 해석 주의:
+
+- queue는 실제로 provider별 물리 queue 여러 개가 아니라, 단일 `_PENDING_JOB_IDS`에서 global limit, provider limit, provider cooldown을 검사하는 scheduler다.
+- `gallerydl:*`과 `generic:*`은 host까지 provider key에 들어가지만, Hugging Face/Civitai/Hitomi는 넓은 provider bucket이다.
+- Civitai 관련 과거 보고서는 “당시 범위/검토 기록”으로 읽어야 한다. 현재 코드는 Civitai image page 저장, resource child job, resource health UI까지 포함한다.
+- README와 compose/Portainer stack의 일부 기본값은 다르다. 운영 기준은 `portainer-stack.yml`이고, 로컬 개발 기준은 `docker-compose.yml`이다.
 
 ## 코드 기준 작업 가능성 검토
 
@@ -430,7 +481,95 @@
 
 ## DB 중장기 운영 설계
 
-HugCivi는 NAS에서 장기간 쓰는 앱이므로 “오늘 기능이 동작하는가”보다 “수개월 뒤 수만 파일과 수천 job row가 있어도 느려지거나 DB가 비대해지지 않는가”를 같이 봐야 한다.
+HugCivi는 NAS에서 장기간 서비스처럼 계속 켜두고 쓰는 앱이다. 목표 시나리오는 “가끔 받는 다운로드 도구”가 아니라, 수개월에서 수년 동안 대량의 자료가 아카이빙되고, 그 결과를 계속 검색/탐색/재생/관리하는 개인 archive service다.
+
+따라서 DB 설계는 “오늘 기능이 동작하는가”보다 “자료가 수만-수십만 단위로 쌓였을 때 목록 조회, 백업, 복구, 정리, 재색인이 계속 가능한가”를 기준으로 잡는다.
+
+### 목표 운영 시나리오
+
+초기 현실 목표:
+
+- job history: 1만-5만 row
+- library item: 5만 row
+- archive 내부 media file: 수십만 file
+- 단일 Hitomi/gallery-dl parent가 child job 수십-수백 개 생성
+- `/api/jobs`와 `/api/library` 기본 조회가 수 초 단위로 지연되지 않음
+- 앱 재시작 후 running/queued state가 예측 가능하게 복구됨
+
+중장기 목표:
+
+- job history: 10만 row 이상도 보관 가능
+- library item: 10만-30만 row까지 SQLite로 버팀
+- archive 내부 file 총량은 그 이상이어도 DB 기본 row로 전부 만들지 않음
+- DB 삭제/손상 시에도 `/data`와 sidecar에서 library를 재구성 가능
+- 주기적 백업/복구/정리 작업이 NAS I/O를 장시간 독점하지 않음
+
+명확히 제외하는 초기 목표:
+
+- 다중 사용자 협업 DB
+- 원격 클러스터 queue
+- Elasticsearch 수준의 전문 검색
+- archive 내부 모든 이미지/page 단위의 DB catalog
+- 모든 다운로드 stdout을 영구 event log로 무제한 저장
+
+### 외부 자료 기준 보정
+
+SQLite 공식 문서 기준으로 HugCivi의 DB 전략은 “SQLite를 계속 쓰되, 조회 패턴과 유지보수 작업을 엄격하게 관리한다”가 맞다.
+
+확인한 근거:
+
+- SQLite는 많은 reader를 허용하지만 writer는 한 순간에 하나만 허용한다. HugCivi는 단일 NAS 서비스이고 write가 대부분 job 상태 갱신/scan batch/설정 저장이므로, transaction을 짧게 유지하면 SQLite 유지가 타당하다.
+- SQLite의 이론상 DB 크기 한계는 매우 크지만, 실제 운영에서는 단일 DB 파일, NAS volume, 백업 시간, VACUUM 여유공간, query pattern이 먼저 한계가 된다.
+- WAL mode는 reader/write 동시성에 유리하지만 `-wal` 파일이 DB 상태의 일부가 된다. WAL을 켜면 파일 복사 백업이 아니라 SQLite backup API 또는 WAL/SHM 포함 백업 정책이 필요하다.
+- WAL mode는 shared-memory wal-index를 쓰므로, `/config`가 어떤 파일시스템 위에 있는지 확인해야 한다. 일반 로컬 Docker volume이면 유리하지만, 특수 네트워크 파일시스템이면 사전 검증이 필요하다.
+- `PRAGMA optimize`는 최신 SQLite에서 필요한 경우에만 ANALYZE를 수행하고 대형 DB에서도 빠르게 끝나도록 제한된다. 장기 운영에서는 schema/index 변경 후와 주기 maintenance에서 실행 후보로 둔다.
+- `VACUUM`은 DB를 임시 DB로 복사한 뒤 원본을 덮어쓰는 방식이라 원본 DB의 최대 2배 여유공간이 필요할 수 있다. NAS에서 자동 실행하면 위험하므로 수동 maintenance로 둔다.
+- partial index는 일부 row만 index해서 DB 파일과 write 비용을 줄일 수 있다. active job, non-null artifact, non-stale library row 같은 hot subset에 적합하다.
+
+참고한 공식 자료:
+
+- SQLite Appropriate Uses: https://sqlite.org/whentouse.html
+- SQLite WAL: https://sqlite.org/wal.html
+- SQLite Backup API: https://sqlite.org/backup.html
+- Python `sqlite3.Connection.backup`: https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.backup
+- SQLite ANALYZE/PRAGMA optimize: https://sqlite.org/lang_analyze.html
+- SQLite VACUUM: https://sqlite.org/lang_vacuum.html
+- SQLite Partial Indexes: https://sqlite.org/partialindex.html
+- SQLite Query Planner: https://sqlite.org/queryplanner.html
+- SQLite Limits: https://sqlite.org/limits.html
+
+이 보정으로 생기는 설계 기준:
+
+- SQLite는 중장기 기본 DB로 유지한다.
+- 외부 DB 도입은 “single writer 병목이 실제로 관측될 때”로 미룬다.
+- 대신 DB row 크기, 조회 column, index, backup, retention, maintenance를 처음부터 관리한다.
+- 장기 보관의 원본 정보는 DB보다 `/data` sidecar를 우선한다.
+
+### 코드 구조 검산에서 추가 확인한 DB 제약
+
+현재 DB 구조:
+
+- DB 기본 경로는 `/config/jobs.sqlite3`이고 `DB_PATH`로 override할 수 있다.
+- table은 `jobs`, `settings`, `favorites`, `item_notes` 중심이다.
+- `metadata_json`은 `jobs` migration column이고, 별도 library/index/artifact table은 아직 없다.
+- connection은 함수 호출마다 열고 닫으며 `sqlite3.connect(..., timeout=30, check_same_thread=False)`를 사용한다.
+- `_DB_LOCK`으로 대부분의 DB read/write를 process 내부에서 직렬화한다.
+
+이 구조가 설계에 주는 영향:
+
+- WAL mode를 켜도 현재 `_DB_LOCK` 때문에 같은 process 내부 reader/write 동시성 개선 효과는 제한적이다.
+- WAL은 “백업 일관성/컨테이너 volume 호환성”을 먼저 확정한 뒤 켠다.
+- `PRAGMA optimize`는 모든 짧은 connection 종료마다 실행하지 않는다. `append_log()` 같은 빈번한 경로에 붙이면 오히려 I/O 잡음이 된다.
+- index 추가 전 실제 query를 먼저 고정한다. 현재 주요 query는 `queued ORDER BY id`, inactive `status NOT IN`, active `status IN`, `target_dir IS NOT NULL`, 최신 job summary다.
+- active status 집합을 통일해야 한다. 현재 DB 쪽 active set과 Hitomi duplicate 쪽 active/present set이 완전히 같지 않다.
+
+추가로 확인된 리스크:
+
+- restart 복구는 현재 최근 job scan에 의존한다. 장기 history가 커지면 `list_active_jobs()` 같은 전용 selector가 필요하다.
+- history clear는 inactive row를 한 번에 삭제하는 반면, partial cleanup은 제한된 row만 본다. 대량 row에서는 cleanup 대상과 삭제 대상이 어긋날 수 있다.
+- Hitomi 중복 확인은 job history 기반이다. history를 지운 뒤에는 이미 받은 gallery가 다시 queue될 수 있으므로 `job_content_refs` retention 또는 `_hitomi_metadata.json` fallback 정책이 필요하다.
+- Civitai image/resource 중복 확인도 jobs scan과 sidecar scan에 기대는 부분이 있으므로 같은 lookup table로 묶을 수 있다.
+- DB에는 UI에서 저장한 token/password/cookie path/extra options가 들어간다. DB backup은 archive backup이면서 credential backup이다.
 
 ### 예상 증가 지점
 
@@ -451,6 +590,59 @@ HugCivi는 NAS에서 장기간 쓰는 앱이므로 “오늘 기능이 동작하
 - library index를 파일 단위로 너무 상세하게 만들면 DB가 불필요하게 커진다.
 - sidecar metadata와 DB metadata가 중복으로 커지면 백업/복구 시간이 길어진다.
 - SQLite는 충분히 버틸 수 있지만, 인덱스 없이 status/source/path를 계속 scan하면 NAS I/O가 병목이 된다.
+
+### 현재 코드에서 먼저 보이는 DB 병목
+
+현재 `db.list_jobs()`는 `SELECT * FROM jobs ORDER BY id DESC LIMIT ?` 구조다. 프론트 목록에서는 log와 큰 metadata를 표시하지 않더라도 DB에서는 이미 `log`, `metadata_json`, `parsed_json`까지 읽는다. row 수와 log 크기가 늘면 `/api/jobs` polling 비용이 커진다.
+
+우선 개선:
+
+- `list_job_summaries(limit, cursor)`를 추가한다.
+- summary query는 목록에 필요한 column만 읽는다.
+- `log`, `metadata_json`, 큰 `parsed_json`은 `/api/jobs/{id}` 또는 `/jobs/{id}/log`에서만 읽는다.
+- 목록 API는 offset pagination보다 id cursor 방식으로 둔다.
+
+현재 `hitomi_existing_gallery_state()`는 `db.list_jobs(limit=5000)`를 순회하며 `parsed_json`/`metadata_json`에서 gallery id를 찾는다. job row가 5만-10만으로 늘면 중복 확인이 느려진다.
+
+우선 개선:
+
+- `job_content_refs` 또는 가벼운 lookup table을 추가한다.
+- 예: `source='hitomi'`, `ref_type='gallery_id'`, `ref_value='123456'`, `job_id=...`
+- Civitai image/resource, gallery-dl archive도 같은 구조로 중복 확인을 확장할 수 있다.
+
+현재 history clear는 inactive row를 한 번에 삭제하는 방향이다. 장기 운용에서는 수만 row delete가 WAL/DB 파일을 키우고 NAS I/O를 잡아먹을 수 있다.
+
+우선 개선:
+
+- batch delete를 사용한다.
+- 삭제 후 자동 `VACUUM`은 하지 않는다.
+- 필요하면 maintenance 화면에서 수동 compact를 제공한다.
+
+### Hot/Cold 데이터 분리
+
+hot data:
+
+- 현재 실행 중인 job
+- 최근 job summary
+- queue 상태
+- library card summary
+- settings/favorites/notes
+- artifact TTL과 cleanup 대상
+
+cold data:
+
+- 오래된 job detail
+- 긴 로그
+- 원본 API response
+- discovery 결과 전체
+- archive 내부 파일 목록
+- generation metadata 전문
+
+원칙:
+
+- hot data만 기본 API polling 경로에 둔다.
+- cold data는 sidecar, 별도 detail endpoint, export 파일, 또는 archive table로 보낸다.
+- 오래된 기록을 지워도 archive 자체와 sidecar는 지우지 않는다.
 
 ### DB 역할 분리
 
@@ -477,6 +669,68 @@ DB에 저장하지 않을 것:
 - 긴 discovery 결과는 `/data/.../_hitomi_listing_metadata.json` 같은 sidecar에 저장하고 DB에는 count, truncated, queued_count만 둔다.
 - job log는 현재처럼 DB에 둘 수 있지만, 길이 제한과 별도 log endpoint 방식을 유지한다.
 
+### 장기 schema 후보
+
+기존 `jobs` table은 유지하되, 역할을 active/recent job summary 중심으로 좁힌다.
+
+`jobs` 권장 성격:
+
+- job id
+- `job_kind`
+- source
+- status
+- progress
+- target path
+- artifact summary
+- short metadata summary
+- timestamps
+- last error
+
+분리 후보 table:
+
+- `job_logs`
+  - `id INTEGER PRIMARY KEY`
+  - `job_id INTEGER NOT NULL`
+  - `created_at TEXT NOT NULL`
+  - `level TEXT`
+  - `message TEXT NOT NULL`
+  - `seq INTEGER`
+- `job_artifacts`
+  - `id INTEGER PRIMARY KEY`
+  - `job_id INTEGER NOT NULL`
+  - `kind TEXT NOT NULL`
+  - `path TEXT NOT NULL`
+  - `url TEXT`
+  - `size_bytes INTEGER`
+  - `expires_at TEXT`
+  - `created_at TEXT NOT NULL`
+- `job_content_refs`
+  - `source TEXT NOT NULL`
+  - `ref_type TEXT NOT NULL`
+  - `ref_value TEXT NOT NULL`
+  - `job_id INTEGER NOT NULL`
+  - `status TEXT NOT NULL`
+  - unique `(source, ref_type, ref_value, job_id)`
+- `library_items`
+  - archive/folder/file card 단위 row
+- `library_scan_state`
+  - background scan cursor/status
+- `maintenance_runs`
+  - cleanup/reindex/compact 같은 장기 maintenance 기록
+
+적용 순서:
+
+1. 먼저 `jobs` summary projection을 고친다.
+2. 그 다음 `job_content_refs`로 중복 조회를 빠르게 만든다.
+3. 로그가 실제로 커지는 것이 확인되면 `job_logs`를 분리한다.
+4. ZIP/media internal job을 추가할 때 `job_artifacts`를 같이 고려한다.
+
+주의:
+
+- 처음부터 모든 table을 만들 필요는 없다.
+- migration은 한 번에 크게 하지 말고 실제 병목 순서대로 추가한다.
+- 단, 새 column/table을 추가할 때는 미래 분리 가능성을 막지 않게 이름을 잡는다.
+
 ### SQLite 운영 정책
 
 권장 설정:
@@ -484,11 +738,30 @@ DB에 저장하지 않을 것:
 - WAL mode 검토:
   - read polling과 background write가 겹치는 구조에 유리하다.
   - 컨테이너/NAS volume에서 WAL 파일 백업 방식을 함께 문서화해야 한다.
+  - `/config`가 WAL shared-memory를 지원하는 파일시스템인지 확인한다.
+  - WAL을 켜면 DB 백업 시 `jobs.sqlite3`만 복사하는 방식을 금지한다.
+  - 현재 `_DB_LOCK`이 process 내부 DB 접근을 직렬화하므로, WAL은 성능 개선보다 백업/동시성 정책 정리와 함께 단계적으로 적용한다.
 - `busy_timeout`은 현재 connection timeout과 함께 유지한다.
 - 주기적인 `PRAGMA optimize` 실행을 검토한다.
+- schema 변경, index 생성, 대량 import/reindex 이후 `PRAGMA optimize` 실행을 검토한다.
 - 대규모 delete 후 `VACUUM`은 자동으로 돌리지 않는다.
   - 이유: NAS에서 오래 걸리고 I/O가 크다.
   - 관리 API 또는 maintenance action으로 수동 실행한다.
+  - 실행 전 DB 파일 크기의 최소 2배 여유공간을 확인한다.
+
+권장 PRAGMA 후보:
+
+- `PRAGMA journal_mode=WAL`
+  - reader와 writer가 겹치는 polling 환경에 유리하다.
+  - 파일시스템 지원과 백업 정책을 먼저 확정한 뒤 활성화한다.
+- `PRAGMA busy_timeout=30000`
+  - 현재 `sqlite3.connect(..., timeout=30)`와 같은 의도를 DB connection에 명확히 남긴다.
+- `PRAGMA optimize`
+  - migration, index 생성, 대량 import/reindex, maintenance tick에서 실행한다.
+  - `append_log()`나 일반 job polling처럼 매우 잦은 DB 경로마다 실행하지 않는다.
+- `PRAGMA wal_checkpoint(PASSIVE|TRUNCATE)`
+  - backup 전 또는 WAL 파일이 과도하게 커졌을 때 maintenance action으로 검토한다.
+  - 자동 주기 실행은 실제 WAL 성장 지표를 본 뒤 결정한다.
 
 권장 index:
 
@@ -496,15 +769,68 @@ DB에 저장하지 않을 것:
 - `jobs(job_kind, status, updated_at)`
 - `jobs(source, status, updated_at)`
 - `jobs(target_dir)`
+- `jobs(updated_at, id)`
+- `job_content_refs(source, ref_type, ref_value)`
+- `job_content_refs(job_id)`
+- `job_artifacts(job_id)`
+- `job_artifacts(expires_at)`
 - `library_items(path)`
 - `library_items(source, indexed_at)`
 - `library_items(stale, indexed_at)`
+- `library_items(updated_at)`
+
+partial index 후보:
+
+- active job 전용:
+  - `CREATE INDEX ... ON jobs(status, updated_at) WHERE status IN ('queued','running','paused','pausing','canceling','deleting')`
+- artifact cleanup 전용:
+  - `CREATE INDEX ... ON jobs(artifact_expires_at) WHERE artifact_expires_at IS NOT NULL`
+- stale library cleanup 전용:
+  - `CREATE INDEX ... ON library_items(indexed_at) WHERE stale = 1`
+- content ref lookup:
+  - `CREATE INDEX ... ON job_content_refs(source, ref_type, ref_value)`
 
 주의:
 
 - index는 조회 패턴이 확정된 뒤 추가한다.
 - 너무 많은 index는 write 비용을 키운다.
 - library index는 파일 단위가 아니라 “카드로 보일 archive/folder/file 단위”를 기본 row로 한다.
+- partial index는 query의 WHERE 조건과 맞아야 planner가 안정적으로 쓴다. index 조건과 실제 query 조건을 테스트로 고정한다.
+- active status 정의를 DB, scheduler, Hitomi duplicate, UI action 조건에서 먼저 맞춘 뒤 active job partial index를 만든다.
+- index 추가 PR에는 `EXPLAIN QUERY PLAN` 또는 fixture 기반 query plan/응답 시간 회귀 테스트를 붙인다.
+
+### 조회 API 원칙
+
+이 섹션은 DB-backed index와 summary query 전환 후의 목표다. 현재 `/api/jobs`는 `db.list_jobs()` 기반이고, `/api/library`는 filesystem/sidecar scan 기반이다.
+
+`/api/jobs`:
+
+- summary column만 조회한다.
+- 기본 limit은 작게 유지한다.
+- `before_id` 또는 `cursor` 기반 pagination을 둔다.
+- status/source/job_kind filter를 선택적으로 받는다.
+- log와 full metadata는 반환하지 않는다.
+
+`/api/jobs/{id}`:
+
+- detail metadata를 반환한다.
+- metadata가 큰 경우 sidecar path와 summary를 우선 반환하고, full sidecar는 별도 endpoint로 둔다.
+
+`/jobs/{id}/log`:
+
+- log만 반환한다.
+- 장기적으로 `tail`, `offset`, `limit` parameter를 둘 수 있게 한다.
+
+`/api/library`:
+
+- DB index summary만 반환한다.
+- media file list는 반환하지 않는다.
+- card 표시용 thumbnail/source/category/count만 반환한다.
+
+`/api/media/list`:
+
+- 사용자가 특정 archive를 열었을 때만 해당 folder media를 조회한다.
+- archive 전체를 DB row로 펼치지 않는다.
 
 ### job row 보존 정책
 
@@ -527,6 +853,16 @@ DB에 저장하지 않을 것:
 - history limit을 넘으면 inactive job 중 오래된 row부터 삭제 후보로 잡는다.
 - 사용자가 “기록 지우기”를 눌렀을 때 row 삭제와 artifact 삭제를 분리한다.
 - `target_dir`가 있는 done job row를 삭제해도 library card는 filesystem/sidecar에서 복원되어야 한다.
+- 자동 prune을 넣더라도 기본값은 보수적으로 둔다.
+- prune은 한 번에 대량 delete하지 않고 batch 단위로 수행한다.
+
+권장 cleanup 단계:
+
+1. expired artifact 삭제
+2. inactive job log truncate
+3. 오래된 inactive job row archive/export 후보 표시
+4. 사용자가 확인한 row 삭제
+5. 필요할 때만 수동 compact
 
 ### library index 보존 정책
 
@@ -547,6 +883,21 @@ refresh 정책:
 - `mtime_ns`, `size_bytes`, sidecar mtime을 비교해 변경된 항목만 갱신한다.
 - full scan은 background batch로만 수행한다.
 - `/api/library?refresh=1`은 즉시 scan이 아니라 refresh request flag만 남긴다.
+
+index granularity:
+
+- 기본 row는 user-facing card 단위다.
+- Hitomi gallery 폴더 하나는 row 하나다.
+- gallery 내부 page 파일은 row로 만들지 않는다.
+- Civitai image archive 폴더 하나는 row 하나다.
+- Hugging Face repo snapshot은 root archive row 하나와 필요 시 주요 file summary만 둔다.
+- workflow file처럼 단일 파일이 card가 되는 경우만 file row를 만든다.
+
+대량 media folder:
+
+- `media_count`는 정확한 값보다 “빠르게 표시 가능한 값”을 우선한다.
+- scan이 budget을 넘으면 `media_count_truncated=true` 같은 flag를 둔다.
+- 사용자가 archive를 열었을 때 상세 media list를 계산한다.
 
 ### sidecar와 DB 일관성
 
@@ -573,6 +924,13 @@ refresh 정책:
 - `archive_info`
 - `content_summary`
 
+sidecar 크기 정책:
+
+- sidecar는 큰 JSON을 허용하되, UI 기본 목록에서는 읽지 않는다.
+- sidecar가 너무 커질 수 있는 목록형 데이터는 필요한 summary와 전체 파일을 분리한다.
+- 예: `_hitomi_listing_metadata.json`에는 summary와 gallery entries를 둘 수 있지만, DB에는 summary만 둔다.
+- sidecar schema 변경은 backward compatible reader로 처리한다.
+
 ### 백업/복구 관점
 
 백업 대상:
@@ -594,6 +952,35 @@ refresh 정책:
 - DB가 없어도 sidecar 기반 library scan으로 archive 목록은 복원된다.
 - running job은 복구 후 queued 또는 canceled로 정리된다.
 
+백업 일관성:
+
+- WAL mode를 켤 경우 `jobs.sqlite3`, `jobs.sqlite3-wal`, `jobs.sqlite3-shm` 파일을 같이 다뤄야 한다.
+- 선호 백업 방식은 Python `sqlite3.Connection.backup()` 기반 online backup이다.
+- 대안으로 `VACUUM INTO` 기반 compact backup을 검토할 수 있다.
+- 단, `VACUUM INTO`는 compact copy 성격이므로 큰 DB에서는 시간과 디스크 여유공간을 확인한다.
+- 파일 복사 백업을 허용해야 한다면 백업 전 maintenance endpoint에서 WAL checkpoint를 실행하는 옵션을 검토한다.
+- `/data`와 DB 백업 시점이 어긋나도 sidecar 우선 복구 정책으로 library가 재구성되어야 한다.
+
+백업 API 설계 후보:
+
+- `POST /api/maintenance/db-backup`
+  - SQLite online backup API 사용
+  - 결과 파일은 `/config/backups/jobs-YYYYmmdd-HHMMSS.sqlite3`
+  - backup 중에도 일반 reader/write 지연을 최소화
+- `POST /api/maintenance/db-checkpoint`
+  - WAL checkpoint 실행
+  - 반환: wal size before/after, checkpoint result
+- `POST /api/maintenance/db-compact`
+  - 수동 `VACUUM` 또는 `VACUUM INTO` 실행
+  - 실행 전 free space preflight 필수
+  - 기본 UI에서는 숨기고 advanced maintenance로 둔다.
+
+복구 모드:
+
+- `safe mode`: DB job history는 읽되 active job 자동 재개를 막는다.
+- `reindex mode`: DB library index를 버리고 `/data` sidecar에서 재구성한다.
+- `history import mode`: export한 old job history를 별도 조회용으로만 붙인다.
+
 ### 장기 규모별 기준
 
 초기 기준:
@@ -601,12 +988,36 @@ refresh 정책:
 - job row 수: 1만 단위까지 UI polling이 느려지지 않아야 한다.
 - library item row 수: 5만 단위까지 `/api/library` 기본 조회가 빠르게 반환되어야 한다.
 - media file 수: archive 내부 수천 파일이 있어도 library card 조회는 폴더 단위 row만 읽어야 한다.
+- `/api/jobs` summary query는 log/metadata column을 읽지 않아야 한다.
+- Hitomi gallery 중복 확인은 전체 jobs scan이 아니라 lookup table 또는 index를 사용해야 한다.
 
 중장기 기준:
 
 - job history 10만 row 이상이 필요해지면 history archive table 또는 export 기능을 검토한다.
 - library item 10만 row 이상에서 검색 요구가 생기면 SQLite FTS를 검토한다.
 - SQLite write contention이 실제 문제로 확인될 때만 외부 DB 또는 queue broker를 검토한다.
+- library item 30만 row 이상 또는 복합 검색 요구가 커질 때만 외부 검색 엔진을 재검토한다.
+
+관측 지표:
+
+- DB 파일 크기
+- WAL 파일 크기
+- `/api/jobs` p95 응답 시간
+- `/api/library` p95 응답 시간
+- background scan batch duration
+- job log 평균/최대 byte
+- metadata_json 평균/최대 byte
+- sidecar read 실패 수
+- stale row 수
+
+운영 알림 후보:
+
+- DB 파일 크기가 지정값 초과
+- WAL 파일이 지정값 초과
+- stale row가 일정 수 이상
+- cleanup이 여러 번 실패
+- library full scan이 지정 시간 이상
+- job history row가 retention 기준 초과
 
 하지 말 것:
 
@@ -614,6 +1025,7 @@ refresh 정책:
 - archive 내부 모든 파일을 기본 DB row로 만들지 않는다.
 - `/api/jobs`나 `/api/library`에서 큰 JSON/log를 매번 반환하지 않는다.
 - startup에서 전체 `/data` scan이나 VACUUM을 자동 실행하지 않는다.
+- 장기 보관을 위해 DB에 모든 원본 payload를 중복 저장하지 않는다.
 
 ## 1. ZIP/Transcode Job 큐화
 
