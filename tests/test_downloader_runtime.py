@@ -338,6 +338,12 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertEqual(host, "youtube.com")
         self.assertEqual(slug, "video-abc123")
 
+    def test_gallery_dl_ytdl_target_parts_canonicalizes_youtu_be_host(self) -> None:
+        host, slug = downloader.gallery_dl_target_parts("ytdl:https://youtu.be/abc123?t=30")
+
+        self.assertEqual(host, "youtube.com")
+        self.assertEqual(slug, "video-abc123")
+
     def test_youtube_provider_key_uses_canonical_youtube_bucket(self) -> None:
         parsed = ParsedDownload(
             source="gallerydl",

@@ -2034,9 +2034,14 @@ def normalized_url_host(url: str) -> str:
 def gallery_dl_target_parts(source_url: str) -> tuple[str, str]:
     display_url = ytdl_inner_url(source_url) or source_url
     parsed_url = urlparse(display_url)
-    host = sanitize_segment(parsed_url.netloc.lower().removeprefix("www."), "site")
+    host = sanitize_segment(canonical_gallery_host(parsed_url), "site")
     slug = sanitize_segment(youtube_slug(parsed_url) or generic_gallery_slug(parsed_url, host), "archive")
     return host, slug
+
+
+def canonical_gallery_host(parsed_url: Any) -> str:
+    host = parsed_url.netloc.lower().removeprefix("www.")
+    return "youtube.com" if host in YOUTUBE_HOSTS else host
 
 
 def youtube_slug(parsed_url: Any) -> str:
