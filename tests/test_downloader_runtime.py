@@ -7,8 +7,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 from app import downloader
 from app.models import ParsedDownload
+
+
+def http_error(status_code: int) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = f"https://civitai.com/api/v1/model-versions/{status_code}"
+    return requests.HTTPError(f"{status_code} Client Error", response=response)
 
 
 class FakeDb:
@@ -17,10 +26,12 @@ class FakeDb:
         job: dict,
         secrets: dict[str, str] | None = None,
         settings: dict[str, str] | None = None,
+        listed_jobs: list[dict] | None = None,
     ) -> None:
         self.job = job
         self.secrets = secrets or {}
         self.settings = settings or {}
+        self.listed_jobs = listed_jobs
         self.logs: list[str] = []
         self.created_jobs: list[ParsedDownload] = []
         self.next_job_id = 500
@@ -46,6 +57,11 @@ class FakeDb:
         self.created_jobs.append(parsed)
         self.next_job_id += 1
         return self.next_job_id
+
+    def list_jobs(self, limit: int = 100) -> list[dict]:
+        if self.listed_jobs is not None:
+            return self.listed_jobs[:limit]
+        return [dict(self.job)]
 
 
 class DownloaderRuntimeTests(unittest.TestCase):
@@ -175,6 +191,12 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 }
             },
         }
+        version_metadata = {
+            "id": 3059910,
+            "name": "v4.0",
+            "baseModel": "Illustrious",
+            "model": {"id": 2061456, "name": "Example LoRA", "type": "LORA"},
+        }
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "data"
@@ -198,7 +220,7 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
                 mock.patch.object(downloader, "DATA_ROOT", root),
                 mock.patch.object(downloader, "db", fake_db),
-                mock.patch.object(downloader, "fetch_json", return_value={"items": [api_item]}) as fetch_json,
+                mock.patch.object(downloader, "fetch_json", side_effect=[{"items": [api_item]}, version_metadata]) as fetch_json,
                 mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download) as stream_download,
                 mock.patch.object(downloader, "enqueue_job") as enqueue_job,
             ):
@@ -209,10 +231,14 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertTrue(sidecar.exists())
             payload = json.loads(sidecar.read_text(encoding="utf-8"))
 
-            fetch_json.assert_called_once()
+            self.assertEqual(fetch_json.call_count, 2)
             self.assertEqual(
-                fetch_json.call_args.args[1],
+                fetch_json.call_args_list[0].args[1],
                 f"{downloader.CIVITAI_API_BASE}/images?imageId=135240496&withMeta=true",
+            )
+            self.assertEqual(
+                fetch_json.call_args_list[1].args[1],
+                f"{downloader.CIVITAI_API_BASE}/model-versions/3059910",
             )
             self.assertEqual(stream_download.call_args.kwargs["filename_override"], "image_135240496.jpeg")
             self.assertEqual(fake_db.job["target_dir"], str(target))
@@ -310,6 +336,291 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertEqual(child.civitai_model_id, "111")
             self.assertEqual(child.civitai_version_id, "222")
             enqueue_job.assert_called_once_with(501)
+
+    def test_civitai_image_page_skips_resource_that_is_already_downloaded(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/images/135240496",
+            civitai_image_id="135240496",
+            civitai_image_url="https://civitai.com/images/135240496",
+        )
+        api_item = {
+            "id": 135240496,
+            "url": "https://image.civitai.com/example/sample.png",
+            "username": "creator",
+            "meta": {
+                "resources": [
+                    {
+                        "name": "Existing LoRA",
+                        "type": "LORA",
+                        "modelId": 123,
+                        "modelVersionId": 456,
+                    }
+                ]
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            existing_target = root / "stable-diffusion" / "loras" / "existing" / "version_456"
+            existing_target.mkdir(parents=True)
+            (existing_target / "existing.safetensors").write_bytes(b"model")
+            existing_parsed = ParsedDownload(
+                source="civitai",
+                raw_input="https://civitai.com/models/123?modelVersionId=456",
+                civitai_model_id="123",
+                civitai_version_id="456",
+            )
+            fake_db = FakeDb(
+                {"status": "running"},
+                listed_jobs=[
+                    {
+                        "id": 44,
+                        "source": "civitai",
+                        "status": "done",
+                        "target_dir": str(existing_target),
+                        "parsed_json": json.dumps(existing_parsed.to_dict()),
+                        "metadata_json": "",
+                    }
+                ],
+            )
+            original_create_job = fake_db.create_job
+            fake_db.create_job = mock.Mock(side_effect=original_create_job)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"image")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", return_value={"items": [api_item]}) as fetch_json,
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            payload = json.loads(
+                (root / "civitai" / "images" / "creator" / "image_135240496" / "_civitai_image_metadata.json")
+                .read_text(encoding="utf-8")
+            )
+            resource_download = payload["resource_downloads"][0]
+
+            fetch_json.assert_called_once()
+            self.assertEqual(resource_download["status"], "present")
+            self.assertEqual(resource_download["existing_job_id"], 44)
+            self.assertEqual(resource_download["target_path"], "stable-diffusion/loras/existing/version_456")
+            fake_db.create_job.assert_not_called()
+            enqueue_job.assert_not_called()
+
+    def test_civitai_image_page_skips_resource_with_existing_active_job(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/images/135240496",
+            civitai_image_id="135240496",
+            civitai_image_url="https://civitai.com/images/135240496",
+        )
+        api_item = {
+            "id": 135240496,
+            "url": "https://image.civitai.com/example/sample.png",
+            "username": "creator",
+            "meta": {"resources": [{"name": "Queued LoRA", "modelId": 123, "modelVersionId": 456}]},
+        }
+        existing_parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/123?modelVersionId=456",
+            civitai_model_id="123",
+            civitai_version_id="456",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb(
+                {"status": "running"},
+                listed_jobs=[
+                    {
+                        "id": 45,
+                        "source": "civitai",
+                        "status": "running",
+                        "target_dir": "",
+                        "parsed_json": json.dumps(existing_parsed.to_dict()),
+                        "metadata_json": "",
+                    }
+                ],
+            )
+            original_create_job = fake_db.create_job
+            fake_db.create_job = mock.Mock(side_effect=original_create_job)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"image")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", return_value={"items": [api_item]}),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            payload = json.loads(
+                (root / "civitai" / "images" / "creator" / "image_135240496" / "_civitai_image_metadata.json")
+                .read_text(encoding="utf-8")
+            )
+            resource_download = payload["resource_downloads"][0]
+
+            self.assertEqual(resource_download["status"], "already_queued")
+            self.assertEqual(resource_download["existing_job_id"], 45)
+            fake_db.create_job.assert_not_called()
+            enqueue_job.assert_not_called()
+
+    def test_civitai_image_page_skips_resource_after_permanent_failure(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/images/135240496",
+            civitai_image_id="135240496",
+            civitai_image_url="https://civitai.com/images/135240496",
+        )
+        api_item = {
+            "id": 135240496,
+            "url": "https://image.civitai.com/example/sample.png",
+            "username": "creator",
+            "meta": {"resources": [{"name": "Gone LoRA", "modelId": 123, "modelVersionId": 456}]},
+        }
+        failed_parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/123?modelVersionId=456",
+            civitai_model_id="123",
+            civitai_version_id="456",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb(
+                {"status": "running"},
+                listed_jobs=[
+                    {
+                        "id": 46,
+                        "source": "civitai",
+                        "status": "failed",
+                        "error": "404 Client Error: Not Found",
+                        "updated_at": "2026-07-01T00:00:00+00:00",
+                        "target_dir": "",
+                        "parsed_json": json.dumps(failed_parsed.to_dict()),
+                        "metadata_json": "",
+                    }
+                ],
+            )
+            original_create_job = fake_db.create_job
+            fake_db.create_job = mock.Mock(side_effect=original_create_job)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"image")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", return_value={"items": [api_item]}),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            payload = json.loads(
+                (root / "civitai" / "images" / "creator" / "image_135240496" / "_civitai_image_metadata.json")
+                .read_text(encoding="utf-8")
+            )
+            resource_download = payload["resource_downloads"][0]
+
+            self.assertEqual(resource_download["status"], "unavailable")
+            self.assertEqual(resource_download["existing_job_id"], 46)
+            fake_db.create_job.assert_not_called()
+            enqueue_job.assert_not_called()
+
+    def test_civitai_image_page_skips_resource_when_preflight_is_private_or_deleted(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/images/135240496",
+            civitai_image_id="135240496",
+            civitai_image_url="https://civitai.com/images/135240496",
+        )
+        api_item = {
+            "id": 135240496,
+            "url": "https://image.civitai.com/example/sample.png",
+            "username": "creator",
+            "meta": {"resources": [{"name": "Private LoRA", "modelId": 123, "modelVersionId": 456}]},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"}, listed_jobs=[])
+            original_create_job = fake_db.create_job
+            fake_db.create_job = mock.Mock(side_effect=original_create_job)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"image")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[{"items": [api_item]}, http_error(404)]) as fetch_json,
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            payload = json.loads(
+                (root / "civitai" / "images" / "creator" / "image_135240496" / "_civitai_image_metadata.json")
+                .read_text(encoding="utf-8")
+            )
+            resource_download = payload["resource_downloads"][0]
+            resource = payload["generation_data"]["resources"][0]
+
+            self.assertEqual(fetch_json.call_count, 2)
+            self.assertEqual(resource_download["status"], "unavailable")
+            self.assertIn("not found", resource_download["reason"].lower())
+            self.assertEqual(resource["availability"], "unavailable")
+            fake_db.create_job.assert_not_called()
+            enqueue_job.assert_not_called()
 
     def test_civitai_image_page_rejects_mismatched_api_image_id(self) -> None:
         parsed = ParsedDownload(

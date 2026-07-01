@@ -110,6 +110,20 @@ CIVITAI_GENERATION_META_EXCLUDED_KEYS = {
     "civitairesources",
     "civitai_resources",
 }
+CIVITAI_RESOURCE_ACTIVE_STATUSES = {"queued", "running", "paused", "pausing", "deleting"}
+CIVITAI_RESOURCE_FAILED_STATUSES = {"failed", "canceled"}
+CIVITAI_RESOURCE_PERMANENT_HTTP_STATUSES = {401, 403, 404, 410}
+CIVITAI_RESOURCE_RETRY_DELAY_DEFAULT_SECONDS = 24 * 60 * 60
+CIVITAI_MODEL_FILE_EXTENSIONS = {
+    ".bin",
+    ".ckpt",
+    ".ggml",
+    ".gguf",
+    ".onnx",
+    ".pt",
+    ".pth",
+    ".safetensors",
+}
 FOLDER_THUMBNAIL_MAX_FILES = 5000
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -1306,6 +1320,34 @@ def id_value(value: Any) -> str | None:
     return text
 
 
+def http_status_code(exc: BaseException) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return int(status_code) if isinstance(status_code, int) else None
+
+
+def civitai_resource_unavailable_reason(status_code: int | None) -> str:
+    if status_code in {401, 403}:
+        return "Civitai resource is private or requires authorization."
+    if status_code in {404, 410}:
+        return "Civitai resource was not found or has been removed."
+    return "Civitai resource is unavailable."
+
+
+def mark_civitai_resource_unavailable(
+    resource: dict[str, Any],
+    *,
+    status_code: int | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    unavailable = dict(resource)
+    unavailable["availability"] = "unavailable"
+    unavailable["unavailable_reason"] = reason or civitai_resource_unavailable_reason(status_code)
+    if status_code is not None:
+        unavailable["status_code"] = str(status_code)
+    return unavailable
+
+
 def normalized_generation_meta_key(key: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(key or "").lower())
 
@@ -1465,6 +1507,7 @@ def civitai_version_resource(metadata: dict[str, Any], version_id: str) -> dict[
     )
     if model_id:
         normalized["href"] = civitai_model_page_url(model_id, id_value(metadata.get("id") or version_id))
+    normalized["availability"] = "available"
     return normalized
 
 
@@ -1500,8 +1543,15 @@ def enrich_civitai_image_resources(
                 metadata = fetch_json(session, meta_url, job_id=job_id)
                 cache[version_id] = civitai_version_resource(metadata, version_id)
             except Exception as exc:
+                status_code = http_status_code(exc)
+                if status_code in CIVITAI_RESOURCE_PERMANENT_HTTP_STATUSES:
+                    cache[version_id] = mark_civitai_resource_unavailable(
+                        {"model_version_id": version_id},
+                        status_code=status_code,
+                    )
+                else:
+                    cache[version_id] = None
                 db.append_log(job_id, f"civitai.image.resource.metadata.warning version={version_id}: {exc}")
-                cache[version_id] = None
 
         enriched = cache.get(version_id)
         enriched_resources.append(merge_civitai_resource(resource, enriched) if enriched else resource)
@@ -1740,7 +1790,244 @@ def civitai_image_archive_summary(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_civitai_image_resource_jobs(job_id: int, resources: list[dict[str, str]]) -> list[dict[str, Any]]:
+def civitai_resource_retry_delay_seconds() -> int:
+    return nonnegative_int_setting(
+        "CIVITAI_IMAGE_RESOURCE_RETRY_DELAY_SECONDS",
+        CIVITAI_RESOURCE_RETRY_DELAY_DEFAULT_SECONDS,
+    )
+
+
+def civitai_resource_download_entry(
+    resource: dict[str, Any],
+    version_id: str,
+    *,
+    status: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "model_version_id": version_id,
+        "model_id": id_value(resource.get("model_id")),
+        "name": resource.get("name"),
+        "type": resource.get("type"),
+        "status": status,
+    }
+    for key, value in fields.items():
+        if value not in (None, ""):
+            entry[key] = value
+    return entry
+
+
+def is_civitai_model_file(path: Path) -> bool:
+    return path.suffix.lower() in CIVITAI_MODEL_FILE_EXTENSIONS
+
+
+def civitai_target_has_model_file(path: Path, limit: int = 10000) -> bool:
+    try:
+        if path.is_file():
+            return is_civitai_model_file(path)
+        if not path.is_dir():
+            return False
+        for index, item in enumerate(path.rglob("*")):
+            if index >= limit:
+                return False
+            if item.is_file() and not item.is_symlink() and is_civitai_model_file(item):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def civitai_health_target_path(path: Path) -> str:
+    return data_root_relative_path(path) or str(path)
+
+
+def civitai_version_ids_from_job(job: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    parsed_payload = parse_metadata_json(job.get("parsed_json"))
+    if parsed_payload.get("source") == "civitai":
+        version_id = id_value(parsed_payload.get("civitai_version_id"))
+        if version_id:
+            ids.add(version_id)
+
+    metadata = parse_metadata_json(job.get("metadata_json"))
+    for key in ("version_id", "model_version_id", "modelVersionId"):
+        version_id = id_value(metadata.get(key))
+        if version_id:
+            ids.add(version_id)
+    nested = metadata.get("metadata")
+    if isinstance(nested, dict):
+        for key in ("id", "model_version_id", "modelVersionId"):
+            version_id = id_value(nested.get(key))
+            if version_id:
+                ids.add(version_id)
+    return ids
+
+
+def civitai_metadata_version_ids(metadata: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in ("version_id", "model_version_id", "modelVersionId"):
+        version_id = id_value(metadata.get(key))
+        if version_id:
+            ids.add(version_id)
+    nested = metadata.get("metadata")
+    if isinstance(nested, dict):
+        for key in ("id", "model_version_id", "modelVersionId"):
+            version_id = id_value(nested.get(key))
+            if version_id:
+                ids.add(version_id)
+    return ids
+
+
+def job_updated_at(job: dict[str, Any]) -> datetime | None:
+    value = job.get("updated_at") or job.get("created_at")
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def civitai_job_failure_is_permanent(job: dict[str, Any]) -> bool:
+    error = str(job.get("error") or "")
+    return any(f" {code} " in f" {error} " or f"HTTP {code}" in error for code in CIVITAI_RESOURCE_PERMANENT_HTTP_STATUSES)
+
+
+def civitai_recent_failed_resource_state(job: dict[str, Any], version_id: str) -> dict[str, Any] | None:
+    if civitai_job_failure_is_permanent(job):
+        return {
+            "status": "unavailable",
+            "reason": "previous permanent failure",
+            "existing_job_id": int(job["id"]) if job.get("id") is not None else None,
+        }
+
+    retry_delay = civitai_resource_retry_delay_seconds()
+    if retry_delay <= 0:
+        return None
+    updated_at = job_updated_at(job)
+    if updated_at is None:
+        return {
+            "status": "retry_deferred",
+            "reason": "previous failure",
+            "existing_job_id": int(job["id"]) if job.get("id") is not None else None,
+        }
+    elapsed = (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds()
+    remaining = int(max(0, retry_delay - elapsed))
+    if remaining <= 0:
+        return None
+    return {
+        "status": "retry_deferred",
+        "reason": "previous failure retry cooldown",
+        "retry_after_seconds": remaining,
+        "existing_job_id": int(job["id"]) if job.get("id") is not None else None,
+    }
+
+
+def civitai_resource_state_from_jobs(version_id: str) -> dict[str, Any] | None:
+    active_state: dict[str, Any] | None = None
+    failed_state: dict[str, Any] | None = None
+    for job in db.list_jobs(limit=5000):
+        if str(job.get("source") or "") != "civitai":
+            continue
+        if version_id not in civitai_version_ids_from_job(job):
+            continue
+
+        job_id = int(job["id"]) if job.get("id") is not None else None
+        status = str(job.get("status") or "")
+        target_dir = str(job.get("target_dir") or "").strip()
+        target = Path(target_dir) if target_dir else None
+        if status == "done" and target is not None and civitai_target_has_model_file(target):
+            return {
+                "status": "present",
+                "reason": "already downloaded",
+                "target_path": civitai_health_target_path(target),
+                "existing_job_id": job_id,
+            }
+        if status in CIVITAI_RESOURCE_ACTIVE_STATUSES and active_state is None:
+            active_state = {
+                "status": "already_queued",
+                "reason": f"existing job is {status}",
+                "existing_job_id": job_id,
+            }
+        if status in CIVITAI_RESOURCE_FAILED_STATUSES and failed_state is None:
+            failed_state = civitai_recent_failed_resource_state(job, version_id)
+    return active_state or failed_state
+
+
+def civitai_resource_state_from_sidecars(version_id: str) -> dict[str, Any] | None:
+    try:
+        sidecars = DATA_ROOT.rglob("_civitai_metadata.json")
+        for sidecar in sidecars:
+            try:
+                if not sidecar.is_file() or sidecar.is_symlink():
+                    continue
+                payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or version_id not in civitai_metadata_version_ids(payload):
+                continue
+            target = sidecar.parent
+            if civitai_target_has_model_file(target):
+                return {
+                    "status": "present",
+                    "reason": "already downloaded",
+                    "target_path": civitai_health_target_path(target),
+                }
+    except OSError:
+        return None
+    return None
+
+
+def civitai_existing_resource_state(version_id: str) -> dict[str, Any] | None:
+    job_state = civitai_resource_state_from_jobs(version_id)
+    if job_state and job_state.get("status") == "present":
+        return job_state
+    sidecar_state = civitai_resource_state_from_sidecars(version_id)
+    if sidecar_state:
+        return sidecar_state
+    return job_state
+
+
+def preflight_civitai_resource(
+    session: requests.Session | None,
+    job_id: int,
+    resource: dict[str, Any],
+    version_id: str,
+) -> dict[str, Any] | None:
+    if resource.get("availability") == "unavailable":
+        return {
+            "status": "unavailable",
+            "reason": resource.get("unavailable_reason") or "resource unavailable",
+        }
+    if resource.get("availability") == "available" or session is None:
+        return None
+
+    meta_url = f"{CIVITAI_API_BASE}/model-versions/{quote(version_id, safe='')}"
+    try:
+        db.append_log(job_id, f"civitai.image.resource.preflight: {meta_url}")
+        metadata = fetch_json(session, meta_url, job_id=job_id)
+    except Exception as exc:
+        status_code = http_status_code(exc)
+        if status_code in CIVITAI_RESOURCE_PERMANENT_HTTP_STATUSES:
+            reason = civitai_resource_unavailable_reason(status_code)
+            resource.update(mark_civitai_resource_unavailable(resource, status_code=status_code, reason=reason))
+            return {"status": "unavailable", "reason": reason, "status_code": status_code}
+        db.append_log(job_id, f"civitai.image.resource.preflight.warning version={version_id}: {exc}")
+        return None
+
+    resource.update(merge_civitai_resource(resource, civitai_version_resource(metadata, version_id)))
+    return None
+
+
+def create_civitai_image_resource_jobs(
+    job_id: int,
+    resources: list[dict[str, Any]],
+    *,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
     downloads: list[dict[str, Any]] = []
     seen: set[str] = set()
     for resource in resources:
@@ -1748,6 +2035,28 @@ def create_civitai_image_resource_jobs(job_id: int, resources: list[dict[str, st
         if not version_id or version_id in seen:
             continue
         seen.add(version_id)
+
+        existing_state = civitai_existing_resource_state(version_id)
+        if existing_state:
+            entry = civitai_resource_download_entry(resource, version_id, **existing_state)
+            downloads.append(entry)
+            db.append_log(
+                job_id,
+                f"civitai.image.resource.skip modelVersionId={version_id} status={entry['status']} "
+                f"reason={entry.get('reason') or '-'}",
+            )
+            continue
+
+        preflight_state = preflight_civitai_resource(session, job_id, resource, version_id)
+        if preflight_state:
+            entry = civitai_resource_download_entry(resource, version_id, **preflight_state)
+            downloads.append(entry)
+            db.append_log(
+                job_id,
+                f"civitai.image.resource.skip modelVersionId={version_id} status={entry['status']} "
+                f"reason={entry.get('reason') or '-'}",
+            )
+            continue
 
         model_id = id_value(resource.get("model_id"))
         if model_id:
@@ -1763,14 +2072,12 @@ def create_civitai_image_resource_jobs(job_id: int, resources: list[dict[str, st
         )
         child_job_id = db.create_job(child)
         enqueue_job(child_job_id)
-        entry = {
-            "model_version_id": version_id,
-            "model_id": model_id,
-            "name": resource.get("name"),
-            "type": resource.get("type"),
-            "child_job_id": child_job_id,
-            "status": "queued",
-        }
+        entry = civitai_resource_download_entry(
+            resource,
+            version_id,
+            status="queued",
+            child_job_id=child_job_id,
+        )
         downloads.append(entry)
         db.append_log(
             job_id,
@@ -1843,11 +2150,16 @@ def download_civitai_image_page(job_id: int, parsed: ParsedDownload) -> None:
     write_metadata(target, CIVITAI_IMAGE_METADATA_FILENAME, record)
     update_civitai_image_job(job_id, target, saved, record)
 
-    resource_downloads = create_civitai_image_resource_jobs(job_id, resources)
+    resource_downloads = create_civitai_image_resource_jobs(job_id, resources, session=session)
     record["resource_downloads"] = resource_downloads
     write_metadata(target, CIVITAI_IMAGE_METADATA_FILENAME, record)
     update_civitai_image_job(job_id, target, saved, record)
-    db.append_log(job_id, f"civitai.image.done image_id={image_id} queued_resources={len(resource_downloads)}")
+    queued_resources = sum(1 for download in resource_downloads if download.get("status") == "queued")
+    db.append_log(
+        job_id,
+        f"civitai.image.done image_id={image_id} resource_entries={len(resource_downloads)} "
+        f"queued_resources={queued_resources}",
+    )
 
 
 def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
