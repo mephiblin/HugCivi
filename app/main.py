@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import mimetypes
@@ -12,7 +13,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
@@ -24,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
-from . import db
+from . import db, internal_jobs
 from .defaults import (
     DOWNLOAD_ARCHIVE_MAX_CONCURRENT_DEFAULT,
     DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS,
@@ -45,9 +46,12 @@ from .downloader import (
     cleanup_job_partial_files,
     enqueue_job,
     folder_thumbnail_path,
+    load_hitomi_listing_metadata,
     notify_queue_settings_changed,
+    queue_hitomi_listing_galleries,
     remove_pending_job,
     start_workers,
+    stop_workers,
     thumbnail_media_type,
     thumbnail_url_for_path,
     update_job_workflow_info,
@@ -57,7 +61,43 @@ from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
 from .workflows import WorkflowParseError, find_workflow_png, load_workflow_view, save_workflow_bundle, workflow_max_bytes
 
-app = FastAPI(title="hugcivi", version="0.1.0")
+
+def startup_tasks() -> None:
+    db.init_db()
+    ensure_route_folders()
+    cleanup_stale_download_archives()
+    cleanup_stale_media_cache()
+    register_internal_job_handlers()
+    start_workers()
+    internal_jobs.start_workers()
+    start_library_indexer()
+
+
+def shutdown_tasks() -> None:
+    if not stop_library_indexer():
+        print("library indexer did not stop before shutdown timeout", flush=True)
+    if not internal_jobs.stop_workers():
+        print("internal job scheduler did not stop before shutdown timeout", flush=True)
+    if not stop_workers():
+        print("download scheduler did not stop before shutdown timeout", flush=True)
+
+
+def register_internal_job_handlers() -> None:
+    internal_jobs.register_handler(INTERNAL_JOB_ARCHIVE_ZIP, run_archive_zip_job)
+    internal_jobs.register_handler(INTERNAL_JOB_MEDIA_TRANSCODE, run_media_transcode_job)
+    internal_jobs.register_handler(INTERNAL_JOB_MEDIA_POSTER, run_media_poster_job)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup_tasks()
+    try:
+        yield
+    finally:
+        shutdown_tasks()
+
+
+app = FastAPI(title="hugcivi", version="0.1.0", lifespan=lifespan)
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
@@ -79,6 +119,12 @@ SUBTITLE_LANGUAGE_LABELS = {
 BULK_ADD_MAX_ITEMS = 500
 BULK_ADD_MAX_TEXT_LENGTH = 200_000
 BULK_LINE_PREFIX_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
+INTERNAL_JOB_ARCHIVE_ZIP = "archive_zip"
+INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
+INTERNAL_JOB_MEDIA_POSTER = "media_poster"
+DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT = 50_000
+DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT = 0
+DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT = 0
 BROWSER_MP4_EXTENSIONS = {".m4v", ".mp4"}
 BROWSER_MP4_VIDEO_CODECS = {"h264"}
 BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
@@ -88,6 +134,9 @@ MEDIA_TRANSCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
 MEDIA_TRANSCODE_SEMAPHORE_LOCK = threading.Lock()
 DOWNLOAD_ARCHIVE_SEMAPHORE: threading.BoundedSemaphore | None = None
 DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK = threading.Lock()
+LIBRARY_INDEXER_THREAD: threading.Thread | None = None
+LIBRARY_INDEXER_STOP = threading.Event()
+LIBRARY_INDEXER_LOCK = threading.Lock()
 MODEL_EXTENSIONS = {
     ".bin",
     ".ckpt",
@@ -125,15 +174,6 @@ def require_auth(credentials: HTTPBasicCredentials = Depends(security)) -> str:
             headers={"WWW-Authenticate": "Basic"},
         )
     return credentials.username
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    db.init_db()
-    ensure_route_folders()
-    cleanup_stale_download_archives()
-    cleanup_stale_media_cache()
-    start_workers()
 
 
 @app.head("/manifest.webmanifest", include_in_schema=False)
@@ -283,6 +323,7 @@ def save_settings(
     queue_provider_cooldown_min_seconds: str = Form(str(QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS)),
     queue_provider_cooldown_max_seconds: str = Form(str(QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS)),
     queue_stall_timeout_seconds: str = Form(str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)),
+    hitomi_listing_queue_mode: str = Form("auto"),
     gallery_dl_auto_update: str = Form("0"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
@@ -381,6 +422,10 @@ def save_settings(
         "DOWNLOAD_STALL_TIMEOUT_SECONDS",
         normalize_int_setting(queue_stall_timeout_seconds, DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, minimum=0),
     )
+    db.set_setting(
+        "HITOMI_LISTING_QUEUE_MODE",
+        "confirm" if hitomi_listing_queue_mode.strip().lower() == "confirm" else "auto",
+    )
     gallery_dl_auto_update_value = normalize_bool_setting(gallery_dl_auto_update, default=True)
     db.set_setting("GALLERY_DL_AUTO_UPDATE", gallery_dl_auto_update_value)
     write_startup_config({"GALLERY_DL_AUTO_UPDATE": gallery_dl_auto_update_value})
@@ -397,13 +442,99 @@ def create_folder(folder_path: str = Form(...), _: str = Depends(require_auth)) 
 
 
 @app.get("/api/jobs")
-def api_jobs(_: str = Depends(require_auth)) -> JSONResponse:
-    return JSONResponse(decorate_jobs(db.list_jobs()))
+def api_jobs(
+    limit: int = 100,
+    cursor: int | None = None,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    jobs = decorate_jobs(db.list_job_summaries(limit=limit, before_id=cursor))
+    if cursor is None:
+        return JSONResponse(jobs)
+    next_cursor = jobs[-1]["id"] if len(jobs) >= max(1, min(500, limit)) else None
+    return JSONResponse({"ok": True, "jobs": jobs, "next_cursor": next_cursor})
 
 
 @app.get("/api/storage")
 def api_storage(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(storage_status())
+
+
+@app.post("/api/maintenance/db/wal")
+async def api_db_wal(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    enabled = bool(payload.get("enabled", True))
+    run_id = db.create_maintenance_run("db_wal", detail={"enabled": enabled})
+    try:
+        mode = db.set_wal_mode(enabled)
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc)})
+        raise
+    detail = {"journal_mode": mode, "enabled": enabled}
+    db.finish_maintenance_run(run_id, "done", detail)
+    return JSONResponse({"ok": True, "run_id": run_id, **detail})
+
+
+@app.post("/api/maintenance/db/checkpoint")
+async def api_db_checkpoint(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    mode = str(payload.get("mode") or "PASSIVE")
+    run_id = db.create_maintenance_run("db_checkpoint", detail={"mode": mode})
+    try:
+        detail = db.checkpoint_database(mode)
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc)})
+        raise
+    db.finish_maintenance_run(run_id, "done", detail)
+    return JSONResponse({"ok": True, "run_id": run_id, **detail})
+
+
+@app.post("/api/maintenance/db/optimize")
+def api_db_optimize(_: str = Depends(require_auth)) -> JSONResponse:
+    run_id = db.create_maintenance_run("db_optimize")
+    try:
+        db.optimize_database()
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc)})
+        raise
+    db.finish_maintenance_run(run_id, "done")
+    return JSONResponse({"ok": True, "run_id": run_id})
+
+
+@app.post("/api/maintenance/db/compact")
+def api_db_compact(_: str = Depends(require_auth)) -> JSONResponse:
+    run_id = db.create_maintenance_run("db_compact")
+    try:
+        db.vacuum_database()
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc)})
+        raise
+    db.finish_maintenance_run(run_id, "done")
+    return JSONResponse({"ok": True, "run_id": run_id})
+
+
+@app.post("/api/maintenance/db/backup")
+async def api_db_backup(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    filename = sanitize_segment(
+        str(payload.get("filename") or f"jobs-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.sqlite3"),
+        "jobs-backup.sqlite3",
+    )
+    if not filename.endswith(".sqlite3"):
+        filename = f"{filename}.sqlite3"
+    destination = db.DB_PATH.parent / "backups" / filename
+    run_id = db.create_maintenance_run("db_backup", detail={"path": str(destination)})
+    try:
+        db.backup_database(destination)
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc), "path": str(destination)})
+        raise
+    detail = {
+        "path": str(destination),
+        "size_bytes": destination.stat().st_size,
+        "credential_backup": True,
+    }
+    db.finish_maintenance_run(run_id, "done", detail)
+    return JSONResponse({"ok": True, "run_id": run_id, **detail})
 
 
 def jobs_response() -> JSONResponse:
@@ -415,6 +546,26 @@ def require_job(job_id: int) -> dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
     return job
+
+
+def enqueue_job_for_row(job_id: int, job: dict[str, Any]) -> None:
+    if db.is_internal_job(job):
+        internal_jobs.enqueue_job(job_id)
+    else:
+        enqueue_job(job_id)
+
+
+def remove_pending_job_for_row(job_id: int, job: dict[str, Any]) -> None:
+    if db.is_internal_job(job):
+        internal_jobs.remove_pending_job(job_id)
+    else:
+        remove_pending_job(job_id)
+
+
+def cleanup_job_files_for_row(job_id: int, job: dict[str, Any]) -> None:
+    if db.is_download_job(job):
+        cleanup_job_partial_files(job_id)
+        cleanup_job_local_files(job_id)
 
 
 @app.post("/api/jobs/clear")
@@ -431,6 +582,8 @@ def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
 def cleanup_inactive_job_partial_files(limit: int = 5000) -> int:
     cleaned = 0
     for job in db.list_inactive_jobs(limit=limit):
+        if db.is_internal_job(job):
+            continue
         try:
             cleanup_job_partial_files(int(job["id"]))
             cleaned += 1
@@ -444,7 +597,7 @@ def api_pause_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = require_job(job_id)
     status = str(job.get("status"))
     if status == "queued":
-        remove_pending_job(job_id)
+        remove_pending_job_for_row(job_id, job)
         db.update_job(job_id, status="paused", error=None)
         db.append_log(job_id, "pause requested")
     elif status == "running":
@@ -465,7 +618,7 @@ def api_resume_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
         raise HTTPException(status_code=400, detail="재개할 수 있는 작업 상태가 아닙니다.")
     db.update_job(job_id, status="queued", error=None)
     db.append_log(job_id, "resume requested")
-    enqueue_job(job_id)
+    enqueue_job_for_row(job_id, job)
     return jobs_response()
 
 
@@ -477,7 +630,7 @@ def api_retry_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
         raise HTTPException(status_code=400, detail="재시도할 수 있는 작업 상태가 아닙니다.")
     db.update_job(job_id, status="queued", error=None, progress_bytes=0, total_bytes=None)
     db.append_log(job_id, "retry requested")
-    enqueue_job(job_id)
+    enqueue_job_for_row(job_id, job)
     return jobs_response()
 
 
@@ -491,9 +644,8 @@ def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     elif status == "deleting":
         pass
     else:
-        remove_pending_job(job_id)
-        cleanup_job_partial_files(job_id)
-        cleanup_job_local_files(job_id)
+        remove_pending_job_for_row(job_id, job)
+        cleanup_job_files_for_row(job_id, job)
         db.delete_job(job_id)
     return jobs_response()
 
@@ -504,8 +656,14 @@ def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
 
 
 @app.get("/api/library")
-def api_library(_: str = Depends(require_auth)) -> JSONResponse:
-    return JSONResponse(library_items())
+def api_library(mode: str = "index", _: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse(library_items(mode=mode))
+
+
+@app.post("/api/library/reindex")
+def api_library_reindex(_: str = Depends(require_auth)) -> JSONResponse:
+    result = scan_library_index_batch(max_paths=library_reindex_batch_size(), reset=True)
+    return JSONResponse({"ok": True, **result, "items": db.list_library_index_items()})
 
 
 @app.get("/api/media/list")
@@ -548,11 +706,21 @@ def api_media_file(path: str, _: str = Depends(require_auth)) -> FileResponse:
 
 
 @app.get("/api/media/play")
-def api_media_play(path: str, _: str = Depends(require_auth)) -> FileResponse:
+def api_media_play(path: str, _: str = Depends(require_auth)) -> Response:
     source = existing_data_path(path)
     if not source.is_file() or not is_video_file(source):
         raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
-    playable = browser_playable_video_path(source)
+    playable = browser_playable_video_path_if_ready(source)
+    if playable is None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "job_required": True,
+                "job_kind": INTERNAL_JOB_MEDIA_TRANSCODE,
+                "path": relative_data_path(source),
+            },
+            status_code=202,
+        )
     return FileResponse(playable, media_type="video/mp4")
 
 
@@ -567,14 +735,112 @@ def api_media_subtitle(path: str, _: str = Depends(require_auth)) -> Response:
 
 
 @app.get("/api/media/poster")
-def api_media_poster(path: str, _: str = Depends(require_auth)) -> FileResponse:
+def api_media_poster(path: str, _: str = Depends(require_auth)) -> Response:
     source = existing_data_path(path)
     if source.is_file() and is_image_file(source):
         return FileResponse(source, media_type=media_type_for_path(source), filename=source.name)
     if not source.is_file() or not is_video_file(source):
         raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
-    poster = video_poster_path(source)
+    poster = video_poster_path_if_ready(source)
+    if poster is None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "job_required": True,
+                "job_kind": INTERNAL_JOB_MEDIA_POSTER,
+                "path": relative_data_path(source),
+            },
+            status_code=202,
+        )
     return FileResponse(poster, media_type="image/jpeg", filename=f"{source.stem}.jpg")
+
+
+@app.post("/api/media/transcode-jobs")
+async def api_create_media_transcode_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_video_path(str(payload.get("path") or ""))
+    ready = browser_playable_video_path_if_ready(source)
+    if ready is not None:
+        return JSONResponse(
+            {
+                "ok": True,
+                "ready": True,
+                "path": relative_data_path(source),
+                "url": media_play_url_for_ready_source(source, ready),
+            }
+        )
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_MEDIA_TRANSCODE,
+        input_text=f"transcode:{relative_data_path(source)}",
+        payload={"path": relative_data_path(source)},
+        target_dir=source.parent,
+        filename=f"{source.stem}.mp4",
+        total_bytes=source.stat().st_size,
+        metadata={"media_job": {"kind": INTERNAL_JOB_MEDIA_TRANSCODE, "path": relative_data_path(source)}},
+    )
+    internal_jobs.enqueue_job(job_id)
+    return JSONResponse({"ok": True, "ready": False, "job": decorate_job(db.get_job(job_id) or {})})
+
+
+@app.get("/api/media/transcode-jobs/{job_id}")
+def api_media_transcode_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_internal_job_kind(job_id, INTERNAL_JOB_MEDIA_TRANSCODE)
+    return JSONResponse({"ok": True, "job": decorate_job(job)})
+
+
+@app.get("/api/media/transcode-jobs/{job_id}/file")
+def api_media_transcode_job_file(job_id: int, _: str = Depends(require_auth)) -> FileResponse:
+    job = require_internal_job_kind(job_id, INTERNAL_JOB_MEDIA_TRANSCODE)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=409, detail="아직 재생 파일이 준비되지 않았습니다.")
+    artifact_path = Path(str(job.get("artifact_path") or ""))
+    if not safe_media_artifact_file(artifact_path):
+        raise HTTPException(status_code=404, detail="재생 파일을 찾지 못했습니다.")
+    return FileResponse(artifact_path, media_type="video/mp4", filename=str(job.get("filename") or artifact_path.name))
+
+
+@app.post("/api/media/poster-jobs")
+async def api_create_media_poster_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_video_path(str(payload.get("path") or ""))
+    ready = video_poster_path_if_ready(source)
+    if ready is not None:
+        return JSONResponse(
+            {
+                "ok": True,
+                "ready": True,
+                "path": relative_data_path(source),
+                "url": f"/api/media/poster?path={quote(relative_data_path(source), safe='/')}",
+            }
+        )
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_MEDIA_POSTER,
+        input_text=f"poster:{relative_data_path(source)}",
+        payload={"path": relative_data_path(source)},
+        target_dir=source.parent,
+        filename=f"{source.stem}.jpg",
+        total_bytes=1,
+        metadata={"media_job": {"kind": INTERNAL_JOB_MEDIA_POSTER, "path": relative_data_path(source)}},
+    )
+    internal_jobs.enqueue_job(job_id)
+    return JSONResponse({"ok": True, "ready": False, "job": decorate_job(db.get_job(job_id) or {})})
+
+
+@app.get("/api/media/poster-jobs/{job_id}")
+def api_media_poster_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_internal_job_kind(job_id, INTERNAL_JOB_MEDIA_POSTER)
+    return JSONResponse({"ok": True, "job": decorate_job(job)})
+
+
+@app.get("/api/media/poster-jobs/{job_id}/file")
+def api_media_poster_job_file(job_id: int, _: str = Depends(require_auth)) -> FileResponse:
+    job = require_internal_job_kind(job_id, INTERNAL_JOB_MEDIA_POSTER)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=409, detail="아직 썸네일이 준비되지 않았습니다.")
+    artifact_path = Path(str(job.get("artifact_path") or ""))
+    if not safe_media_artifact_file(artifact_path):
+        raise HTTPException(status_code=404, detail="썸네일 파일을 찾지 못했습니다.")
+    return FileResponse(artifact_path, media_type="image/jpeg", filename=str(job.get("filename") or artifact_path.name))
 
 
 @app.post("/api/fs/rename")
@@ -594,6 +860,7 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     db.update_target_dir_prefix(source, target)
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
+    db.update_library_item_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -622,6 +889,7 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     db.update_target_dir_prefix(source, target)
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
+    db.update_library_item_path_prefix(old_relative, new_relative)
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -642,6 +910,7 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     db.clear_target_dir_prefix(source)
     db.clear_favorite_path_prefix(relative_path)
     db.clear_note_path_prefix(relative_path)
+    db.clear_library_item_prefix(relative_path)
     return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
 
 
@@ -751,8 +1020,70 @@ def api_download_info(path: str, _: str = Depends(require_auth)) -> JSONResponse
             "name": source.name,
             "kind": "folder" if source.is_dir() else "file",
             "filename": download_filename(source),
+            "async_job": source.is_dir(),
         }
     )
+
+
+@app.post("/api/fs/download-jobs")
+async def api_create_download_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(source)
+    if not source.is_dir():
+        return JSONResponse(
+            {
+                "ok": True,
+                "kind": "file",
+                "download_url": f"/api/fs/download?path={quote(relative_data_path(source))}",
+                "filename": source.name,
+            }
+        )
+
+    try:
+        preflight = preflight_archive_job(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+
+    relative_path = relative_data_path(source)
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_ARCHIVE_ZIP,
+        input_text=f"zip:{relative_path}",
+        payload={"path": relative_path},
+        target_dir=str(source),
+        filename=download_filename(source),
+        total_bytes=int(preflight["source_bytes"]),
+        metadata={"archive_preflight": preflight},
+    )
+    internal_jobs.enqueue_job(job_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "kind": "folder",
+            "job": decorate_job(db.get_job(job_id) or {}),
+        }
+    )
+
+
+@app.get("/api/fs/download-jobs/{job_id}")
+def api_download_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_archive_job(job_id)
+    return JSONResponse({"ok": True, "job": decorate_job(job)})
+
+
+@app.get("/api/fs/download-jobs/{job_id}/file")
+def api_download_job_file(job_id: int, _: str = Depends(require_auth)) -> FileResponse:
+    job = require_archive_job(job_id)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=409, detail="아직 다운로드 파일이 준비되지 않았습니다.")
+    artifact_path = Path(str(job.get("artifact_path") or ""))
+    if not safe_cache_file(DOWNLOAD_ARCHIVE_DIR, artifact_path):
+        raise HTTPException(status_code=404, detail="다운로드 파일을 찾지 못했습니다.")
+    if not artifact_path.exists() or not artifact_path.is_file():
+        raise HTTPException(status_code=404, detail="다운로드 파일을 찾지 못했습니다.")
+    return FileResponse(artifact_path, media_type="application/zip", filename=str(job.get("filename") or artifact_path.name))
 
 
 @app.get("/api/fs/properties")
@@ -819,6 +1150,40 @@ def job_log(job_id: int, _: str = Depends(require_auth)) -> PlainTextResponse:
     return PlainTextResponse(job.get("log") or "")
 
 
+@app.get("/api/hitomi/listing/{job_id}")
+def api_hitomi_listing(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        metadata = load_hitomi_listing_metadata(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "listing": metadata})
+
+
+@app.post("/api/hitomi/listing/{job_id}/queue")
+async def api_queue_hitomi_listing(job_id: int, request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    raw_ids = payload.get("gallery_ids") or payload.get("galleryIds") or []
+    if payload.get("all") is True:
+        gallery_ids: list[str] | None = None
+    elif isinstance(raw_ids, list):
+        gallery_ids = [str(value).strip() for value in raw_ids if str(value).strip()]
+    else:
+        raise HTTPException(status_code=400, detail="gallery_ids 배열이 필요합니다.")
+    try:
+        result = queue_hitomi_listing_galleries(job_id, gallery_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": result["queued"],
+            "skipped": result["skipped"],
+            "listing": result["metadata"],
+            "jobs": decorate_jobs(db.list_jobs()),
+        }
+    )
+
+
 def decorate_jobs(jobs: list[dict], *, include_log: bool = False) -> list[dict]:
     favorites = db.favorite_paths()
     return [decorate_job(job, favorites, include_log=include_log) for job in jobs]
@@ -842,6 +1207,9 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["total_human"] = human_bytes(total)
     job["percent"] = percent
     job["target_path"] = target_path
+    job["job_kind"] = db.normalized_job_kind(job.get("job_kind"))
+    if job["job_kind"] != db.JOB_KIND_DOWNLOAD and str(job.get("source") or "") == "internal":
+        job["source"] = job["job_kind"]
     if (
         not job.get("thumbnail_url")
         and job.get("target_dir")
@@ -854,7 +1222,18 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     return job
 
 
-def library_items(max_items: int = 1000) -> list[dict[str, Any]]:
+def library_items(max_items: int = 1000, *, mode: str = "index") -> list[dict[str, Any]]:
+    if mode != "live":
+        indexed_items = db.list_library_index_items(limit=max_items)
+        if indexed_items:
+            favorites = db.favorite_paths()
+            for item in indexed_items:
+                target_path = str(item.get("target_path") or "")
+                item["favorite"] = bool(target_path and target_path in favorites)
+            return indexed_items
+        if db.get_library_scan_state("library.indexing", "0") == "1":
+            return []
+
     favorites = db.favorite_paths()
     items: list[dict[str, Any]] = []
     indexed_dirs: set[Path] = set()
@@ -884,6 +1263,163 @@ def library_items(max_items: int = 1000) -> list[dict[str, Any]]:
             continue
 
     return sorted(items, key=lambda item: (str(item.get("target_path") or "").lower()))
+
+
+def start_library_indexer() -> None:
+    global LIBRARY_INDEXER_THREAD
+    with LIBRARY_INDEXER_LOCK:
+        if LIBRARY_INDEXER_THREAD is not None and LIBRARY_INDEXER_THREAD.is_alive():
+            return
+        LIBRARY_INDEXER_STOP.clear()
+        thread = threading.Thread(target=library_indexer_loop, name="library-indexer", daemon=True)
+        LIBRARY_INDEXER_THREAD = thread
+        thread.start()
+
+
+def stop_library_indexer(timeout_seconds: float = 5.0) -> bool:
+    global LIBRARY_INDEXER_THREAD
+    with LIBRARY_INDEXER_LOCK:
+        thread = LIBRARY_INDEXER_THREAD
+        if thread is None or not thread.is_alive():
+            LIBRARY_INDEXER_THREAD = None
+            LIBRARY_INDEXER_STOP.set()
+            return True
+        LIBRARY_INDEXER_STOP.set()
+    thread.join(timeout=max(0.0, timeout_seconds))
+    stopped = not thread.is_alive()
+    if stopped:
+        with LIBRARY_INDEXER_LOCK:
+            if LIBRARY_INDEXER_THREAD is thread:
+                LIBRARY_INDEXER_THREAD = None
+    return stopped
+
+
+def library_indexer_loop() -> None:
+    initial_delay = nonnegative_int_env("LIBRARY_INDEXER_START_DELAY_SECONDS", 5)
+    if LIBRARY_INDEXER_STOP.wait(initial_delay):
+        return
+    while not LIBRARY_INDEXER_STOP.is_set():
+        try:
+            scan_library_index_batch(max_paths=library_index_batch_size())
+            db.prune_missing_library_items(limit=library_index_batch_size())
+        except Exception as exc:  # noqa: BLE001 - background indexer must keep running
+            print(f"library indexer failed: {exc}", flush=True)
+        interval = nonnegative_int_env("LIBRARY_INDEXER_INTERVAL_SECONDS", 300)
+        if LIBRARY_INDEXER_STOP.wait(max(1, interval)):
+            return
+
+
+def library_index_batch_size() -> int:
+    return max(1, nonnegative_int_env("LIBRARY_INDEX_BATCH_SIZE", 300))
+
+
+def library_reindex_batch_size() -> int:
+    return max(1, nonnegative_int_env("LIBRARY_REINDEX_BATCH_SIZE", 5000))
+
+
+def scan_library_index_batch(*, max_paths: int, reset: bool = False) -> dict[str, Any]:
+    if reset:
+        db.clear_library_index()
+    db.set_library_scan_state("library.indexing", "1")
+    cursor = "" if reset else db.get_library_scan_state("library.cursor", "")
+    processed = 0
+    indexed = 0
+    last_path = cursor
+    reached_end = True
+    favorites = db.favorite_paths()
+
+    for path in iter_library_scan_paths(cursor=cursor):
+        if LIBRARY_INDEXER_STOP.is_set():
+            reached_end = False
+            break
+        relative = relative_data_path(path)
+        processed += 1
+        last_path = relative
+        if index_library_path(path, favorites):
+            indexed += 1
+        if processed >= max_paths:
+            reached_end = False
+            break
+
+    db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
+    db.set_library_scan_state("library.indexing", "0")
+    db.set_library_scan_state("library.last_scan_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return {
+        "processed": processed,
+        "indexed": indexed,
+        "cursor": "" if reached_end else last_path,
+        "complete": reached_end,
+    }
+
+
+def iter_library_scan_paths(*, cursor: str):
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    cursor_text = cursor.strip("/")
+    try:
+        for root, dirs, files in os.walk(DATA_ROOT):
+            dirs[:] = sorted([name for name in dirs if not name.startswith(".")])
+            names = dirs + sorted(files)
+            for name in names:
+                path = Path(root) / name
+                try:
+                    if should_skip_index_path(path):
+                        continue
+                    relative = relative_data_path(path)
+                except (OSError, ValueError):
+                    continue
+                if cursor_text and relative <= cursor_text:
+                    continue
+                yield path
+    except OSError:
+        return
+
+
+def index_library_path(path: Path, favorites: set[str]) -> bool:
+    try:
+        if path.is_dir():
+            if not should_index_directory(path):
+                return False
+        elif path.is_file():
+            if not is_library_file(path) or has_indexed_library_ancestor(path):
+                return False
+        else:
+            return False
+        item = library_item_for_path(path, favorites)
+        stat = path.stat()
+    except (OSError, ValueError):
+        try:
+            db.mark_library_item_stale(relative_data_path(path))
+        except Exception:
+            pass
+        return False
+    db.upsert_library_item(
+        str(item.get("target_path") or relative_data_path(path)),
+        kind=str(item.get("kind") or ("folder" if path.is_dir() else "file")),
+        name=str(item.get("filename") or path.name),
+        target_dir=str(path),
+        payload=item,
+        size_bytes=int(item.get("progress_bytes") or 0),
+        mtime_ns=stat.st_mtime_ns,
+        ctime_ns=stat.st_ctime_ns,
+    )
+    return True
+
+
+def has_indexed_library_ancestor(path: Path) -> bool:
+    current = path.parent
+    root = DATA_ROOT.resolve(strict=False)
+    while True:
+        try:
+            resolved = current.resolve(strict=False)
+        except OSError:
+            return True
+        if resolved == root:
+            return False
+        if root not in resolved.parents:
+            return True
+        if should_index_directory(current):
+            return True
+        current = current.parent
 
 
 def iter_data_paths(*, max_items: int) -> list[Path]:
@@ -1397,7 +1933,10 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
     media_type = media_kind(path)
     thumbnail_url = thumbnail_url_for_media(path)
     file_url = f"/api/media/file?path={quote(relative_path, safe='/')}"
-    play_url = f"/api/media/play?path={quote(relative_path, safe='/')}" if media_type == "video" else file_url
+    ready_playable = browser_playable_video_path_if_ready(path) if media_type == "video" else None
+    play_url = media_play_url_for_ready_source(path, ready_playable) if ready_playable is not None else file_url
+    if media_type == "video" and ready_playable is None:
+        play_url = ""
     return {
         "index": index,
         "path": relative_path,
@@ -1407,6 +1946,10 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
         "original_url": file_url,
         "thumbnail_url": thumbnail_url,
         "poster_url": thumbnail_url if media_type == "video" else "",
+        "play_ready": media_type != "video" or ready_playable is not None,
+        "play_job_required": media_type == "video" and ready_playable is None,
+        "poster_ready": media_type != "video" or bool(thumbnail_url),
+        "poster_job_required": media_type == "video" and not thumbnail_url,
         "mime_type": "video/mp4" if media_type == "video" else media_type_for_path(path),
         "subtitles": subtitle_payloads_for_media(path) if media_type == "video" else [],
         "size_bytes": path.stat().st_size,
@@ -1501,8 +2044,11 @@ def thumbnail_url_for_media(path: Path | None) -> str:
     if path is None:
         return ""
     relative_path = relative_data_path(path)
-    endpoint = "file" if is_image_file(path) else "poster"
-    return f"/api/media/{endpoint}?path={quote(relative_path, safe='/')}"
+    if is_image_file(path):
+        return f"/api/media/file?path={quote(relative_path, safe='/')}"
+    if is_video_file(path) and video_poster_path_if_ready(path) is not None:
+        return f"/api/media/poster?path={quote(relative_path, safe='/')}"
+    return ""
 
 
 def media_type_for_path(path: Path) -> str:
@@ -1514,6 +2060,36 @@ def media_type_for_path(path: Path) -> str:
     if is_video_file(path):
         return "video/mp4"
     return "application/octet-stream"
+
+
+def existing_video_path(path: str) -> Path:
+    source = existing_data_path(path)
+    if not source.is_file() or not is_video_file(source):
+        raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
+    return source
+
+
+def require_internal_job_kind(job_id: int, job_kind: str) -> dict[str, Any]:
+    job = require_job(job_id)
+    if db.normalized_job_kind(job.get("job_kind")) != job_kind:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+def browser_playable_video_path_if_ready(source: Path) -> Path | None:
+    if is_browser_mp4_video(source):
+        return source
+    target = media_transcode_target(source)
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    return None
+
+
+def media_play_url_for_ready_source(source: Path, ready: Path | None) -> str:
+    relative_path = relative_data_path(source)
+    if ready is not None and ready.resolve(strict=False) == source.resolve(strict=False):
+        return f"/api/media/file?path={quote(relative_path, safe='/')}"
+    return f"/api/media/play?path={quote(relative_path, safe='/')}"
 
 
 def browser_playable_video_path(source: Path) -> Path:
@@ -1557,15 +2133,79 @@ def ffprobe_streams(source: Path) -> list[dict[str, Any]]:
     return streams if isinstance(streams, list) else []
 
 
-def transcode_video_for_browser(source: Path) -> Path:
+def run_media_transcode_job(job_id: int, job: dict[str, Any]) -> None:
+    payload = db.parse_internal_job_payload(job)
+    source = existing_video_path(str(payload.get("path") or ""))
+    ready = browser_playable_video_path_if_ready(source)
+    if ready is None:
+        db.update_job(job_id, progress_bytes=0, total_bytes=source.stat().st_size)
+        try:
+            ready = transcode_video_for_browser(source, job_id=job_id)
+        except HTTPException as exc:
+            raise RuntimeError(str(exc.detail)) from exc
+    artifact_url = media_play_url_for_ready_source(source, ready)
+    ttl_seconds = nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    db.update_job(
+        job_id,
+        artifact_path=str(ready),
+        artifact_url=artifact_url,
+        artifact_expires_at=expires_at.isoformat(timespec="seconds"),
+        filename=ready.name,
+        progress_bytes=source.stat().st_size,
+        total_bytes=source.stat().st_size,
+    )
+    db.add_job_content_ref(job_id, path=source, role="media_source")
+    db.add_job_artifact(
+        job_id,
+        kind="play",
+        path=ready,
+        url=artifact_url,
+        expires_at=expires_at.isoformat(timespec="seconds"),
+    )
+
+
+def run_media_poster_job(job_id: int, job: dict[str, Any]) -> None:
+    payload = db.parse_internal_job_payload(job)
+    source = existing_video_path(str(payload.get("path") or ""))
+    poster = video_poster_path_if_ready(source)
+    if poster is None:
+        db.update_job(job_id, progress_bytes=0, total_bytes=1)
+        try:
+            poster = video_poster_path(source, job_id=job_id)
+        except HTTPException as exc:
+            raise RuntimeError(str(exc.detail)) from exc
+    ttl_seconds = nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    db.update_job(
+        job_id,
+        artifact_path=str(poster),
+        artifact_url=f"/api/media/poster?path={quote(relative_data_path(source), safe='/')}",
+        artifact_expires_at=expires_at.isoformat(timespec="seconds"),
+        filename=poster.name,
+        progress_bytes=1,
+        total_bytes=1,
+    )
+    poster_url = f"/api/media/poster?path={quote(relative_data_path(source), safe='/')}"
+    db.add_job_content_ref(job_id, path=source, role="media_source")
+    db.add_job_artifact(
+        job_id,
+        kind="poster",
+        path=poster,
+        url=poster_url,
+        expires_at=expires_at.isoformat(timespec="seconds"),
+    )
+
+
+def transcode_video_for_browser(source: Path, *, job_id: int | None = None) -> Path:
     if not shutil.which("ffmpeg"):
         raise HTTPException(status_code=500, detail="ffmpeg가 없어 동영상을 브라우저용 MP4로 변환할 수 없습니다.")
 
-    key = media_cache_key(source)
-    target = MEDIA_CACHE_DIR / f"{key}.play.mp4"
+    target = media_transcode_target(source)
     if target.exists() and target.stat().st_size > 0:
         return target
 
+    key = media_cache_key(source)
     lock = media_transcode_lock(key)
     with lock:
         if target.exists() and target.stat().st_size > 0:
@@ -1605,9 +2245,14 @@ def transcode_video_for_browser(source: Path) -> Path:
         ]
         timeout = media_transcode_timeout_seconds()
         try:
+            if job_id is not None:
+                db.update_job(job_id, progress_bytes=0, total_bytes=source.stat().st_size)
+                internal_jobs.check_job_control(job_id)
             with media_transcode_semaphore():
                 subprocess.run(command, check=True, timeout=timeout or None, capture_output=True)
             os.replace(temp, target)
+            if job_id is not None:
+                db.update_job(job_id, progress_bytes=source.stat().st_size, total_bytes=source.stat().st_size)
         except subprocess.CalledProcessError as exc:
             cleanup_file(temp)
             detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
@@ -1617,6 +2262,10 @@ def transcode_video_for_browser(source: Path) -> Path:
             cleanup_file(temp)
             raise HTTPException(status_code=500, detail=f"동영상을 브라우저용 MP4로 변환하지 못했습니다: {exc}") from exc
     return target
+
+
+def media_transcode_target(source: Path) -> Path:
+    return MEDIA_CACHE_DIR / f"{media_cache_key(source)}.play.mp4"
 
 
 def media_cache_key(source: Path) -> str:
@@ -1652,12 +2301,19 @@ def media_transcode_semaphore() -> threading.BoundedSemaphore:
         return MEDIA_TRANSCODE_SEMAPHORE
 
 
-def video_poster_path(source: Path) -> Path:
-    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    key = media_cache_key(source)
-    poster = MEDIA_CACHE_DIR / f"{key}.jpg"
+def video_poster_path_if_ready(source: Path) -> Path | None:
+    poster = media_poster_target(source)
     if poster.exists() and poster.stat().st_size > 0:
         return poster
+    return None
+
+
+def video_poster_path(source: Path, *, job_id: int | None = None) -> Path:
+    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    poster = media_poster_target(source)
+    if poster.exists() and poster.stat().st_size > 0:
+        return poster
+    key = media_cache_key(source)
     temp = MEDIA_CACHE_DIR / f".{key}.tmp.jpg"
     command = [
         "ffmpeg",
@@ -1678,13 +2334,35 @@ def video_poster_path(source: Path) -> Path:
         str(temp),
     ]
     try:
+        if job_id is not None:
+            db.update_job(job_id, progress_bytes=0, total_bytes=1)
+            internal_jobs.check_job_control(job_id)
         with media_transcode_semaphore():
             subprocess.run(command, check=True, timeout=30, capture_output=True)
         os.replace(temp, poster)
+        if job_id is not None:
+            db.update_job(job_id, progress_bytes=1, total_bytes=1)
     except (OSError, subprocess.SubprocessError) as exc:
         cleanup_file(temp)
         raise HTTPException(status_code=500, detail=f"동영상 썸네일을 생성하지 못했습니다: {exc}") from exc
     return poster
+
+
+def media_poster_target(source: Path) -> Path:
+    return MEDIA_CACHE_DIR / f"{media_cache_key(source)}.jpg"
+
+
+def safe_media_artifact_file(path: Path) -> bool:
+    return safe_cache_file(MEDIA_CACHE_DIR, path) or safe_data_artifact_file(path)
+
+
+def safe_data_artifact_file(path: Path) -> bool:
+    try:
+        root = DATA_ROOT.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved != root and root in resolved.parents and path.is_file() and not path.is_symlink()
 
 
 def parse_job_for_display(job: dict) -> ParsedDownload | None:
@@ -2148,6 +2826,139 @@ def download_archive_semaphore() -> threading.BoundedSemaphore:
         return DOWNLOAD_ARCHIVE_SEMAPHORE
 
 
+def require_archive_job(job_id: int) -> dict[str, Any]:
+    job = require_job(job_id)
+    if db.normalized_job_kind(job.get("job_kind")) != INTERNAL_JOB_ARCHIVE_ZIP:
+        raise HTTPException(status_code=404, detail="download job not found")
+    return job
+
+
+def run_archive_zip_job(job_id: int, job: dict[str, Any]) -> None:
+    payload = db.parse_internal_job_payload(job)
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(source)
+    preflight = preflight_archive_job(source)
+    db.update_job(
+        job_id,
+        target_dir=str(source),
+        filename=download_filename(source),
+        progress_bytes=0,
+        total_bytes=int(preflight["source_bytes"]),
+        metadata_json=json.dumps({"archive_preflight": preflight}, ensure_ascii=False),
+    )
+    archive_path = create_zip_archive(source, job_id=job_id)
+    ttl_seconds = nonnegative_int_env("DOWNLOAD_ARCHIVE_TTL_SECONDS", DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    db.update_job(
+        job_id,
+        artifact_path=str(archive_path),
+        artifact_url=f"/api/fs/download-jobs/{job_id}/file",
+        artifact_expires_at=expires_at.isoformat(timespec="seconds"),
+        progress_bytes=int(preflight["source_bytes"]),
+        total_bytes=int(preflight["source_bytes"]),
+    )
+    db.add_job_content_ref(job_id, path=source, role="archive_source")
+    db.add_job_artifact(
+        job_id,
+        kind="zip",
+        path=archive_path,
+        url=f"/api/fs/download-jobs/{job_id}/file",
+        expires_at=expires_at.isoformat(timespec="seconds"),
+    )
+
+
+def preflight_archive_job(source: Path) -> dict[str, Any]:
+    ensure_safe_archive_source(source)
+    max_files = nonnegative_int_env("DOWNLOAD_ARCHIVE_MAX_FILES", DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT)
+    max_bytes = nonnegative_int_env("DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES", DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT)
+    min_free = nonnegative_int_env("DOWNLOAD_ARCHIVE_MIN_FREE_BYTES", DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT)
+    file_count = 0
+    source_bytes = 0
+
+    for item in sorted(source.rglob("*")):
+        if item.is_symlink():
+            ensure_symlink_stays_in_data_root(item)
+            continue
+        if not item.is_file():
+            continue
+        if item.name.endswith(".part"):
+            continue
+        archive_entry_name(source, item)
+        try:
+            size = item.stat().st_size
+        except OSError:
+            continue
+        file_count += 1
+        source_bytes += size
+        if max_files > 0 and file_count > max_files:
+            raise ValueError(f"압축할 파일 수가 너무 많습니다. 최대 {max_files}개까지 지원합니다.")
+        if max_bytes > 0 and source_bytes > max_bytes:
+            raise ValueError(f"압축할 원본 크기가 너무 큽니다. 최대 {human_bytes(max_bytes)}까지 지원합니다.")
+
+    try:
+        usage = shutil.disk_usage(DOWNLOAD_ARCHIVE_DIR if DOWNLOAD_ARCHIVE_DIR.exists() else DOWNLOAD_ARCHIVE_DIR.parent)
+    except OSError:
+        usage = None
+    if usage is not None and usage.free < source_bytes + min_free:
+        raise OSError(
+            f"압축 파일을 만들 여유 공간이 부족합니다. 필요 {human_bytes(source_bytes + min_free)}, 여유 {human_bytes(usage.free)}"
+        )
+
+    return {
+        "path": relative_data_path(source),
+        "file_count": file_count,
+        "source_bytes": source_bytes,
+        "source_human": human_bytes(source_bytes),
+        "max_files": max_files,
+        "max_source_bytes": max_bytes,
+        "min_free_bytes": min_free,
+    }
+
+
+def ensure_safe_archive_source(source: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        raise ValueError("압축할 폴더를 찾지 못했습니다.")
+    if source.is_symlink() or has_symlink_ancestor(source):
+        raise ValueError("symlink 폴더는 압축할 수 없습니다.")
+    root = DATA_ROOT.resolve(strict=False)
+    resolved = source.resolve(strict=False)
+    if resolved == root:
+        raise ValueError("/data 전체 다운로드는 지원하지 않습니다. 모델 폴더를 선택하세요.")
+    if root not in resolved.parents:
+        raise ValueError("데이터 루트 밖의 경로는 압축할 수 없습니다.")
+
+
+def ensure_symlink_stays_in_data_root(path: Path) -> None:
+    root = DATA_ROOT.resolve(strict=False)
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError(f"symlink 경로를 확인하지 못했습니다: {path}") from exc
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("데이터 루트 밖으로 나가는 symlink는 압축할 수 없습니다.")
+
+
+def archive_entry_name(root: Path, file: Path) -> str:
+    source_root = root.resolve(strict=False)
+    resolved = file.resolve(strict=False)
+    if resolved != source_root and source_root not in resolved.parents:
+        raise ValueError("데이터 루트 밖의 파일은 압축할 수 없습니다.")
+    relative = resolved.relative_to(source_root).as_posix()
+    parts = relative.split("/")
+    if not relative or relative.startswith("/") or "\\" in relative or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("안전하지 않은 압축 entry 경로입니다.")
+    return relative
+
+
+def safe_cache_file(root: Path, path: Path) -> bool:
+    try:
+        root_resolved = root.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved != root_resolved and root_resolved in resolved.parents and path.is_file() and not path.is_symlink()
+
+
 def removable_cache_file(path: Path) -> bool:
     try:
         return path.is_file() and not path.is_symlink()
@@ -2155,25 +2966,41 @@ def removable_cache_file(path: Path) -> bool:
         return False
 
 
-def create_zip_archive(source: Path) -> Path:
+def create_zip_archive(source: Path, *, job_id: int | None = None) -> Path:
+    ensure_safe_archive_source(source)
     DOWNLOAD_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"{sanitize_segment(source.name, 'download')}_"
     fd, temp_name = tempfile.mkstemp(prefix=prefix, suffix=".zip", dir=DOWNLOAD_ARCHIVE_DIR)
     os.close(fd)
     archive_path = Path(temp_name)
-    source_root = source.resolve()
+    source_root = source.resolve(strict=False)
+    written_bytes = 0
+    last_progress_at = 0
     try:
         with download_archive_semaphore():
             with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_STORED) as archive:
                 for item in sorted(source.rglob("*")):
-                    if not item.is_file() or item.is_symlink():
+                    if item.is_symlink():
+                        ensure_symlink_stays_in_data_root(item)
+                        continue
+                    if not item.is_file():
                         continue
                     if item.name.endswith(".part"):
                         continue
-                    resolved = item.resolve()
-                    if source_root not in resolved.parents and resolved != source_root:
-                        continue
-                    archive.write(resolved, resolved.relative_to(source_root).as_posix())
+                    entry_name = archive_entry_name(source_root, item)
+                    resolved = item.resolve(strict=False)
+                    archive.write(resolved, entry_name)
+                    if job_id is not None:
+                        try:
+                            written_bytes += item.stat().st_size
+                        except OSError:
+                            pass
+                        if written_bytes - last_progress_at >= 8 * 1024 * 1024:
+                            db.update_job(job_id, progress_bytes=written_bytes)
+                            internal_jobs.check_job_control(job_id)
+                            last_progress_at = written_bytes
+                if job_id is not None:
+                    db.update_job(job_id, progress_bytes=written_bytes)
     except Exception:
         cleanup_file(archive_path)
         raise

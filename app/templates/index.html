@@ -193,6 +193,9 @@
                       {% if job.status in ['failed', 'canceled'] %}
                         <button type="button" data-job-action="retry" data-job-id="{{ job.id }}">재시도</button>
                       {% endif %}
+                      {% if job.source == 'hitomi' and job.file_format == 'confirm' %}
+                        <button type="button" data-job-action="hitomi-listing" data-job-id="{{ job.id }}">목록 확인</button>
+                      {% endif %}
                       <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger" {% if job.status == 'deleting' %}disabled{% endif %}>삭제</button>
                     </div>
                   </td>
@@ -398,6 +401,14 @@
                      value="{{ settings.queue.DOWNLOAD_STALL_TIMEOUT_SECONDS.value }}" autocomplete="off">
               <small>초 단위입니다. 기본값은 600초이며, 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
             </label>
+            <label class="setting-field" for="hitomi_listing_queue_mode">
+              <span>Hitomi 목록 처리</span>
+              <select id="hitomi_listing_queue_mode" name="hitomi_listing_queue_mode">
+                <option value="auto" {% if settings.queue.HITOMI_LISTING_QUEUE_MODE.value != 'confirm' %}selected{% endif %}>자동 대기열 추가</option>
+                <option value="confirm" {% if settings.queue.HITOMI_LISTING_QUEUE_MODE.value == 'confirm' %}selected{% endif %}>목록 확인 후 선택</option>
+              </select>
+              <small>목록 URL에서 발견한 gallery를 바로 추가하거나, 먼저 확인한 뒤 선택해 추가합니다.</small>
+            </label>
             <label class="setting-field setting-toggle wide" for="gallery_dl_auto_update">
               <span>시작 시 gallery-dl 자동 업데이트</span>
               <input id="gallery_dl_auto_update" name="gallery_dl_auto_update" type="checkbox" value="1"
@@ -507,6 +518,25 @@
         <button type="submit" class="settings-save" id="bulk-add-submit">대기열 추가</button>
       </footer>
     </form>
+  </section>
+
+  <section class="bulk-add-modal" id="hitomi-listing-modal" role="dialog" aria-modal="true" aria-labelledby="hitomi-listing-title" hidden>
+    <div class="bulk-add-panel">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="hitomi-listing-title">Hitomi 목록 확인</h2>
+          <p id="hitomi-listing-summary">검색 결과</p>
+        </div>
+        <button type="button" class="bulk-add-close" id="hitomi-listing-close" aria-label="Hitomi 목록 닫기">×</button>
+      </header>
+      <div class="bulk-add-status" id="hitomi-listing-status" role="status" aria-live="polite"></div>
+      <div class="hitomi-listing-results" id="hitomi-listing-results"></div>
+      <footer class="bulk-add-footer">
+        <button type="button" class="settings-cancel" id="hitomi-listing-cancel">취소</button>
+        <button type="button" class="settings-save" id="hitomi-listing-queue-selected">선택 추가</button>
+        <button type="button" class="settings-save" id="hitomi-listing-queue-all">전체 추가</button>
+      </footer>
+    </div>
   </section>
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
@@ -659,6 +689,14 @@
     const bulkAddStatus = document.getElementById('bulk-add-status');
     const bulkAddSubmit = document.getElementById('bulk-add-submit');
     const bulkAddTarget = document.getElementById('bulk-add-target');
+    const hitomiListingModal = document.getElementById('hitomi-listing-modal');
+    const hitomiListingClose = document.getElementById('hitomi-listing-close');
+    const hitomiListingCancel = document.getElementById('hitomi-listing-cancel');
+    const hitomiListingSummary = document.getElementById('hitomi-listing-summary');
+    const hitomiListingStatus = document.getElementById('hitomi-listing-status');
+    const hitomiListingResults = document.getElementById('hitomi-listing-results');
+    const hitomiListingQueueSelected = document.getElementById('hitomi-listing-queue-selected');
+    const hitomiListingQueueAll = document.getElementById('hitomi-listing-queue-all');
     const commandInput = document.getElementById('input_text');
     const workflowDropZone = document.querySelector('[data-workflow-drop-zone]');
     const workflowDropOverlay = document.getElementById('workflow-drop-overlay');
@@ -702,6 +740,7 @@
     let downloadQueue = [];
     let downloadQueueActive = false;
     let downloadQueueId = 1;
+    let activeHitomiListingJobId = null;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
@@ -794,6 +833,7 @@
     document.addEventListener('click', () => {
       closeSettingsModal();
       closeBulkAddModal();
+      closeHitomiListingModal();
       closePropertiesModal();
       closeMediaViewer();
       closeWorkflowViewer();
@@ -807,6 +847,7 @@
       if (event.key === 'Escape') {
         closeSettingsModal();
         closeBulkAddModal();
+        closeHitomiListingModal();
         closePropertiesModal();
         closeMediaViewer();
         closeWorkflowViewer();
@@ -831,6 +872,16 @@
       event.stopPropagation();
     });
     bulkAddForm.addEventListener('submit', submitBulkAdd);
+    hitomiListingClose.addEventListener('click', closeHitomiListingModal);
+    hitomiListingCancel.addEventListener('click', closeHitomiListingModal);
+    hitomiListingModal.addEventListener('click', event => {
+      if (event.target === hitomiListingModal) {
+        closeHitomiListingModal();
+      }
+      event.stopPropagation();
+    });
+    hitomiListingQueueSelected.addEventListener('click', () => queueHitomiListing(false));
+    hitomiListingQueueAll.addEventListener('click', () => queueHitomiListing(true));
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -1083,6 +1134,92 @@
         bulkAddStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       } finally {
         bulkAddSubmit.disabled = false;
+      }
+    }
+
+    async function openHitomiListingModal(jobId) {
+      activeHitomiListingJobId = jobId;
+      hitomiListingModal.hidden = false;
+      document.body.classList.add('modal-open');
+      hitomiListingStatus.textContent = '목록을 불러오는 중';
+      hitomiListingSummary.textContent = `작업 #${jobId}`;
+      hitomiListingResults.innerHTML = '';
+      hitomiListingQueueSelected.disabled = true;
+      hitomiListingQueueAll.disabled = true;
+      try {
+        const response = await fetch(`/api/hitomi/listing/${encodeURIComponent(jobId)}`);
+        if (!response.ok) {
+          hitomiListingStatus.textContent = '목록을 불러오지 못했습니다.';
+          return;
+        }
+        const data = await response.json();
+        renderHitomiListing(data.listing || {});
+      } catch (err) {
+        hitomiListingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    function closeHitomiListingModal() {
+      if (hitomiListingModal.hidden) return;
+      hitomiListingModal.hidden = true;
+      activeHitomiListingJobId = null;
+      document.body.classList.remove('modal-open');
+    }
+
+    function renderHitomiListing(listing) {
+      const galleries = Array.isArray(listing.galleries) ? listing.galleries : [];
+      const pending = galleries.filter(entry => entry.status === 'discovered');
+      hitomiListingSummary.textContent = `${listing.discovered_count || galleries.length}개 발견 · ${pending.length}개 선택 가능`;
+      hitomiListingStatus.textContent = pending.length ? '추가할 gallery를 선택하세요.' : '추가할 새 gallery가 없습니다.';
+      hitomiListingQueueSelected.disabled = pending.length === 0;
+      hitomiListingQueueAll.disabled = pending.length === 0;
+      hitomiListingResults.innerHTML = galleries.map(entry => {
+        const galleryId = entry.gallery_id || '';
+        const status = entry.status || '';
+        const disabled = status !== 'discovered';
+        const checked = disabled ? '' : 'checked';
+        const label = galleryId ? `#${galleryId}` : entry.gallery_url || '-';
+        return `<label class="hitomi-listing-entry ${escapeHtml(status)}">
+          <input type="checkbox" value="${escapeHtml(galleryId)}" ${checked} ${disabled ? 'disabled' : ''}>
+          <span>${escapeHtml(label)}</span>
+          <small>${escapeHtml(status)}${entry.reason ? ` · ${escapeHtml(entry.reason)}` : ''}</small>
+        </label>`;
+      }).join('') || '<div class="media-list-empty">표시할 gallery가 없습니다.</div>';
+    }
+
+    async function queueHitomiListing(queueAll) {
+      if (!activeHitomiListingJobId) return;
+      const selected = Array.from(hitomiListingResults.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => input.value)
+        .filter(Boolean);
+      if (!queueAll && !selected.length) {
+        hitomiListingStatus.textContent = '선택된 gallery가 없습니다.';
+        return;
+      }
+      hitomiListingQueueSelected.disabled = true;
+      hitomiListingQueueAll.disabled = true;
+      hitomiListingStatus.textContent = '대기열에 추가 중';
+      try {
+        const response = await fetch(`/api/hitomi/listing/${encodeURIComponent(activeHitomiListingJobId)}/queue`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(queueAll ? {all: true} : {gallery_ids: selected}),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          hitomiListingStatus.textContent = data.detail || '대기열에 추가하지 못했습니다.';
+          return;
+        }
+        if (Array.isArray(data.jobs)) {
+          currentJobs = data.jobs;
+          renderJobs(currentJobs);
+        } else {
+          await refreshJobs();
+        }
+        renderHitomiListing(data.listing || {});
+        hitomiListingStatus.textContent = `${data.queued || 0}개 추가, ${data.skipped || 0}개 건너뜀`;
+      } catch (err) {
+        hitomiListingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       }
     }
 
@@ -1341,7 +1478,7 @@
     }
 
     async function clearJobHistory() {
-      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'deleting'].includes(job.status));
+      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'canceling', 'deleting'].includes(job.status));
       if (!removable.length) {
         window.alert('지울 완료 기록이 없습니다.');
         return;
@@ -1403,6 +1540,9 @@
       if (['failed', 'canceled'].includes(status)) {
         buttons.push(jobActionButton(job.id, 'retry', '재시도'));
       }
+      if (job.source === 'hitomi' && job.file_format === 'confirm') {
+        buttons.push(jobActionButton(job.id, 'hitomi-listing', '목록 확인'));
+      }
       buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger', status === 'deleting'));
       return `<div class="job-action-buttons">${buttons.join('')}</div>`;
     }
@@ -1413,6 +1553,10 @@
 
     async function handleJobAction(jobId, action) {
       if (!jobId || !action) return;
+      if (action === 'hitomi-listing') {
+        openHitomiListingModal(jobId);
+        return;
+      }
       if (action === 'delete' && !window.confirm('이 작업과 로컬에 저장된 파일을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
 
       const method = action === 'delete' ? 'DELETE' : 'POST';
@@ -1996,8 +2140,10 @@
       if (!item || typeof item !== 'object') return null;
       const type = normalizeMediaType(item.type || item.kind || item.media_type || item.mediaType || item.mime_type || item.mimeType || item.url || item.stream_url || item.preview_url || item.path);
       const url = item.url || item.stream_url || item.streamUrl || item.src || '';
-      if (!url || !['image', 'video'].includes(type)) return null;
+      if (!['image', 'video'].includes(type)) return null;
       const path = normalizePath(item.path || '');
+      if (!url && type !== 'video') return null;
+      if (!url && !path) return null;
       const name = item.name || item.filename || (path ? path.split('/').pop() : '') || `media-${index + 1}`;
       const previewUrl = item.preview_url || item.previewUrl || item.thumbnail_url || item.thumbnailUrl || (type === 'image' ? url : '');
       return {
@@ -2008,6 +2154,14 @@
         url,
         previewUrl,
         posterUrl: item.poster_url || item.posterUrl || previewUrl,
+        playReady: item.play_ready !== false && item.playReady !== false && Boolean(url),
+        playJobRequired: Boolean(item.play_job_required || item.playJobRequired || (type === 'video' && !url)),
+        playJobId: null,
+        playPreparing: false,
+        posterReady: item.poster_ready !== false && item.posterReady !== false && Boolean(item.poster_url || item.posterUrl || previewUrl),
+        posterJobRequired: Boolean(item.poster_job_required || item.posterJobRequired),
+        posterJobId: null,
+        posterPreparing: false,
         subtitles: normalizeSubtitleTracks(item.subtitles || item.subtitle_tracks || item.subtitleTracks),
         width: Number(item.width) || null,
         height: Number(item.height) || null,
@@ -2380,6 +2534,9 @@
       mediaDisplay.innerHTML = renderMediaDisplay(item);
       if (item.type === 'video') {
         setupMediaPlayer(item);
+        if (!item.posterUrl && item.posterJobRequired) {
+          prepareMediaPoster(item);
+        }
       } else {
         setupMediaImageFit();
       }
@@ -2425,6 +2582,11 @@
 
     function renderMediaDisplay(item) {
       if (item.type === 'video') {
+        if (!item.url) {
+          return `<div class="media-loading" data-media-prepare>
+            <span>${escapeHtml(item.playPreparing ? '재생 파일 준비 중' : '재생 파일 준비 대기')}</span>
+          </div>`;
+        }
         const typeAttr = item.mimeType ? ` type="${escapeHtml(item.mimeType)}"` : '';
         const posterAttr = item.posterUrl ? ` poster="${escapeHtml(item.posterUrl)}"` : '';
         const tracks = item.subtitles.map(track => {
@@ -2476,7 +2638,10 @@
     function setupMediaPlayer(item) {
       const player = mediaDisplay.querySelector('[data-media-player]');
       const video = player?.querySelector('video');
-      if (!player || !video) return;
+      if (!player || !video) {
+        setupMediaPreparation(item);
+        return;
+      }
       const playButton = player.querySelector('[data-player-play]');
       const volumeButton = player.querySelector('[data-player-volume]');
       const progress = player.querySelector('[data-player-progress]');
@@ -2582,6 +2747,125 @@
       video.addEventListener('loadedmetadata', updateTime);
       video.addEventListener('durationchange', updateTime);
       video.addEventListener('timeupdate', updateTime);
+    }
+
+    function setupMediaPreparation(item) {
+      const node = mediaDisplay.querySelector('[data-media-prepare]');
+      if (!node || !item || item.type !== 'video') return;
+      prepareMediaPlayback(item);
+    }
+
+    async function prepareMediaPlayback(item) {
+      if (!item || item.playPreparing || item.url || !item.path) return;
+      item.playPreparing = true;
+      mediaDisplay.innerHTML = renderMediaDisplay(item);
+      try {
+        const response = await fetch('/api/media/transcode-jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: item.path}),
+        });
+        if (!response.ok) {
+          item.playPreparing = false;
+          mediaDisplay.innerHTML = `<div class="media-loading error">재생 파일을 준비하지 못했습니다.</div>`;
+          return;
+        }
+        const data = await response.json();
+        if (data.ready && data.url) {
+          item.url = data.url;
+          item.playReady = true;
+          item.playPreparing = false;
+          showMediaAt(mediaIndex);
+          return;
+        }
+        item.playJobId = data.job?.id;
+        pollMediaTranscodeJob(item);
+      } catch (err) {
+        item.playPreparing = false;
+        mediaDisplay.innerHTML = `<div class="media-loading error">네트워크 요청 실패</div>`;
+      }
+    }
+
+    async function pollMediaTranscodeJob(item) {
+      if (!item?.playJobId) return;
+      try {
+        const response = await fetch(`/api/media/transcode-jobs/${encodeURIComponent(item.playJobId)}`);
+        if (!response.ok) throw new Error('status');
+        const data = await response.json();
+        const job = data.job || {};
+        if (job.status === 'done') {
+          item.url = job.artifact_url || `/api/media/transcode-jobs/${encodeURIComponent(item.playJobId)}/file`;
+          item.playReady = true;
+          item.playPreparing = false;
+          if (mediaItems[mediaIndex] === item) showMediaAt(mediaIndex);
+          return;
+        }
+        if (['failed', 'canceled', 'paused'].includes(job.status)) {
+          item.playPreparing = false;
+          if (mediaItems[mediaIndex] === item) {
+            mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(job.error || '재생 파일을 준비하지 못했습니다.')}</div>`;
+          }
+          return;
+        }
+        setTimeout(() => pollMediaTranscodeJob(item), 1500);
+      } catch (err) {
+        setTimeout(() => pollMediaTranscodeJob(item), 2500);
+      }
+    }
+
+    async function prepareMediaPoster(item) {
+      if (!item || item.posterPreparing || item.posterUrl || !item.path) return;
+      item.posterPreparing = true;
+      try {
+        const response = await fetch('/api/media/poster-jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: item.path}),
+        });
+        if (!response.ok) {
+          item.posterPreparing = false;
+          return;
+        }
+        const data = await response.json();
+        if (data.ready && data.url) {
+          item.posterUrl = data.url;
+          item.posterPreparing = false;
+          renderMediaStrip();
+          return;
+        }
+        item.posterJobId = data.job?.id;
+        pollMediaPosterJob(item);
+      } catch (err) {
+        item.posterPreparing = false;
+      }
+    }
+
+    async function pollMediaPosterJob(item) {
+      if (!item?.posterJobId) return;
+      try {
+        const response = await fetch(`/api/media/poster-jobs/${encodeURIComponent(item.posterJobId)}`);
+        if (!response.ok) throw new Error('status');
+        const data = await response.json();
+        const job = data.job || {};
+        if (job.status === 'done') {
+          item.posterUrl = job.artifact_url || `/api/media/poster-jobs/${encodeURIComponent(item.posterJobId)}/file`;
+          item.previewUrl = item.previewUrl || item.posterUrl;
+          item.posterPreparing = false;
+          renderMediaStrip();
+          const video = mediaDisplay.querySelector('video');
+          if (video && mediaItems[mediaIndex] === item) {
+            video.setAttribute('poster', item.posterUrl);
+          }
+          return;
+        }
+        if (['failed', 'canceled', 'paused'].includes(job.status)) {
+          item.posterPreparing = false;
+          return;
+        }
+        setTimeout(() => pollMediaPosterJob(item), 1500);
+      } catch (err) {
+        setTimeout(() => pollMediaPosterJob(item), 2500);
+      }
     }
 
     function renderMediaStrip() {
@@ -3101,29 +3385,114 @@
           return;
         }
 
-        const frame = document.createElement('iframe');
-        frame.hidden = true;
-        frame.src = `/api/fs/download?path=${encodeURIComponent(item.path)}`;
-        document.body.appendChild(frame);
-        setTimeout(() => frame.remove(), 120000);
-
-        item.status = 'started';
-        item.message = '브라우저 다운로드 요청됨';
-        renderDownloadQueue();
-        setTimeout(() => {
-          item.status = 'requested';
-          item.message = '다운로드 요청 전달됨';
+        const info = await infoResponse.json();
+        if (info.kind === 'folder' && info.async_job) {
+          const jobResponse = await fetch('/api/fs/download-jobs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: item.path}),
+          });
+          if (!jobResponse.ok) {
+            let message = '압축 작업을 만들지 못했습니다.';
+            try {
+              const data = await jobResponse.json();
+              message = data.detail || message;
+            } catch (err) {
+              // Keep the generic message.
+            }
+            item.status = 'failed';
+            item.message = message;
+            renderDownloadQueue();
+            downloadQueueActive = false;
+            processDownloadQueue();
+            return;
+          }
+          const data = await jobResponse.json();
+          item.jobId = data.job?.id;
+          item.status = 'running';
+          item.message = '압축 준비 중';
           renderDownloadQueue();
           downloadQueueActive = false;
           processDownloadQueue();
-          pruneDownloadQueue();
-        }, 1200);
+          pollDownloadJob(item);
+          return;
+        }
+
+        startBrowserDownload(`/api/fs/download?path=${encodeURIComponent(item.path)}`, item, true);
       } catch (err) {
         item.status = 'failed';
         item.message = '네트워크 요청 실패';
         renderDownloadQueue();
         downloadQueueActive = false;
         processDownloadQueue();
+      }
+    }
+
+    function startBrowserDownload(url, item, advanceQueue = false) {
+      const frame = document.createElement('iframe');
+      frame.hidden = true;
+      frame.src = url;
+      document.body.appendChild(frame);
+      setTimeout(() => frame.remove(), 120000);
+
+      item.status = 'started';
+      item.message = '브라우저 다운로드 요청됨';
+      renderDownloadQueue();
+      setTimeout(() => {
+        item.status = 'requested';
+        item.message = '다운로드 요청 전달됨';
+        renderDownloadQueue();
+        if (advanceQueue) {
+          downloadQueueActive = false;
+          processDownloadQueue();
+        }
+        pruneDownloadQueue();
+      }, 1200);
+    }
+
+    async function pollDownloadJob(item) {
+      if (!item.jobId) {
+        item.status = 'failed';
+        item.message = '작업 ID가 없습니다.';
+        renderDownloadQueue();
+        return;
+      }
+      try {
+        const response = await fetch(`/api/fs/download-jobs/${encodeURIComponent(item.jobId)}`);
+        if (!response.ok) {
+          item.status = 'failed';
+          item.message = '압축 작업 상태를 확인하지 못했습니다.';
+          renderDownloadQueue();
+          pruneDownloadQueue();
+          return;
+        }
+        const data = await response.json();
+        const job = data.job || {};
+        const status = job.status || '';
+        const pct = job.percent !== null && job.percent !== undefined ? `${job.percent}%` : '';
+        if (status === 'done') {
+          item.status = 'ready';
+          item.message = '압축 완료';
+          renderDownloadQueue();
+          startBrowserDownload(job.artifact_url || `/api/fs/download-jobs/${encodeURIComponent(item.jobId)}/file`, item, false);
+          return;
+        }
+        if (['failed', 'canceled', 'paused'].includes(status)) {
+          item.status = 'failed';
+          item.message = job.error || `압축 작업 ${status}`;
+          renderDownloadQueue();
+          pruneDownloadQueue();
+          return;
+        }
+        item.status = 'running';
+        item.message = pct ? `압축 중 ${pct}` : '압축 대기 중';
+        renderDownloadQueue();
+        setTimeout(() => pollDownloadJob(item), 1500);
+      } catch (err) {
+        item.status = 'failed';
+        item.message = '네트워크 요청 실패';
+        renderDownloadQueue();
+        pruneDownloadQueue();
       }
     }
 
@@ -3141,7 +3510,7 @@
 
     function pruneDownloadQueue() {
       setTimeout(() => {
-        const hasActive = downloadQueue.some(item => ['queued', 'preparing', 'started'].includes(item.status));
+        const hasActive = downloadQueue.some(item => ['queued', 'preparing', 'running', 'started'].includes(item.status));
         if (hasActive) return;
         downloadQueue = downloadQueue.slice(-3);
         renderDownloadQueue(false);

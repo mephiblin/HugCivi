@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -879,6 +880,92 @@ class DownloaderRuntimeTests(unittest.TestCase):
 
         with downloader._SCHEDULER_CONDITION:
             self.assertEqual(downloader._PENDING_JOB_IDS, [1, 3])
+
+    def test_stop_workers_wakes_and_stops_waiting_scheduler(self) -> None:
+        picker_entered = threading.Event()
+
+        def no_schedulable_job() -> tuple[None, None]:
+            picker_entered.set()
+            return None, None
+
+        with mock.patch.object(downloader, "pick_next_schedulable_job_locked", side_effect=no_schedulable_job):
+            with downloader._WORKERS_LOCK:
+                downloader._SCHEDULER_STOP_EVENT.clear()
+                downloader._WORKERS_STARTED = True
+                thread = threading.Thread(target=downloader.scheduler_loop, name="test-download-scheduler")
+                downloader._SCHEDULER_THREAD = thread
+            thread.start()
+            self.assertTrue(picker_entered.wait(timeout=1.0))
+
+            try:
+                self.assertTrue(downloader.stop_workers(timeout_seconds=1.0))
+                self.assertFalse(thread.is_alive())
+            finally:
+                downloader._SCHEDULER_STOP_EVENT.set()
+                with downloader._SCHEDULER_CONDITION:
+                    downloader._SCHEDULER_CONDITION.notify_all()
+                thread.join(timeout=1.0)
+                with downloader._WORKERS_LOCK:
+                    downloader._SCHEDULER_THREAD = None
+                    downloader._WORKERS_STARTED = False
+                    downloader._SCHEDULER_STOP_EVENT.clear()
+                with downloader._SCHEDULER_CONDITION:
+                    downloader._PENDING_JOB_IDS.clear()
+
+    def test_scheduler_does_not_start_job_when_stop_arrives_after_slot_reservation(self) -> None:
+        provider = "generic:example.test"
+        original_reserve = downloader.reserve_provider_slot_locked
+
+        def reserve_and_stop(reserved_provider: str) -> None:
+            original_reserve(reserved_provider)
+            downloader._SCHEDULER_STOP_EVENT.set()
+
+        with (
+            mock.patch.object(downloader, "pick_next_schedulable_job_locked", return_value=((7, provider), None)),
+            mock.patch.object(downloader, "reserve_provider_slot_locked", side_effect=reserve_and_stop),
+            mock.patch.object(downloader.threading, "Thread") as thread_factory,
+        ):
+            try:
+                with downloader._SCHEDULER_CONDITION:
+                    downloader._SCHEDULER_STOP_EVENT.clear()
+                    downloader._ACTIVE_GLOBAL_JOBS = 0
+                    downloader._ACTIVE_PROVIDER_JOBS.clear()
+                    downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+
+                downloader.scheduler_loop()
+
+                thread_factory.assert_not_called()
+                with downloader._SCHEDULER_CONDITION:
+                    self.assertEqual(downloader._ACTIVE_GLOBAL_JOBS, 0)
+                    self.assertEqual(downloader._ACTIVE_PROVIDER_JOBS, {})
+            finally:
+                with downloader._SCHEDULER_CONDITION:
+                    downloader._SCHEDULER_STOP_EVENT.clear()
+                    downloader._ACTIVE_GLOBAL_JOBS = 0
+                    downloader._ACTIVE_PROVIDER_JOBS.clear()
+                    downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    def test_download_scheduler_skips_internal_job_rows(self) -> None:
+        job = {"id": 7, "status": "queued", "job_kind": "archive_zip", "parsed_json": "{}"}
+
+        with (
+            mock.patch.object(downloader.db, "get_job", return_value=job),
+            mock.patch.object(downloader, "queue_global_limit", return_value=3),
+            mock.patch.object(downloader, "queue_per_provider_limit", return_value=1),
+            mock.patch.object(downloader, "provider_key_for_job") as provider_key,
+        ):
+            with downloader._SCHEDULER_CONDITION:
+                downloader._PENDING_JOB_IDS[:] = [7]
+                downloader._ACTIVE_GLOBAL_JOBS = 0
+                downloader._ACTIVE_PROVIDER_JOBS.clear()
+
+                selected, wait_seconds = downloader.pick_next_schedulable_job_locked()
+
+                self.assertIsNone(selected)
+                self.assertIsNone(wait_seconds)
+                self.assertEqual(downloader._PENDING_JOB_IDS, [])
+
+            provider_key.assert_not_called()
 
     def test_same_provider_cooldown_delays_next_schedulable_job(self) -> None:
         parsed = ParsedDownload(source="generic", raw_input="https://example.test/a.bin", url="https://example.test/a.bin")

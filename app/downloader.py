@@ -62,6 +62,8 @@ ROUTE_SETTING_BY_TYPE = {
 
 _WORKERS_STARTED = False
 _WORKERS_LOCK = threading.Lock()
+_SCHEDULER_THREAD: threading.Thread | None = None
+_SCHEDULER_STOP_EVENT = threading.Event()
 _SCHEDULER_CONDITION = threading.Condition()
 _PENDING_JOB_IDS: list[int] = []
 _ACTIVE_GLOBAL_JOBS = 0
@@ -512,7 +514,7 @@ def cleanup_job_local_files(job_id: int) -> list[Path]:
 
 
 def enqueue_existing_jobs() -> None:
-    for job in reversed(db.list_jobs(limit=500)):
+    for job in reversed(db.list_download_jobs_to_resume(limit=500)):
         if job["status"] == "deleting":
             cleanup_job_partial_files(int(job["id"]))
             cleanup_job_local_files(int(job["id"]))
@@ -547,36 +549,80 @@ def notify_queue_settings_changed() -> None:
 
 
 def start_workers() -> None:
-    global _WORKERS_STARTED
+    global _SCHEDULER_THREAD, _WORKERS_STARTED
     with _WORKERS_LOCK:
-        if _WORKERS_STARTED:
+        if _WORKERS_STARTED and _SCHEDULER_THREAD is not None and _SCHEDULER_THREAD.is_alive():
             return
+        _WORKERS_STARTED = False
+        _SCHEDULER_THREAD = None
+        _SCHEDULER_STOP_EVENT.clear()
         print(f"gallery-dl version: {gallery_dl_version()}", flush=True)
         print(f"yt-dlp version: {yt_dlp_version()}", flush=True)
         enqueue_existing_jobs()
         thread = threading.Thread(target=scheduler_loop, name="download-scheduler", daemon=True)
+        _SCHEDULER_THREAD = thread
         thread.start()
         _WORKERS_STARTED = True
 
 
-def scheduler_loop() -> None:
-    while True:
-        with _SCHEDULER_CONDITION:
-            selected: tuple[int, str] | None = None
-            while selected is None:
-                selected, wait_seconds = pick_next_schedulable_job_locked()
-                if selected is None:
-                    _SCHEDULER_CONDITION.wait(wait_seconds)
-            job_id, provider = selected
-            reserve_provider_slot_locked(provider)
+def stop_workers(timeout_seconds: float = 5.0) -> bool:
+    global _SCHEDULER_THREAD, _WORKERS_STARTED
+    with _WORKERS_LOCK:
+        thread = _SCHEDULER_THREAD
+        if thread is None or not thread.is_alive():
+            _WORKERS_STARTED = False
+            _SCHEDULER_THREAD = None
+            _SCHEDULER_STOP_EVENT.set()
+            return True
+        _SCHEDULER_STOP_EVENT.set()
 
-        thread = threading.Thread(
-            target=job_runner,
-            args=(job_id, provider),
-            name=f"download-job-{job_id}",
-            daemon=True,
-        )
-        thread.start()
+    with _SCHEDULER_CONDITION:
+        _SCHEDULER_CONDITION.notify_all()
+
+    if thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, timeout_seconds))
+
+    stopped = not thread.is_alive()
+    if stopped:
+        with _WORKERS_LOCK:
+            if _SCHEDULER_THREAD is thread:
+                _SCHEDULER_THREAD = None
+                _WORKERS_STARTED = False
+    return stopped
+
+
+def scheduler_loop() -> None:
+    global _SCHEDULER_THREAD, _WORKERS_STARTED
+    try:
+        while True:
+            with _SCHEDULER_CONDITION:
+                selected: tuple[int, str] | None = None
+                while selected is None:
+                    if _SCHEDULER_STOP_EVENT.is_set():
+                        return
+                    selected, wait_seconds = pick_next_schedulable_job_locked()
+                    if selected is None:
+                        _SCHEDULER_CONDITION.wait(wait_seconds)
+                if _SCHEDULER_STOP_EVENT.is_set():
+                    return
+                job_id, provider = selected
+                reserve_provider_slot_locked(provider)
+            if _SCHEDULER_STOP_EVENT.is_set():
+                release_reserved_provider_slot(provider)
+                return
+
+            thread = threading.Thread(
+                target=job_runner,
+                args=(job_id, provider),
+                name=f"download-job-{job_id}",
+                daemon=True,
+            )
+            thread.start()
+    finally:
+        with _WORKERS_LOCK:
+            if _SCHEDULER_THREAD is threading.current_thread():
+                _SCHEDULER_THREAD = None
+                _WORKERS_STARTED = False
 
 
 def pick_next_schedulable_job_locked() -> tuple[tuple[int, str] | None, float | None]:
@@ -589,7 +635,7 @@ def pick_next_schedulable_job_locked() -> tuple[tuple[int, str] | None, float | 
     while index < len(_PENDING_JOB_IDS):
         job_id = _PENDING_JOB_IDS[index]
         job = db.get_job(job_id)
-        if not job or job.get("status") != "queued":
+        if not job or not db.is_download_job(job) or job.get("status") != "queued":
             _PENDING_JOB_IDS.pop(index)
             continue
         try:
@@ -618,20 +664,31 @@ def reserve_provider_slot_locked(provider: str) -> None:
 
 
 def release_provider_slot(provider: str) -> None:
-    global _ACTIVE_GLOBAL_JOBS
     with _SCHEDULER_CONDITION:
-        _ACTIVE_GLOBAL_JOBS = max(0, _ACTIVE_GLOBAL_JOBS - 1)
+        release_provider_slot_locked(provider, apply_cooldown=True)
+        _SCHEDULER_CONDITION.notify_all()
+
+
+def release_reserved_provider_slot(provider: str) -> None:
+    with _SCHEDULER_CONDITION:
+        release_provider_slot_locked(provider, apply_cooldown=False)
+        _SCHEDULER_CONDITION.notify_all()
+
+
+def release_provider_slot_locked(provider: str, *, apply_cooldown: bool) -> None:
+    global _ACTIVE_GLOBAL_JOBS
+    _ACTIVE_GLOBAL_JOBS = max(0, _ACTIVE_GLOBAL_JOBS - 1)
+    if apply_cooldown:
         cooldown = random_provider_cooldown_seconds()
         if cooldown > 0:
             _PROVIDER_COOLDOWN_UNTIL[provider] = time.monotonic() + cooldown
         else:
             _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
-        current = max(0, _ACTIVE_PROVIDER_JOBS.get(provider, 0) - 1)
-        if current:
-            _ACTIVE_PROVIDER_JOBS[provider] = current
-        else:
-            _ACTIVE_PROVIDER_JOBS.pop(provider, None)
-        _SCHEDULER_CONDITION.notify_all()
+    current = max(0, _ACTIVE_PROVIDER_JOBS.get(provider, 0) - 1)
+    if current:
+        _ACTIVE_PROVIDER_JOBS[provider] = current
+    else:
+        _ACTIVE_PROVIDER_JOBS.pop(provider, None)
 
 
 def provider_cooldown_remaining_locked(provider: str) -> float:
@@ -681,7 +738,7 @@ def job_runner(job_id: int, provider: str) -> None:
 
 def run_job(job_id: int) -> None:
     job = db.get_job(job_id)
-    if not job or job.get("status") not in {"queued", "running"}:
+    if not job or not db.is_download_job(job) or job.get("status") not in {"queued", "running"}:
         return
     parsed = db.parse_job_payload(job)
     db.update_job(job_id, status="running", error=None, progress_bytes=0, total_bytes=None)
@@ -2734,14 +2791,20 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
     db.append_log(job_id, f"Hitomi listing discovery: {redact_sensitive_text(source_url)}")
 
     gallery_urls = unique_hitomi_gallery_urls(discover_hitomi_listing_gallery_urls(job_id, source_url))
-    entries = create_hitomi_listing_gallery_jobs(job_id, parsed, gallery_urls)
+    queue_mode = hitomi_listing_queue_mode()
+    if queue_mode == "confirm":
+        entries = hitomi_listing_discovery_entries(job_id, gallery_urls)
+    else:
+        entries = create_hitomi_listing_gallery_jobs(job_id, parsed, gallery_urls)
     queued = [entry for entry in entries if entry["status"] == "queued"]
-    skipped = [entry for entry in entries if entry["status"] != "queued"]
+    pending = [entry for entry in entries if entry["status"] == "discovered"]
+    skipped = [entry for entry in entries if entry["status"] not in {"queued", "discovered"}]
     capped_count = max(0, len(gallery_urls) - len(entries))
     payload = {
         **metadata_stamp(),
         "source": "hitomi",
         "kind": parsed.hitomi_listing_kind or "listing",
+        "queue_mode": queue_mode,
         "source_url": source_url,
         "raw_input": parsed.raw_input,
         "gallery_dl_version": gallery_dl_version(),
@@ -2749,6 +2812,7 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
         "processed_count": len(entries),
         "queued_count": len(queued),
         "skipped_count": len(skipped),
+        "pending_count": len(pending),
         "capped_count": capped_count,
         "queue_limit": hitomi_listing_max_galleries(),
         "galleries": entries,
@@ -2759,24 +2823,41 @@ def download_hitomi_listing(job_id: int, parsed: ParsedDownload) -> None:
         for key, value in payload.items()
         if key != "galleries"
     }
-    precision = f"{len(queued)} queued, {len(skipped)} skipped"
+    if queue_mode == "confirm":
+        precision = f"{len(pending)} pending, {len(skipped)} skipped"
+    else:
+        precision = f"{len(queued)} queued, {len(skipped)} skipped"
     if capped_count:
         precision = f"{precision}, {capped_count} capped"
     db.update_job(
         job_id,
-        filename=f"{len(queued)} queued / {len(gallery_urls)} discovered",
-        progress_bytes=len(queued),
+        filename=(
+            f"{len(pending)} pending / {len(gallery_urls)} discovered"
+            if queue_mode == "confirm"
+            else f"{len(queued)} queued / {len(gallery_urls)} discovered"
+        ),
+        progress_bytes=len(pending) if queue_mode == "confirm" else len(queued),
         total_bytes=len(gallery_urls),
         precision=precision,
+        file_format="confirm" if queue_mode == "confirm" else "queue",
         metadata_json=json.dumps(redact_metadata(metadata_summary), ensure_ascii=False),
     )
-    db.append_log(
-        job_id,
-        (
-            "queued Hitomi listing galleries: "
-            f"queued={len(queued)} skipped={len(skipped)} capped={capped_count} discovered={len(gallery_urls)}"
-        ),
-    )
+    if queue_mode == "confirm":
+        db.append_log(
+            job_id,
+            (
+                "discovered Hitomi listing galleries for confirmation: "
+                f"pending={len(pending)} skipped={len(skipped)} capped={capped_count} discovered={len(gallery_urls)}"
+            ),
+        )
+    else:
+        db.append_log(
+            job_id,
+            (
+                "queued Hitomi listing galleries: "
+                f"queued={len(queued)} skipped={len(skipped)} capped={capped_count} discovered={len(gallery_urls)}"
+            ),
+        )
 
 
 def hitomi_listing_slug(source_url: str, kind: str | None = None) -> str:
@@ -2967,6 +3048,141 @@ def create_hitomi_listing_gallery_jobs(
         )
         db.append_log(job_id, f"hitomi.listing.queue gallery_id={gallery_id} child_job_id={child_job_id}")
     return entries
+
+
+def hitomi_listing_discovery_entries(job_id: int, gallery_urls: list[str]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_galleries = hitomi_listing_max_galleries()
+    for gallery_url in gallery_urls:
+        gallery_id = hitomi_gallery_id_from_url(gallery_url)
+        if not gallery_id or gallery_id in seen:
+            continue
+        seen.add(gallery_id)
+        if len(entries) >= max_galleries:
+            db.append_log(job_id, f"hitomi.listing.limit reached max_galleries={max_galleries}")
+            break
+        existing = hitomi_existing_gallery_state(gallery_id)
+        if existing:
+            entries.append({"gallery_id": gallery_id, "gallery_url": gallery_url, **existing})
+            continue
+        entries.append({"gallery_id": gallery_id, "gallery_url": gallery_url, "status": "discovered"})
+    return entries
+
+
+def hitomi_listing_queue_mode() -> str:
+    value = (db.get_setting("HITOMI_LISTING_QUEUE_MODE") or os.getenv("HITOMI_LISTING_QUEUE_MODE") or "auto").strip().lower()
+    return "confirm" if value == "confirm" else "auto"
+
+
+def load_hitomi_listing_metadata(job_id: int) -> dict[str, Any]:
+    job = db.get_job(job_id)
+    if not job:
+        raise ValueError("listing job not found")
+    metadata_path = hitomi_listing_metadata_path(job)
+    if metadata_path is None or not metadata_path.exists():
+        raise ValueError("listing metadata not found")
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("listing metadata is unreadable") from exc
+    if not isinstance(payload, dict) or payload.get("source") != "hitomi" or not isinstance(payload.get("galleries"), list):
+        raise ValueError("listing metadata is invalid")
+    return payload
+
+
+def hitomi_listing_metadata_path(job: dict[str, Any]) -> Path | None:
+    target_dir = str(job.get("target_dir") or "").strip()
+    if not target_dir:
+        return None
+    return Path(target_dir) / "_hitomi_listing_metadata.json"
+
+
+def queue_hitomi_listing_galleries(job_id: int, gallery_ids: list[str] | None = None) -> dict[str, Any]:
+    job = db.get_job(job_id)
+    if not job:
+        raise ValueError("listing job not found")
+    parsed = db.parse_job_payload(job)
+    payload = load_hitomi_listing_metadata(job_id)
+    selected_ids = {str(gallery_id).strip() for gallery_id in (gallery_ids or []) if str(gallery_id).strip()}
+    queue_all = not selected_ids
+    queued_count = 0
+    skipped_count = 0
+    entries = payload.get("galleries")
+    if not isinstance(entries, list):
+        raise ValueError("listing metadata is invalid")
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        gallery_id = str(entry.get("gallery_id") or "").strip()
+        gallery_url = str(entry.get("gallery_url") or "").strip() or hitomi_gallery_url_for_id(gallery_id)
+        if not gallery_id or (not queue_all and gallery_id not in selected_ids):
+            continue
+        if entry.get("status") == "queued" and entry.get("child_job_id"):
+            skipped_count += 1
+            continue
+        existing = hitomi_existing_gallery_state(gallery_id)
+        if existing:
+            entry.update(existing)
+            skipped_count += 1
+            continue
+
+        child = ParsedDownload(
+            source="hitomi",
+            raw_input=gallery_url,
+            target_subdir=parsed.target_subdir,
+            hitomi_gallery_id=gallery_id,
+            hitomi_gallery_url=gallery_url,
+        )
+        child_job_id = db.create_job(child)
+        enqueue_job(child_job_id)
+        entry.update({"status": "queued", "child_job_id": child_job_id})
+        queued_count += 1
+        db.append_log(job_id, f"hitomi.listing.confirm.queue gallery_id={gallery_id} child_job_id={child_job_id}")
+
+    refresh_hitomi_listing_payload_counts(payload)
+    metadata_path = hitomi_listing_metadata_path(job)
+    if metadata_path is None:
+        raise ValueError("listing metadata not found")
+    write_metadata(metadata_path.parent, metadata_path.name, payload)
+    update_hitomi_listing_job_summary(job_id, payload)
+    db.append_log(job_id, f"hitomi.listing.confirm queued={queued_count} skipped={skipped_count}")
+    return {"queued": queued_count, "skipped": skipped_count, "metadata": payload}
+
+
+def refresh_hitomi_listing_payload_counts(payload: dict[str, Any]) -> None:
+    entries = [entry for entry in payload.get("galleries", []) if isinstance(entry, dict)]
+    queued = [entry for entry in entries if entry.get("status") == "queued"]
+    pending = [entry for entry in entries if entry.get("status") == "discovered"]
+    skipped = [entry for entry in entries if entry.get("status") not in {"queued", "discovered"}]
+    payload["processed_count"] = len(entries)
+    payload["queued_count"] = len(queued)
+    payload["pending_count"] = len(pending)
+    payload["skipped_count"] = len(skipped)
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def update_hitomi_listing_job_summary(job_id: int, payload: dict[str, Any]) -> None:
+    refresh_hitomi_listing_payload_counts(payload)
+    discovered_count = int(payload.get("discovered_count") or len(payload.get("galleries", [])))
+    pending_count = int(payload.get("pending_count") or 0)
+    queued_count = int(payload.get("queued_count") or 0)
+    skipped_count = int(payload.get("skipped_count") or 0)
+    capped_count = int(payload.get("capped_count") or 0)
+    precision = f"{pending_count} pending, {queued_count} queued, {skipped_count} skipped"
+    if capped_count:
+        precision = f"{precision}, {capped_count} capped"
+    summary = {key: value for key, value in payload.items() if key != "galleries"}
+    db.update_job(
+        job_id,
+        filename=f"{pending_count} pending / {discovered_count} discovered",
+        progress_bytes=queued_count,
+        total_bytes=discovered_count,
+        precision=precision,
+        file_format="confirm" if pending_count else "queue",
+        metadata_json=json.dumps(redact_metadata(summary), ensure_ascii=False),
+    )
 
 
 def hitomi_listing_max_galleries() -> int:

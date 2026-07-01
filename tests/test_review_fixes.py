@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.defaults import (
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
@@ -215,6 +216,131 @@ def test_zip_archive_uses_archive_semaphore(
     assert entered == [True]
 
 
+def test_archive_preflight_rejects_escaping_symlink(app_modules: tuple, tmp_path: Path) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "folder"
+    source.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (source / "outside-link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        main.preflight_archive_job(source)
+
+
+def test_archive_preflight_rejects_unsafe_entry_name(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "folder"
+    source.mkdir()
+    (source / "bad\\name.txt").write_text("content", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="entry"):
+        main.preflight_archive_job(source)
+
+
+def test_archive_zip_internal_job_creates_download_artifact(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "folder"
+    source.mkdir()
+    (source / "file.txt").write_text("content", encoding="utf-8")
+    (source / "file.txt.job-1-deadbeef.part").write_text("partial", encoding="utf-8")
+    main.register_internal_job_handlers()
+    job_id = db.create_internal_job(
+        main.INTERNAL_JOB_ARCHIVE_ZIP,
+        input_text="zip:folder",
+        payload={"path": "folder"},
+        target_dir=source,
+        filename="folder.zip",
+    )
+
+    main.internal_jobs.run_job(job_id)
+
+    job = db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == "done"
+    assert job["artifact_url"] == f"/api/fs/download-jobs/{job_id}/file"
+    archive_path = Path(str(job["artifact_path"]))
+    assert archive_path.exists()
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.namelist() == ["file.txt"]
+
+
+def test_uncached_video_payload_requires_async_media_jobs(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    video = data_root / "clip.mkv"
+    video.write_bytes(b"video")
+    monkeypatch.setattr(main, "is_browser_mp4_video", lambda _source: False)
+
+    payload = main.media_item_payload(video, 0)
+    play_response = main.api_media_play("clip.mkv", "_")
+    poster_response = main.api_media_poster("clip.mkv", "_")
+
+    assert payload["url"] == ""
+    assert payload["play_job_required"] is True
+    assert payload["poster_job_required"] is True
+    assert play_response.status_code == 202
+    assert poster_response.status_code == 202
+
+
+def test_media_transcode_internal_job_records_artifact(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, data_root, config_root = app_modules
+    video = data_root / "clip.mkv"
+    video.write_bytes(b"video")
+    artifact = config_root / "media-cache" / "clip.play.mp4"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+
+    def fake_transcode(_source: Path, *, job_id: int | None = None) -> Path:
+        artifact.write_bytes(b"mp4")
+        if job_id is not None:
+            db.update_job(job_id, progress_bytes=5, total_bytes=5)
+        return artifact
+
+    monkeypatch.setattr(main, "is_browser_mp4_video", lambda _source: False)
+    monkeypatch.setattr(main, "transcode_video_for_browser", fake_transcode)
+    main.register_internal_job_handlers()
+    job_id = db.create_internal_job(main.INTERNAL_JOB_MEDIA_TRANSCODE, input_text="transcode:clip.mkv", payload={"path": "clip.mkv"})
+
+    main.internal_jobs.run_job(job_id)
+
+    job = db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == "done"
+    assert job["artifact_path"] == str(artifact)
+    assert job["artifact_url"] == "/api/media/play?path=clip.mkv"
+
+
+def test_media_poster_internal_job_records_artifact(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, data_root, config_root = app_modules
+    video = data_root / "clip.mkv"
+    video.write_bytes(b"video")
+    poster = config_root / "media-cache" / "clip.jpg"
+    poster.parent.mkdir(parents=True, exist_ok=True)
+
+    def fake_poster(_source: Path, *, job_id: int | None = None) -> Path:
+        poster.write_bytes(b"jpg")
+        if job_id is not None:
+            db.update_job(job_id, progress_bytes=1, total_bytes=1)
+        return poster
+
+    monkeypatch.setattr(main, "video_poster_path", fake_poster)
+    main.register_internal_job_handlers()
+    job_id = db.create_internal_job(main.INTERNAL_JOB_MEDIA_POSTER, input_text="poster:clip.mkv", payload={"path": "clip.mkv"})
+
+    main.internal_jobs.run_job(job_id)
+
+    job = db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == "done"
+    assert job["artifact_path"] == str(poster)
+    assert job["artifact_url"] == "/api/media/poster?path=clip.mkv"
+
+
 def test_startup_cleanup_removes_stale_archives_and_media_cache(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -250,6 +376,38 @@ def test_startup_cleanup_removes_stale_archives_and_media_cache(
     assert not temp_media.exists()
 
 
+def test_lifespan_runs_startup_tasks_and_stops_workers(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    calls: list[str] = []
+
+    monkeypatch.setattr(main.db, "init_db", lambda: calls.append("init_db"))
+    monkeypatch.setattr(main, "ensure_route_folders", lambda: calls.append("ensure_route_folders"))
+    monkeypatch.setattr(main, "cleanup_stale_download_archives", lambda: calls.append("cleanup_archives"))
+    monkeypatch.setattr(main, "cleanup_stale_media_cache", lambda: calls.append("cleanup_media"))
+    monkeypatch.setattr(main, "start_workers", lambda: calls.append("start_workers"))
+    monkeypatch.setattr(main.internal_jobs, "start_workers", lambda: calls.append("start_internal_workers"))
+    monkeypatch.setattr(main.internal_jobs, "stop_workers", lambda: calls.append("stop_internal_workers") or True)
+    monkeypatch.setattr(main, "start_library_indexer", lambda: calls.append("start_library_indexer"))
+    monkeypatch.setattr(main, "stop_library_indexer", lambda: calls.append("stop_library_indexer") or True)
+    monkeypatch.setattr(main, "stop_workers", lambda: calls.append("stop_workers") or True)
+
+    with TestClient(main.app):
+        assert calls == [
+            "init_db",
+            "ensure_route_folders",
+            "cleanup_archives",
+            "cleanup_media",
+            "start_workers",
+            "start_internal_workers",
+            "start_library_indexer",
+        ]
+
+    assert calls[-3:] == ["stop_library_indexer", "stop_internal_workers", "stop_workers"]
+
+
 def test_job_list_payload_omits_log_but_detail_and_log_endpoint_keep_it(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -274,6 +432,88 @@ def test_job_list_payload_omits_log_but_detail_and_log_endpoint_keep_it(
     assert "log" in detail_payload
     assert "metadata_json" in detail_payload
     assert main.job_log(job_id, "_").body.decode("utf-8") == detail_payload["log"]
+
+
+def test_job_summary_query_omits_heavy_fields_and_supports_cursor(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    ids = []
+    for index in range(3):
+        parsed = ParsedDownload(source="generic", raw_input=f"https://example.com/{index}.bin", url=f"https://example.com/{index}.bin")
+        job_id = db.create_job(parsed)
+        db.update_job(job_id, metadata_json=json.dumps({"large": "x" * 100}), log="x" * 100)
+        ids.append(job_id)
+
+    first_page = db.list_job_summaries(limit=2)
+    response = main.api_jobs(limit=2, cursor=ids[-1], _="_")
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert len(first_page) == 2
+    assert "log" not in first_page[0]
+    assert "metadata_json" not in first_page[0]
+    assert payload["ok"] is True
+    assert [job["id"] for job in payload["jobs"]] == [ids[1], ids[0]]
+    assert payload["next_cursor"] == ids[0]
+
+
+def test_database_backup_uses_sqlite_backup_api(app_modules: tuple) -> None:
+    _utils, db, _downloader, _main, _data_root, config_root = app_modules
+    parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
+    db.create_job(parsed)
+    backup_path = config_root / "backups" / "unit.sqlite3"
+
+    run_id = db.create_maintenance_run("db_backup")
+    db.backup_database(backup_path)
+    db.finish_maintenance_run(run_id, "done", {"path": str(backup_path)})
+
+    assert backup_path.exists()
+    assert backup_path.stat().st_size > 0
+
+
+def test_internal_job_rows_are_separate_from_download_resume_list(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
+    download_id = db.create_job(parsed)
+    internal_id = db.create_internal_job(
+        "archive_zip",
+        input_text="prepare zip: folder",
+        payload={"path": "folder"},
+        target_dir=data_root / "folder",
+        filename="folder.zip",
+        total_bytes=123,
+    )
+
+    download_job = db.get_job(download_id)
+    internal_job = db.get_job(internal_id)
+
+    assert download_job is not None
+    assert internal_job is not None
+    assert db.is_download_job(download_job)
+    assert db.is_internal_job(internal_job)
+    assert internal_job["job_kind"] == "archive_zip"
+    assert internal_job["source"] == "internal"
+    assert internal_job["filename"] == "folder.zip"
+    assert {job["id"] for job in db.list_download_jobs_to_resume()} == {download_id}
+    assert {job["id"] for job in db.list_internal_jobs_to_resume()} == {internal_id}
+
+    decorated = main.decorate_job(internal_job)
+    assert decorated["job_kind"] == "archive_zip"
+    assert decorated["source"] == "archive_zip"
+
+
+def test_internal_job_actions_use_internal_queue(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    job_id = db.create_internal_job("archive_zip", input_text="prepare zip", payload={"path": "folder"})
+    enqueued: list[int] = []
+    download_enqueued: list[int] = []
+
+    monkeypatch.setattr(main.internal_jobs, "enqueue_job", lambda queued_id: enqueued.append(queued_id))
+    monkeypatch.setattr(main, "enqueue_job", lambda queued_id: download_enqueued.append(queued_id))
+
+    db.update_job(job_id, status="failed", error="boom")
+    main.api_retry_job(job_id, "tester")
+
+    assert enqueued == [job_id]
+    assert download_enqueued == []
 
 
 def test_clear_history_removes_failed_partial_files_before_deleting_rows(app_modules: tuple) -> None:
@@ -403,6 +643,38 @@ def test_library_items_restore_filesystem_card_after_job_row_deleted(app_modules
     assert rows[0]["status"] == "done"
     assert rows[0]["source_url"] == "https://civitai.com/models/123"
     assert rows[0]["favorite"] is False
+
+
+def test_library_index_scan_populates_db_backed_library_items(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "stable-diffusion" / "loras" / "indexed-card"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/999",
+                "archive_info": {"model_title": "Indexed Card", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = main.scan_library_index_batch(max_paths=100, reset=True)
+    db.set_favorite("stable-diffusion/loras/indexed-card", True)
+    rows = [row for row in main.library_items() if row.get("target_path") == "stable-diffusion/loras/indexed-card"]
+
+    assert result["indexed"] >= 1
+    assert db.count_library_index_items() >= 1
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Indexed Card"
+    assert rows[0]["favorite"] is True
+
+    db.clear_library_item_prefix("stable-diffusion/loras/indexed-card")
+    assert [
+        row for row in db.list_library_index_items() if row.get("target_path") == "stable-diffusion/loras/indexed-card"
+    ] == []
 
 
 def test_retry_failed_job_requeues_existing_job(

@@ -21,7 +21,8 @@ from .utils import redact_sensitive_text, safe_join
 DB_PATH = Path(os.getenv("DB_PATH", "/config/jobs.sqlite3"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 _DB_LOCK = threading.RLock()
-ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "deleting")
+JOB_KIND_DOWNLOAD = "download"
+ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "canceling", "deleting")
 ROUTE_SETTING_BY_TYPE = {
     "llm": "ROUTE_LLM_ROOT",
     "lora": "ROUTE_LORA_ROOT",
@@ -116,6 +117,68 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                path TEXT NOT NULL,
+                url TEXT,
+                expires_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_content_refs (
+                job_id INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (job_id, path, role)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS library_items (
+                path TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                target_dir TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                size_bytes INTEGER DEFAULT 0,
+                mtime_ns INTEGER DEFAULT 0,
+                ctime_ns INTEGER DEFAULT 0,
+                stale INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                scanned_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS library_scan_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS maintenance_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                detail_json TEXT
+            )
+            """
+        )
         conn.commit()
 
 
@@ -130,6 +193,10 @@ def ensure_job_columns(conn: sqlite3.Connection) -> None:
         "precision": "TEXT",
         "thumbnail_url": "TEXT",
         "metadata_json": "TEXT",
+        "job_kind": "TEXT DEFAULT 'download'",
+        "artifact_path": "TEXT",
+        "artifact_url": "TEXT",
+        "artifact_expires_at": "TEXT",
     }
     for name, sql_type in columns.items():
         if name not in existing:
@@ -144,8 +211,8 @@ def create_job(parsed: ParsedDownload) -> int:
         cur = conn.execute(
             """
             INSERT INTO jobs
-            (created_at, updated_at, input_text, parsed_json, source, status, log)
-            VALUES (?, ?, ?, ?, ?, 'queued', ?)
+            (created_at, updated_at, input_text, parsed_json, source, status, log, job_kind)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
             """,
             (
                 now,
@@ -154,6 +221,7 @@ def create_job(parsed: ParsedDownload) -> int:
                 json.dumps(parsed_payload, ensure_ascii=False),
                 parsed.source,
                 f"[{now}] queued\n",
+                JOB_KIND_DOWNLOAD,
             ),
         )
         conn.commit()
@@ -162,10 +230,126 @@ def create_job(parsed: ParsedDownload) -> int:
         return int(cur.lastrowid)
 
 
+def create_internal_job(
+    job_kind: str,
+    *,
+    input_text: str,
+    payload: dict[str, Any] | None = None,
+    target_dir: str | Path | None = None,
+    filename: str | None = None,
+    total_bytes: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    artifact_path: str | Path | None = None,
+    artifact_url: str | None = None,
+    artifact_expires_at: str | None = None,
+) -> int:
+    kind = normalized_job_kind(job_kind)
+    if kind == JOB_KIND_DOWNLOAD:
+        raise ValueError("create_internal_job cannot create download jobs")
+    now = utc_now()
+    parsed_payload = {
+        "job_kind": kind,
+        "raw_input": redact_sensitive_text(input_text),
+        "payload": payload or {},
+    }
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO jobs
+            (
+                created_at, updated_at, input_text, parsed_json, source, status,
+                target_dir, filename, total_bytes, metadata_json, log, job_kind,
+                artifact_path, artifact_url, artifact_expires_at
+            )
+            VALUES (?, ?, ?, ?, 'internal', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                now,
+                redact_sensitive_text(input_text),
+                json.dumps(parsed_payload, ensure_ascii=False),
+                str(target_dir) if target_dir is not None else None,
+                filename,
+                total_bytes,
+                json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                f"[{now}] queued internal job kind={kind}\n",
+                kind,
+                str(artifact_path) if artifact_path is not None else None,
+                artifact_url,
+                artifact_expires_at,
+            ),
+        )
+        conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to create internal job")
+        return int(cur.lastrowid)
+
+
+def normalized_job_kind(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or JOB_KIND_DOWNLOAD
+
+
+def is_download_job(job: dict[str, Any]) -> bool:
+    return normalized_job_kind(job.get("job_kind")) == JOB_KIND_DOWNLOAD
+
+
+def is_internal_job(job: dict[str, Any]) -> bool:
+    return not is_download_job(job)
+
+
 def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
             "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [redact_job_row(dict(row)) for row in rows]
+
+
+def list_download_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE COALESCE(job_kind, ?) = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (JOB_KIND_DOWNLOAD, JOB_KIND_DOWNLOAD, limit),
+        ).fetchall()
+        return [redact_job_row(dict(row)) for row in rows]
+
+
+def list_job_summaries(limit: int = 100, before_id: int | None = None) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    columns = """
+        id, created_at, updated_at, input_text, parsed_json, source, status,
+        target_dir, filename, progress_bytes, total_bytes, error,
+        model_title, model_category, model_type, base_model, file_format,
+        precision, thumbnail_url, job_kind, artifact_path, artifact_url,
+        artifact_expires_at
+    """
+    with _DB_LOCK, connect() as conn:
+        if before_id is None:
+            rows = conn.execute(f"SELECT {columns} FROM jobs ORDER BY id DESC LIMIT ?", (safe_limit,)).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT {columns} FROM jobs WHERE id < ? ORDER BY id DESC LIMIT ?",
+                (before_id, safe_limit),
+            ).fetchall()
+        return [redact_job_row(dict(row)) for row in rows]
+
+
+def list_internal_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE COALESCE(job_kind, ?) <> ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (JOB_KIND_DOWNLOAD, JOB_KIND_DOWNLOAD, limit),
         ).fetchall()
         return [redact_job_row(dict(row)) for row in rows]
 
@@ -202,6 +386,111 @@ def vacuum_database() -> None:
             conn.execute("VACUUM")
         finally:
             conn.close()
+
+
+def set_wal_mode(enabled: bool = True) -> str:
+    with _DB_LOCK, connect() as conn:
+        mode = "WAL" if enabled else "DELETE"
+        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
+        conn.commit()
+        return str(row[0]) if row else ""
+
+
+def checkpoint_database(mode: str = "PASSIVE") -> dict[str, Any]:
+    normalized = mode.strip().upper()
+    if normalized not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
+        normalized = "PASSIVE"
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute(f"PRAGMA wal_checkpoint({normalized})").fetchone()
+        conn.commit()
+    values = list(row) if row else []
+    return {
+        "mode": normalized,
+        "busy": int(values[0]) if len(values) > 0 else 0,
+        "log": int(values[1]) if len(values) > 1 else 0,
+        "checkpointed": int(values[2]) if len(values) > 2 else 0,
+    }
+
+
+def optimize_database() -> None:
+    with _DB_LOCK, connect() as conn:
+        conn.execute("PRAGMA optimize")
+        conn.commit()
+
+
+def backup_database(destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with _DB_LOCK:
+        source = connect()
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+
+
+def create_maintenance_run(kind: str, status: str = "running", detail: dict[str, Any] | None = None) -> int:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO maintenance_runs (kind, status, started_at, detail_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (kind, status, now, json.dumps(detail or {}, ensure_ascii=False)),
+        )
+        conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to create maintenance run")
+        return int(cur.lastrowid)
+
+
+def add_job_artifact(
+    job_id: int,
+    *,
+    kind: str,
+    path: str | Path,
+    url: str | None = None,
+    expires_at: str | None = None,
+) -> None:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO job_artifacts (job_id, kind, path, url, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, kind, str(path), url, expires_at, now),
+        )
+        conn.commit()
+
+
+def add_job_content_ref(job_id: int, *, path: str | Path, role: str) -> None:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO job_content_refs (job_id, path, role, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(job_id, path, role) DO NOTHING
+            """,
+            (job_id, str(path), role, now),
+        )
+        conn.commit()
+
+
+def finish_maintenance_run(run_id: int, status: str, detail: dict[str, Any] | None = None) -> None:
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            UPDATE maintenance_runs
+            SET status = ?, finished_at = ?, detail_json = ?
+            WHERE id = ?
+            """,
+            (status, utc_now(), json.dumps(detail or {}, ensure_ascii=False), run_id),
+        )
+        conn.commit()
 
 
 def delete_job(job_id: int) -> bool:
@@ -263,7 +552,13 @@ def set_item_note(path: str, note: str) -> None:
 def get_next_queued_job() -> dict[str, Any] | None:
     with _DB_LOCK, connect() as conn:
         row = conn.execute(
-            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY id ASC LIMIT 1"
+            """
+            SELECT * FROM jobs
+            WHERE status = 'queued' AND COALESCE(job_kind, ?) = ?
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (JOB_KIND_DOWNLOAD, JOB_KIND_DOWNLOAD),
         ).fetchone()
         return dict(row) if row else None
 
@@ -388,6 +683,163 @@ def clear_note_path_prefix(target_path: str) -> None:
             "DELETE FROM item_notes WHERE path = ? OR path LIKE ? ESCAPE '\\'",
             (root_text, escape_like(root_prefix) + "%"),
         )
+        conn.commit()
+
+
+def upsert_library_item(
+    path: str,
+    *,
+    kind: str,
+    name: str,
+    target_dir: str,
+    payload: dict[str, Any],
+    size_bytes: int,
+    mtime_ns: int,
+    ctime_ns: int,
+) -> None:
+    normalized = path.strip("/")
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO library_items (
+                path, kind, name, target_dir, payload_json, size_bytes,
+                mtime_ns, ctime_ns, stale, updated_at, scanned_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                kind = excluded.kind,
+                name = excluded.name,
+                target_dir = excluded.target_dir,
+                payload_json = excluded.payload_json,
+                size_bytes = excluded.size_bytes,
+                mtime_ns = excluded.mtime_ns,
+                ctime_ns = excluded.ctime_ns,
+                stale = 0,
+                updated_at = excluded.updated_at,
+                scanned_at = excluded.scanned_at
+            """,
+            (
+                normalized,
+                kind,
+                name,
+                target_dir,
+                json.dumps(payload, ensure_ascii=False),
+                size_bytes,
+                mtime_ns,
+                ctime_ns,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def list_library_index_items(limit: int = 1000) -> list[dict[str, Any]]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT payload_json FROM library_items
+            WHERE stale = 0
+            ORDER BY lower(path) ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            items.append(payload)
+    return items
+
+
+def count_library_index_items() -> int:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM library_items WHERE stale = 0").fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def mark_library_item_stale(path: str) -> None:
+    normalized = path.strip("/")
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute("UPDATE library_items SET stale = 1, updated_at = ? WHERE path = ?", (now, normalized))
+        conn.commit()
+
+
+def clear_library_item_prefix(target_path: str) -> None:
+    root_text = target_path.strip("/")
+    root_prefix = root_text.rstrip("/") + "/"
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            "DELETE FROM library_items WHERE path = ? OR path LIKE ? ESCAPE '\\'",
+            (root_text, escape_like(root_prefix) + "%"),
+        )
+        conn.commit()
+
+
+def update_library_item_path_prefix(old_path: str, new_path: str) -> None:
+    old_text = old_path.strip("/")
+    new_text = new_path.strip("/")
+    old_prefix = old_text.rstrip("/") + "/"
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT path FROM library_items").fetchall()
+        for row in rows:
+            path = str(row["path"])
+            if path == old_text:
+                updated = new_text
+            elif path.startswith(old_prefix):
+                updated = new_text.rstrip("/") + "/" + path[len(old_prefix) :]
+            else:
+                continue
+            conn.execute("DELETE FROM library_items WHERE path = ?", (updated,))
+            conn.execute("UPDATE library_items SET path = ?, stale = 1, updated_at = ? WHERE path = ?", (updated, now, path))
+        conn.commit()
+
+
+def prune_missing_library_items(limit: int = 500) -> int:
+    removed = 0
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute("SELECT path, target_dir FROM library_items WHERE stale = 0 LIMIT ?", (limit,)).fetchall()
+        for row in rows:
+            target_dir = str(row["target_dir"])
+            if target_dir and Path(target_dir).exists():
+                continue
+            conn.execute("UPDATE library_items SET stale = 1, updated_at = ? WHERE path = ?", (utc_now(), str(row["path"])))
+            removed += 1
+        conn.commit()
+    return removed
+
+
+def get_library_scan_state(key: str, default: str = "") -> str:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT value FROM library_scan_state WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row else default
+
+
+def set_library_scan_state(key: str, value: str) -> None:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO library_scan_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, now),
+        )
+        conn.commit()
+
+
+def clear_library_index() -> None:
+    with _DB_LOCK, connect() as conn:
+        conn.execute("DELETE FROM library_items")
+        conn.execute("DELETE FROM library_scan_state WHERE key LIKE 'library.%'")
         conn.commit()
 
 
@@ -552,6 +1004,17 @@ def parse_job_payload(job: dict[str, Any]) -> ParsedDownload:
     return ParsedDownload.from_dict(json.loads(job["parsed_json"]))
 
 
+def parse_internal_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw = json.loads(str(job.get("parsed_json") or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    payload = raw.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
 def redact_job_row(row: dict[str, Any]) -> dict[str, Any]:
     for key in ("input_text", "error", "log"):
         if row.get(key) is not None:
@@ -642,6 +1105,7 @@ def settings_status() -> dict[str, Any]:
             "QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS": legacy_cooldown_default,
             "QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS": legacy_cooldown_default,
             "DOWNLOAD_STALL_TIMEOUT_SECONDS": str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS),
+            "HITOMI_LISTING_QUEUE_MODE": "auto",
         }.items()
     }
     status["startup"] = {
