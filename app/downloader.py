@@ -357,10 +357,146 @@ def cleanup_job_partial_files(job_id: int) -> list[Path]:
     return removed
 
 
+def parse_job_download(job: dict[str, Any]) -> ParsedDownload | None:
+    payload = parse_metadata_json(job.get("parsed_json"))
+    if not payload:
+        return None
+    try:
+        return ParsedDownload.from_dict(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_safe_job_local_path(path: Path) -> bool:
+    try:
+        root = DATA_ROOT.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved != root and root in resolved.parents
+
+
+def paths_overlap(first: Path, second: Path) -> bool:
+    try:
+        first_resolved = first.resolve(strict=False)
+        second_resolved = second.resolve(strict=False)
+    except OSError:
+        return False
+    return (
+        first_resolved == second_resolved
+        or first_resolved in second_resolved.parents
+        or second_resolved in first_resolved.parents
+    )
+
+
+def job_local_file_path(job: dict[str, Any], target_dir: Path) -> Path | None:
+    filename = str(job.get("filename") or "").strip()
+    if not filename or filename == "snapshot":
+        return None
+    candidate = target_dir / filename
+    return candidate if is_safe_job_local_path(candidate) else None
+
+
+def job_uses_custom_target(parsed: ParsedDownload | None) -> bool:
+    return bool(parsed and parsed.target_subdir)
+
+
+def job_local_delete_target(job: dict[str, Any]) -> tuple[Path, str] | None:
+    target_dir = str(job.get("target_dir") or "").strip()
+    if not target_dir:
+        return None
+
+    target = Path(target_dir)
+    if not is_safe_job_local_path(target):
+        return None
+
+    parsed = parse_job_download(job)
+    source = str((parsed.source if parsed else None) or job.get("source") or "")
+
+    if source == "generic":
+        file_path = job_local_file_path(job, target)
+        return (file_path, "file") if file_path is not None else None
+
+    if source == "huggingface" and (job_uses_custom_target(parsed) or (parsed and parsed.filenames)):
+        file_path = job_local_file_path(job, target)
+        return (file_path, "file") if file_path is not None else None
+
+    if source == "civitai" and job_uses_custom_target(parsed):
+        file_path = job_local_file_path(job, target)
+        return (file_path, "file") if file_path is not None else None
+
+    if source in {"civitai", "huggingface", "comfyui", "hitomi", "gallerydl"}:
+        return target, "directory"
+
+    file_path = job_local_file_path(job, target)
+    return (file_path, "file") if file_path is not None else None
+
+
+def job_local_target_is_referenced(job_id: int, target: Path, mode: str) -> bool:
+    target_key = final_path_lock_key(target)
+    for other in db.list_jobs(limit=5000):
+        try:
+            other_id = int(other.get("id") or 0)
+        except (TypeError, ValueError):
+            other_id = 0
+        if other_id == job_id:
+            continue
+
+        other_target_dir = str(other.get("target_dir") or "").strip()
+        if not other_target_dir:
+            continue
+        other_target = Path(other_target_dir)
+
+        if mode == "directory":
+            if paths_overlap(target, other_target):
+                return True
+            continue
+
+        other_file = job_local_file_path(other, other_target)
+        if other_file is not None and final_path_lock_key(other_file) == target_key:
+            return True
+    return False
+
+
+def cleanup_job_local_files(job_id: int) -> list[Path]:
+    job = db.get_job(job_id)
+    if not job:
+        return []
+
+    target_info = job_local_delete_target(job)
+    if target_info is None:
+        return []
+
+    target, mode = target_info
+    if job_local_target_is_referenced(job_id, target, mode):
+        db.append_log(job_id, f"local cleanup skipped: target is referenced by another job ({target})")
+        return []
+
+    if not target.exists():
+        return []
+
+    removed: list[Path] = []
+    try:
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        else:
+            return []
+        removed.append(target)
+    except OSError as exc:
+        db.append_log(job_id, f"local cleanup failed: {target} ({exc})")
+        return []
+
+    db.append_log(job_id, "removed local files: " + ", ".join(str(path) for path in removed))
+    return removed
+
+
 def enqueue_existing_jobs() -> None:
     for job in reversed(db.list_jobs(limit=500)):
         if job["status"] == "deleting":
             cleanup_job_partial_files(int(job["id"]))
+            cleanup_job_local_files(int(job["id"]))
             db.delete_job(int(job["id"]))
         elif job["status"] == "canceling":
             db.update_job(int(job["id"]), status="canceled", error=None)
@@ -545,6 +681,7 @@ def check_job_control(job_id: int) -> None:
 def handle_control_stop(job_id: int, status: str) -> None:
     if status == "deleted":
         cleanup_job_partial_files(job_id)
+        cleanup_job_local_files(job_id)
         db.delete_job(job_id)
         return
     if status == "canceled":

@@ -1229,7 +1229,7 @@
 
     async function handleJobAction(jobId, action) {
       if (!jobId || !action) return;
-      if (action === 'delete' && !window.confirm('이 작업 기록을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
+      if (action === 'delete' && !window.confirm('이 작업과 로컬에 저장된 파일을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
 
       const method = action === 'delete' ? 'DELETE' : 'POST';
       const url = action === 'delete' ? `/api/jobs/${jobId}` : `/api/jobs/${jobId}/${action}`;

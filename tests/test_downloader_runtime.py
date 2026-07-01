@@ -105,6 +105,105 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertFalse(part_path.exists())
             self.assertTrue(other_job_part.exists())
 
+    def test_local_cleanup_removes_owned_civitai_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "stable-diffusion" / "loras" / "base" / "model" / "version_1"
+            target.mkdir(parents=True)
+            model_file = target / "model.safetensors"
+            model_file.write_bytes(b"model")
+            (target / "_civitai_metadata.json").write_text("{}", encoding="utf-8")
+            parsed = ParsedDownload(source="civitai", raw_input="https://civitai.com/models/1?modelVersionId=1")
+            fake_db = FakeDb(
+                {
+                    "source": "civitai",
+                    "parsed_json": json.dumps(parsed.to_dict()),
+                    "target_dir": str(target),
+                    "filename": model_file.name,
+                }
+            )
+
+            with mock.patch.object(downloader, "db", fake_db), mock.patch.object(downloader, "DATA_ROOT", root):
+                removed = downloader.cleanup_job_local_files(42)
+
+            self.assertEqual(removed, [target])
+            self.assertFalse(target.exists())
+
+    def test_local_cleanup_removes_only_generic_download_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "generic"
+            target.mkdir()
+            downloaded = target / "file.bin"
+            downloaded.write_bytes(b"downloaded")
+            other_file = target / "other.bin"
+            other_file.write_bytes(b"other")
+            metadata = target / "_generic_metadata.json"
+            metadata.write_text("{}", encoding="utf-8")
+            parsed = ParsedDownload(source="generic", raw_input="https://example.test/file.bin", url="https://example.test/file.bin")
+            fake_db = FakeDb(
+                {
+                    "source": "generic",
+                    "parsed_json": json.dumps(parsed.to_dict()),
+                    "target_dir": str(target),
+                    "filename": downloaded.name,
+                }
+            )
+
+            with mock.patch.object(downloader, "db", fake_db), mock.patch.object(downloader, "DATA_ROOT", root):
+                removed = downloader.cleanup_job_local_files(42)
+
+            self.assertEqual(removed, [downloaded])
+            self.assertFalse(downloaded.exists())
+            self.assertTrue(other_file.exists())
+            self.assertTrue(metadata.exists())
+
+    def test_local_cleanup_skips_directory_used_by_another_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "stable-diffusion" / "checkpoints" / "base" / "model" / "version_1"
+            target.mkdir(parents=True)
+            (target / "model.safetensors").write_bytes(b"model")
+            parsed = ParsedDownload(source="civitai", raw_input="https://civitai.com/models/1?modelVersionId=1")
+            job = {
+                "id": 42,
+                "source": "civitai",
+                "parsed_json": json.dumps(parsed.to_dict()),
+                "target_dir": str(target),
+                "filename": "model.safetensors",
+            }
+            fake_db = FakeDb(job, listed_jobs=[job, {**job, "id": 43}])
+
+            with mock.patch.object(downloader, "db", fake_db), mock.patch.object(downloader, "DATA_ROOT", root):
+                removed = downloader.cleanup_job_local_files(42)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(target.exists())
+            self.assertTrue(any("referenced by another job" in message for message in fake_db.logs))
+
+    def test_local_cleanup_rejects_paths_outside_data_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            root.mkdir()
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "model.safetensors").write_bytes(b"model")
+            parsed = ParsedDownload(source="civitai", raw_input="https://civitai.com/models/1?modelVersionId=1")
+            fake_db = FakeDb(
+                {
+                    "source": "civitai",
+                    "parsed_json": json.dumps(parsed.to_dict()),
+                    "target_dir": str(outside),
+                    "filename": "model.safetensors",
+                }
+            )
+
+            with mock.patch.object(downloader, "db", fake_db), mock.patch.object(downloader, "DATA_ROOT", root):
+                removed = downloader.cleanup_job_local_files(42)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(outside.exists())
+
     def test_gallery_dl_posix_processes_start_in_new_session(self) -> None:
         kwargs = downloader.gallery_dl_process_kwargs()
         if os.name == "posix":

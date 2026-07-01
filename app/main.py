@@ -26,6 +26,7 @@ from starlette.background import BackgroundTask
 from . import db
 from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from .downloader import (
+    cleanup_job_local_files,
     cleanup_job_partial_files,
     enqueue_job,
     folder_thumbnail_path,
@@ -296,6 +297,7 @@ def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     else:
         remove_pending_job(job_id)
         cleanup_job_partial_files(job_id)
+        cleanup_job_local_files(job_id)
         db.delete_job(job_id)
     return jobs_response()
 
