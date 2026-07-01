@@ -21,6 +21,8 @@ class ParsedDownload:
     exclude_patterns: list[str] = field(default_factory=list)
 
     # Civitai
+    civitai_image_id: str | None = None
+    civitai_image_url: str | None = None
     civitai_model_id: str | None = None
     civitai_version_id: str | None = None
     civitai_hash: str | None = None

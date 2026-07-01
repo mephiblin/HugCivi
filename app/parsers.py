@@ -599,6 +599,15 @@ def parse_civitai_url(url: str, target_subdir: str | None = None) -> ParsedDownl
             version_id = query[key][0]
             break
 
+    if len(parts) >= 2 and parts[0] == "images" and parts[1].isdigit():
+        return ParsedDownload(
+            source="civitai",
+            raw_input=url,
+            target_subdir=target_subdir,
+            civitai_image_id=parts[1],
+            civitai_image_url=url,
+        )
+
     if len(parts) >= 4 and parts[0] == "api" and parts[1] == "download" and parts[2] == "models":
         version_id = parts[3]
         return ParsedDownload(

@@ -72,6 +72,44 @@ THUMBNAIL_MEDIA_TYPES = {
     ".avif": "image/avif",
     ".bmp": "image/bmp",
 }
+CIVITAI_IMAGE_METADATA_FILENAME = "_civitai_image_metadata.json"
+CIVITAI_IMAGE_CONTENT_TYPE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/avif": ".avif",
+    "image/bmp": ".bmp",
+}
+CIVITAI_GENERATION_META_LABELS = {
+    "seed": "Seed",
+    "steps": "Steps",
+    "sampler": "Sampler",
+    "scheduler": "Scheduler",
+    "cfgscale": "CFG scale",
+    "cfg_scale": "CFG scale",
+    "scale": "CFG scale",
+    "clip_skip": "Clip skip",
+    "clipskip": "Clip skip",
+    "size": "Size",
+    "model": "Model",
+    "modelhash": "Model hash",
+    "model_hash": "Model hash",
+    "vae": "VAE",
+    "vaehash": "VAE hash",
+    "vae_hash": "VAE hash",
+    "denoisingstrength": "Denoising strength",
+    "denoising_strength": "Denoising strength",
+}
+CIVITAI_GENERATION_META_EXCLUDED_KEYS = {
+    "prompt",
+    "negativeprompt",
+    "negative_prompt",
+    "resources",
+    "civitairesources",
+    "civitai_resources",
+}
 FOLDER_THUMBNAIL_MAX_FILES = 5000
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -536,7 +574,10 @@ def metadata_stamp() -> dict[str, Any]:
 
 def write_metadata(target_dir: Path, name: str, payload: dict[str, Any]) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    out = target_dir / sanitize_segment(name, "metadata.json")
+    filename = sanitize_segment(name, "metadata.json")
+    if name.startswith("_") and not filename.startswith("_"):
+        filename = "_" + filename
+    out = target_dir / filename
     safe_payload = redact_metadata(payload)
     out.write_text(json.dumps(safe_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1198,7 +1239,622 @@ def normalize_civitai_download_url(url: str) -> str:
     return url
 
 
+def fetch_civitai_image_item(session: requests.Session, image_id: str, job_id: int) -> dict[str, Any]:
+    meta_url = f"{CIVITAI_API_BASE}/images?imageId={quote(image_id, safe='')}&withMeta=true"
+    db.append_log(job_id, f"civitai.image.metadata.start image_id={image_id}")
+    db.append_log(job_id, f"Civitai image metadata: {meta_url}")
+    data = fetch_json(session, meta_url, job_id=job_id)
+    raw_items = data.get("items")
+    items = raw_items if isinstance(raw_items, list) else []
+    if not items:
+        raise ValueError(f"Civitai image {image_id} metadata was not found.")
+
+    for item in items:
+        if isinstance(item, dict) and str(item.get("id") or "") == str(image_id):
+            return item
+    raise ValueError(f"Civitai image API did not return requested imageId={image_id}.")
+
+
+def civitai_image_source_url(parsed: ParsedDownload, image_id: str) -> str:
+    parsed_url = getattr(parsed, "civitai_image_url", None)
+    if isinstance(parsed_url, str) and parsed_url.strip():
+        return parsed_url.strip()
+    return f"https://civitai.com/images/{quote(image_id, safe='')}"
+
+
+def civitai_image_meta(item: dict[str, Any]) -> dict[str, Any]:
+    raw_meta = item.get("meta")
+    if not isinstance(raw_meta, dict):
+        return {}
+    nested = raw_meta.get("meta")
+    if isinstance(nested, dict):
+        return nested
+    return raw_meta
+
+
+def first_mapping_value(mapping: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] not in (None, ""):
+            return mapping[key]
+    normalized = {normalized_generation_meta_key(key): value for key, value in mapping.items()}
+    for key in keys:
+        value = normalized.get(normalized_generation_meta_key(key))
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def text_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+    elif isinstance(value, (int, float, bool)):
+        text = str(value)
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            text = str(value)
+    return text if text else None
+
+
+def id_value(value: Any) -> str | None:
+    text = text_value(value)
+    if not text or text.lower() in {"none", "null", "nan"}:
+        return None
+    return text
+
+
+def normalized_generation_meta_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(key or "").lower())
+
+
+def generation_meta_label(key: str) -> str:
+    normalized = normalized_generation_meta_key(key)
+    if normalized in CIVITAI_GENERATION_META_LABELS:
+        return CIVITAI_GENERATION_META_LABELS[normalized]
+    spaced = re.sub(r"(?<!^)([A-Z])", r" \1", key).replace("_", " ").replace("-", " ")
+    return " ".join(spaced.split()).capitalize() or "Metadata"
+
+
+def civitai_generation_metadata(meta: dict[str, Any]) -> list[dict[str, str]]:
+    if not meta:
+        return []
+
+    metadata: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    ordered_keys = [
+        "seed",
+        "steps",
+        "sampler",
+        "scheduler",
+        "cfgScale",
+        "cfg_scale",
+        "clipSkip",
+        "Size",
+        "size",
+        "Model",
+        "model",
+        "modelHash",
+        "VAE",
+        "vae",
+        "vaeHash",
+        "denoisingStrength",
+    ]
+    for key in ordered_keys:
+        value = first_mapping_value(meta, key)
+        normalized = normalized_generation_meta_key(key)
+        if normalized in seen:
+            continue
+        text = text_value(value)
+        if text:
+            metadata.append({"label": generation_meta_label(key), "value": text})
+            seen.add(normalized)
+
+    raw_hashes = meta.get("hashes")
+    hashes = raw_hashes if isinstance(raw_hashes, dict) else {}
+    for key, value in hashes.items():
+        label = f"{generation_meta_label(str(key))} hash"
+        normalized = normalized_generation_meta_key(label)
+        if normalized in seen:
+            continue
+        text = text_value(value)
+        if text:
+            metadata.append({"label": label, "value": text})
+            seen.add(normalized)
+
+    for key, value in meta.items():
+        normalized = normalized_generation_meta_key(key)
+        if normalized in seen or normalized in CIVITAI_GENERATION_META_EXCLUDED_KEYS or normalized == "hashes":
+            continue
+        if isinstance(value, (dict, list)):
+            continue
+        text = text_value(value)
+        if text:
+            metadata.append({"label": generation_meta_label(str(key)), "value": text})
+            seen.add(normalized)
+
+    return metadata
+
+
+def civitai_raw_resource_lists(item: dict[str, Any], meta: dict[str, Any]) -> list[dict[str, Any]]:
+    resources: list[dict[str, Any]] = []
+    for raw in (meta.get("resources"), meta.get("civitaiResources"), item.get("resources")):
+        if not isinstance(raw, list):
+            continue
+        resources.extend(resource for resource in raw if isinstance(resource, dict))
+    return resources
+
+
+def normalize_civitai_resource(resource: dict[str, Any]) -> dict[str, str]:
+    raw_model = resource.get("model")
+    model = raw_model if isinstance(raw_model, dict) else {}
+    raw_version = resource.get("modelVersion")
+    version_info = raw_version if isinstance(raw_version, dict) else {}
+
+    model_id = id_value(first_mapping_value(resource, "modelId", "model_id", "modelID") or model.get("id"))
+    version_id = id_value(
+        first_mapping_value(resource, "modelVersionId", "model_version_id", "versionId", "version_id")
+        or version_info.get("id")
+    )
+    name = text_value(first_mapping_value(resource, "name", "modelName", "model_name") or model.get("name"))
+    version = text_value(
+        first_mapping_value(resource, "version", "versionName", "modelVersionName") or version_info.get("name")
+    )
+    resource_type = text_value(first_mapping_value(resource, "type", "modelType", "model_type") or model.get("type"))
+    weight = text_value(first_mapping_value(resource, "weight", "strength"))
+    base_model = text_value(first_mapping_value(resource, "baseModel", "base_model") or version_info.get("baseModel"))
+    hash_value = text_value(
+        first_mapping_value(resource, "hash", "modelVersionHash", "model_version_hash") or version_info.get("hash")
+    )
+
+    normalized: dict[str, str] = {}
+    if name:
+        normalized["name"] = name
+    elif version_id:
+        normalized["name"] = f"modelVersion {version_id}"
+    else:
+        normalized["name"] = "Unknown resource"
+    if resource_type:
+        normalized["type"] = resource_type
+    if version:
+        normalized["version"] = version
+    if weight:
+        normalized["weight"] = weight
+    if model_id:
+        normalized["model_id"] = model_id
+        normalized["href"] = civitai_model_page_url(model_id, version_id)
+    if version_id:
+        normalized["model_version_id"] = version_id
+        normalized.setdefault("href", f"{CIVITAI_API_BASE}/model-versions/{quote(version_id, safe='')}")
+    if base_model:
+        normalized["base_model"] = base_model
+    if hash_value:
+        normalized["hash"] = hash_value
+    return normalized
+
+
+def civitai_model_page_url(model_id: str, version_id: str | None = None) -> str:
+    url = f"https://civitai.com/models/{quote(model_id, safe='')}"
+    if version_id:
+        return f"{url}?modelVersionId={quote(version_id, safe='')}"
+    return url
+
+
+def civitai_resource_needs_version_metadata(resource: dict[str, str]) -> bool:
+    return bool(resource.get("model_version_id")) and (
+        not resource.get("model_id") or not resource.get("name") or not resource.get("type")
+    )
+
+
+def civitai_version_resource(metadata: dict[str, Any], version_id: str) -> dict[str, str]:
+    raw_model = metadata.get("model")
+    model = raw_model if isinstance(raw_model, dict) else {}
+    model_id = id_value(metadata.get("modelId") or model.get("id"))
+    normalized = normalize_civitai_resource(
+        {
+            "name": model.get("name") or metadata.get("modelName"),
+            "type": model.get("type") or metadata.get("modelType"),
+            "modelId": model_id,
+            "modelVersionId": metadata.get("id") or version_id,
+            "modelVersionName": metadata.get("name"),
+            "baseModel": metadata.get("baseModel"),
+        }
+    )
+    if model_id:
+        normalized["href"] = civitai_model_page_url(model_id, id_value(metadata.get("id") or version_id))
+    return normalized
+
+
+def merge_civitai_resource(existing: dict[str, str], enriched: dict[str, str]) -> dict[str, str]:
+    merged = dict(existing)
+    version_id = merged.get("model_version_id") or enriched.get("model_version_id")
+    for key, value in enriched.items():
+        is_placeholder_name = key == "name" and bool(version_id) and merged.get("name") == f"modelVersion {version_id}"
+        if value and (not merged.get(key) or is_placeholder_name):
+            merged[key] = value
+    if merged.get("model_id"):
+        merged["href"] = civitai_model_page_url(str(merged["model_id"]), merged.get("model_version_id"))
+    return merged
+
+
+def enrich_civitai_image_resources(
+    session: requests.Session,
+    job_id: int,
+    resources: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    cache: dict[str, dict[str, str] | None] = {}
+    enriched_resources: list[dict[str, str]] = []
+    for resource in resources:
+        version_id = id_value(resource.get("model_version_id"))
+        if not version_id or not civitai_resource_needs_version_metadata(resource):
+            enriched_resources.append(resource)
+            continue
+
+        if version_id not in cache:
+            meta_url = f"{CIVITAI_API_BASE}/model-versions/{quote(version_id, safe='')}"
+            try:
+                db.append_log(job_id, f"civitai.image.resource.metadata: {meta_url}")
+                metadata = fetch_json(session, meta_url, job_id=job_id)
+                cache[version_id] = civitai_version_resource(metadata, version_id)
+            except Exception as exc:
+                db.append_log(job_id, f"civitai.image.resource.metadata.warning version={version_id}: {exc}")
+                cache[version_id] = None
+
+        enriched = cache.get(version_id)
+        enriched_resources.append(merge_civitai_resource(resource, enriched) if enriched else resource)
+    return enriched_resources
+
+
+def normalize_civitai_image_resources(item: dict[str, Any], meta: dict[str, Any]) -> list[dict[str, str]]:
+    resources = [normalize_civitai_resource(resource) for resource in civitai_raw_resource_lists(item, meta)]
+    resources = [resource for resource in resources if any(resource.values())]
+
+    existing_ids = {resource.get("model_version_id") for resource in resources if resource.get("model_version_id")}
+    for version_id in civitai_image_model_version_ids(item, resources):
+        if version_id in existing_ids:
+            continue
+        resources.append(
+            {
+                "name": f"modelVersion {version_id}",
+                "model_version_id": version_id,
+                "href": f"{CIVITAI_API_BASE}/model-versions/{quote(version_id, safe='')}",
+            }
+        )
+        existing_ids.add(version_id)
+    return resources
+
+
+def civitai_image_model_version_ids(item: dict[str, Any], resources: list[dict[str, str]]) -> list[str]:
+    values: list[Any] = []
+    raw_ids = item.get("modelVersionIds") or item.get("model_version_ids")
+    if isinstance(raw_ids, list):
+        values.extend(raw_ids)
+    elif raw_ids not in (None, ""):
+        values.append(raw_ids)
+    values.extend(resource.get("model_version_id") for resource in resources)
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        version_id = id_value(value)
+        if not version_id or version_id in seen:
+            continue
+        ids.append(version_id)
+        seen.add(version_id)
+    return ids
+
+
+def civitai_image_original_url(item: dict[str, Any]) -> str | None:
+    for key in ("url", "originalUrl", "imageUrl"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw_image = item.get("image")
+    if isinstance(raw_image, dict):
+        for key in ("url", "originalUrl", "imageUrl"):
+            value = raw_image.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def civitai_image_username(item: dict[str, Any]) -> str:
+    username = text_value(item.get("username"))
+    if username:
+        return username
+    raw_user = item.get("user")
+    if isinstance(raw_user, dict):
+        username = text_value(raw_user.get("username") or raw_user.get("name"))
+        if username:
+            return username
+    return "unknown"
+
+
+def civitai_image_base_model(meta: dict[str, Any], resources: list[dict[str, str]]) -> str | None:
+    for resource in resources:
+        base_model = resource.get("base_model")
+        if base_model:
+            return base_model
+    value = first_mapping_value(meta, "baseModel", "base_model", "Model", "model")
+    return text_value(value)
+
+
+def civitai_remote_thumbnail_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    return url.replace("/original=true/", "/width=256/")
+
+
+def build_civitai_copy_all_text(prompt: str | None, negative_prompt: str | None, metadata: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    if prompt:
+        lines.append(prompt)
+    if negative_prompt:
+        lines.append(f"Negative prompt: {negative_prompt}")
+    metadata_line = ", ".join(
+        f"{item['label']}: {item['value']}"
+        for item in metadata
+        if item.get("label") and item.get("value")
+    )
+    if metadata_line:
+        lines.append(metadata_line)
+    return "\n".join(lines)
+
+
+def normalize_civitai_image_record(
+    item: dict[str, Any],
+    *,
+    source_url: str,
+    raw_input: str,
+) -> dict[str, Any]:
+    meta = civitai_image_meta(item)
+    prompt = text_value(first_mapping_value(meta, "prompt", "positivePrompt", "positive_prompt"))
+    negative_prompt = text_value(first_mapping_value(meta, "negativePrompt", "negative_prompt"))
+    metadata = civitai_generation_metadata(meta)
+    resources = normalize_civitai_image_resources(item, meta)
+    model_version_ids = civitai_image_model_version_ids(item, resources)
+    original_url = civitai_image_original_url(item)
+    image_id = id_value(item.get("id")) or "unknown"
+    username = civitai_image_username(item)
+    base_model = civitai_image_base_model(meta, resources)
+    width = item.get("width")
+    height = item.get("height")
+    precision = f"{width} x {height}" if width and height else None
+    generation_available = bool(prompt or negative_prompt or metadata or resources or model_version_ids)
+
+    return {
+        "source": "civitai",
+        "kind": "civitai_image_page",
+        "source_url": redact_sensitive_text(source_url) or source_url,
+        "raw_input": redact_sensitive_text(raw_input) or raw_input,
+        "image": {
+            "id": image_id,
+            "post_id": id_value(item.get("postId") or item.get("post_id")),
+            "username": username,
+            "width": width,
+            "height": height,
+            "created_at": item.get("createdAt") or item.get("created_at"),
+            "nsfw_level": item.get("nsfwLevel") or item.get("nsfw_level"),
+            "original_url": redact_sensitive_text(original_url) if original_url else None,
+            "thumbnail_url": civitai_remote_thumbnail_url(redact_sensitive_text(original_url) if original_url else None),
+        },
+        "generation_data": {
+            "available": generation_available,
+            "prompt": {"text": prompt or ""},
+            "negative_prompt": {"text": negative_prompt or ""},
+            "copy_all_text": build_civitai_copy_all_text(prompt, negative_prompt, metadata),
+            "metadata": metadata,
+            "resources": resources,
+            "model_version_ids": model_version_ids,
+        },
+        "resource_downloads": [],
+        "local_files": {},
+        "archive_info": {
+            "model_title": f"Civitai image {image_id}",
+            "model_category": "Civitai Image Page",
+            "model_type": "Image",
+            "base_model": base_model,
+            "file_format": None,
+            "precision": precision,
+            "thumbnail_url": None,
+        },
+    }
+
+
+def civitai_image_target(parsed: ParsedDownload, record: dict[str, Any]) -> Path:
+    image = record.get("image") if isinstance(record.get("image"), dict) else {}
+    username = str(image.get("username") or "unknown")
+    image_id = str(image.get("id") or "unknown")
+    return base_target(
+        parsed,
+        "civitai",
+        "images",
+        sanitize_segment(username, "unknown"),
+        sanitize_segment(f"image_{image_id}", "image_unknown"),
+    )
+
+
+def civitai_image_extension(session: requests.Session, url: str, job_id: int) -> str:
+    content_type = civitai_image_content_type(session, url, job_id)
+    if content_type:
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        extension = CIVITAI_IMAGE_CONTENT_TYPE_EXTENSIONS.get(media_type)
+        if extension:
+            return extension
+
+    suffix = Path(unquote(urlparse(url).path)).suffix.lower()
+    if suffix in THUMBNAIL_IMAGE_EXTENSIONS:
+        return suffix
+    return ".jpg"
+
+
+def civitai_image_content_type(session: requests.Session, url: str, job_id: int) -> str | None:
+    if not bool_env("DOWNLOAD_ENABLE_HEAD_REQUESTS", True):
+        return None
+    response: requests.Response | None = None
+    try:
+        response = request_with_safety(
+            session,
+            "HEAD",
+            url,
+            job_id=job_id,
+            timeout=(10, 30),
+            allow_redirects=True,
+            headers={"Accept-Encoding": "identity"},
+        )
+        if response.ok:
+            content_type = response.headers.get("content-type")
+            return str(content_type) if content_type else None
+    except requests.RequestException:
+        return None
+    finally:
+        if response is not None:
+            response.close()
+    return None
+
+
+def civitai_image_archive_summary(record: dict[str, Any]) -> dict[str, Any]:
+    image = record.get("image") if isinstance(record.get("image"), dict) else {}
+    generation_data = record.get("generation_data") if isinstance(record.get("generation_data"), dict) else {}
+    archive_info = record.get("archive_info") if isinstance(record.get("archive_info"), dict) else {}
+    return {
+        "source": "civitai",
+        "kind": "civitai_image_page",
+        "source_url": record.get("source_url"),
+        "image": image,
+        "generation_data": {
+            "available": generation_data.get("available"),
+            "prompt": generation_data.get("prompt"),
+            "negative_prompt": generation_data.get("negative_prompt"),
+            "copy_all_text": generation_data.get("copy_all_text"),
+            "metadata": generation_data.get("metadata"),
+            "resources": generation_data.get("resources"),
+            "model_version_ids": generation_data.get("model_version_ids"),
+        },
+        "resource_downloads": record.get("resource_downloads"),
+        "local_files": record.get("local_files"),
+        "archive_info": archive_info,
+    }
+
+
+def create_civitai_image_resource_jobs(job_id: int, resources: list[dict[str, str]]) -> list[dict[str, Any]]:
+    downloads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for resource in resources:
+        version_id = id_value(resource.get("model_version_id"))
+        if not version_id or version_id in seen:
+            continue
+        seen.add(version_id)
+
+        model_id = id_value(resource.get("model_id"))
+        if model_id:
+            raw_input = f"https://civitai.com/models/{quote(model_id, safe='')}?modelVersionId={quote(version_id, safe='')}"
+        else:
+            raw_input = f"{CIVITAI_API_BASE}/model-versions/{quote(version_id, safe='')}"
+
+        child = ParsedDownload(
+            source="civitai",
+            raw_input=raw_input,
+            civitai_model_id=model_id,
+            civitai_version_id=version_id,
+        )
+        child_job_id = db.create_job(child)
+        enqueue_job(child_job_id)
+        entry = {
+            "model_version_id": version_id,
+            "model_id": model_id,
+            "name": resource.get("name"),
+            "type": resource.get("type"),
+            "child_job_id": child_job_id,
+            "status": "queued",
+        }
+        downloads.append(entry)
+        db.append_log(
+            job_id,
+            f"civitai.image.resource.queue modelVersionId={version_id} child_job_id={child_job_id} "
+            f"type={resource.get('type') or 'unknown'}",
+        )
+    return downloads
+
+
+def update_civitai_image_job(job_id: int, target: Path, saved: Path | None, record: dict[str, Any]) -> None:
+    archive_info = record.get("archive_info") if isinstance(record.get("archive_info"), dict) else {}
+    metadata_json = json.dumps(redact_metadata(civitai_image_archive_summary(record)), ensure_ascii=False)
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        filename=saved.name if saved else None,
+        model_title=archive_info.get("model_title"),
+        model_category=archive_info.get("model_category"),
+        model_type=archive_info.get("model_type"),
+        base_model=archive_info.get("base_model"),
+        file_format=archive_info.get("file_format"),
+        precision=archive_info.get("precision"),
+        thumbnail_url=archive_info.get("thumbnail_url"),
+        metadata_json=metadata_json,
+    )
+
+
+def download_civitai_image_page(job_id: int, parsed: ParsedDownload) -> None:
+    image_id = id_value(getattr(parsed, "civitai_image_id", None))
+    if not image_id:
+        raise ValueError("Civitai image_id가 없습니다.")
+
+    token = db.get_secret("CIVITAI_TOKEN")
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT, **auth_headers(token)})
+    source_url = civitai_image_source_url(parsed, image_id)
+
+    item = fetch_civitai_image_item(session, image_id, job_id)
+    record = normalize_civitai_image_record(item, source_url=source_url, raw_input=parsed.raw_input)
+    generation_data = record.get("generation_data") if isinstance(record.get("generation_data"), dict) else {}
+    resources = generation_data.get("resources") if isinstance(generation_data.get("resources"), list) else []
+    resources = enrich_civitai_image_resources(session, job_id, resources)
+    generation_data["resources"] = resources
+    generation_data["model_version_ids"] = civitai_image_model_version_ids(item, resources)
+    record["generation_data"] = generation_data
+    db.append_log(job_id, f"civitai.image.metadata.ok image_id={image_id} resources={len(resources)}")
+    if not generation_data.get("available"):
+        db.append_log(job_id, f"civitai.image.metadata.warning image_id={image_id} generation data unavailable")
+
+    image_url = civitai_image_original_url(item)
+    if not image_url:
+        raise ValueError(f"Civitai image {image_id} has no downloadable image URL.")
+
+    target = civitai_image_target(parsed, record)
+    target.mkdir(parents=True, exist_ok=True)
+    extension = civitai_image_extension(session, image_url, job_id)
+    filename = sanitize_segment(f"image_{image_id}{extension}", f"image_{image_id}.jpg")
+    archive_info = record.get("archive_info") if isinstance(record.get("archive_info"), dict) else {}
+    archive_info["file_format"] = extension.lstrip(".")
+    record["archive_info"] = archive_info
+    record["local_files"] = {"primary_image": filename}
+    update_civitai_image_job(job_id, target, None, record)
+
+    check_job_control(job_id)
+    saved = stream_download(job_id, session, image_url, target, filename_override=filename)
+    record["local_files"] = {"primary_image": saved.name}
+    archive_info["thumbnail_url"] = thumbnail_url_for_path(saved) or thumbnail_url_for_path(target) or archive_info.get("thumbnail_url")
+    record["archive_info"] = archive_info
+    db.append_log(job_id, f"civitai.image.asset.saved file={saved.name}")
+    write_metadata(target, CIVITAI_IMAGE_METADATA_FILENAME, record)
+    update_civitai_image_job(job_id, target, saved, record)
+
+    resource_downloads = create_civitai_image_resource_jobs(job_id, resources)
+    record["resource_downloads"] = resource_downloads
+    write_metadata(target, CIVITAI_IMAGE_METADATA_FILENAME, record)
+    update_civitai_image_job(job_id, target, saved, record)
+    db.append_log(job_id, f"civitai.image.done image_id={image_id} queued_resources={len(resource_downloads)}")
+
+
 def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
+    if getattr(parsed, "civitai_image_id", None):
+        download_civitai_image_page(job_id, parsed)
+        return
+
     token = db.get_secret("CIVITAI_TOKEN")
     headers = auth_headers(token)
     session = requests.Session()

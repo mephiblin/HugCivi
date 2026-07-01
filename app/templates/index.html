@@ -616,6 +616,7 @@
     const mediaModal = document.getElementById('media-modal');
     const mediaClose = document.getElementById('media-close');
     const mediaFullscreen = document.getElementById('media-fullscreen');
+    const mediaKicker = document.querySelector('.media-kicker');
     const mediaTitle = document.getElementById('media-title');
     const mediaPath = document.getElementById('media-path');
     const mediaCounter = document.getElementById('media-counter');
@@ -647,6 +648,10 @@
     let mediaRequestId = 0;
     let mediaItems = [];
     let mediaIndex = 0;
+    let mediaArchiveMetadata = null;
+    let mediaResourceHealth = new Map();
+    let mediaResourceHealthLoading = false;
+    let mediaResourceHealthError = '';
     let mediaReturnFocus = null;
     let mediaReturnPath = '';
     let mediaFullscreenFallbackActive = false;
@@ -786,6 +791,18 @@
     mediaPrev.addEventListener('click', showPreviousMedia);
     mediaNext.addEventListener('click', showNextMedia);
     mediaStrip.addEventListener('click', event => {
+      const copyButton = event.target.closest('[data-generation-copy]');
+      if (copyButton) {
+        event.preventDefault();
+        copyGenerationText(copyButton);
+        return;
+      }
+      const healthButton = event.target.closest('[data-resource-health-check]');
+      if (healthButton) {
+        event.preventDefault();
+        checkCivitaiResourceHealth();
+        return;
+      }
       const button = event.target.closest('[data-media-index]');
       if (!button) return;
       event.preventDefault();
@@ -1720,6 +1737,7 @@
       mediaRequestId += 1;
       mediaItems = [];
       mediaIndex = 0;
+      resetMediaArchiveMetadata();
       mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       document.body.classList.remove('modal-open');
       restoreMediaReturnFocus();
@@ -1727,6 +1745,7 @@
 
     function setMediaLoading(message) {
       stopMediaPlayback();
+      resetMediaArchiveMetadata();
       mediaCounter.textContent = '0 / 0';
       mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading">${escapeHtml(message)}</div>`;
@@ -1739,6 +1758,7 @@
 
     function setMediaError(message) {
       stopMediaPlayback();
+      resetMediaArchiveMetadata();
       mediaCounter.textContent = '0 / 0';
       mediaDisplay.classList.remove('video-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(message)}</div>`;
@@ -1750,6 +1770,14 @@
     }
 
     function renderMediaViewer(data, target) {
+      mediaArchiveMetadata = normalizeCivitaiImageMetadata(data?.metadata);
+      mediaResourceHealth = new Map();
+      mediaResourceHealthLoading = false;
+      mediaResourceHealthError = '';
+      mediaModal.classList.toggle('has-generation-panel', Boolean(mediaArchiveMetadata));
+      if (mediaKicker) {
+        mediaKicker.textContent = mediaArchiveMetadata ? 'Civitai Image' : 'Media Archive';
+      }
       mediaTitle.textContent = data?.name || data?.title || target.name || '미디어';
       mediaPath.textContent = data?.path ? `/data/${normalizePath(data.path)}` : (target.path ? `/data/${target.path}` : '/data');
       mediaItems = normalizeMediaItems(data);
@@ -1759,6 +1787,18 @@
       }
       const requestedIndex = Number(data?.initial_index ?? data?.initialIndex ?? 0);
       showMediaAt(Number.isFinite(requestedIndex) ? requestedIndex : 0);
+    }
+
+    function resetMediaArchiveMetadata() {
+      mediaArchiveMetadata = null;
+      mediaResourceHealth = new Map();
+      mediaResourceHealthLoading = false;
+      mediaResourceHealthError = '';
+      mediaModal.classList.remove('has-generation-panel');
+      mediaStrip.classList.remove('generation-strip');
+      if (mediaKicker) {
+        mediaKicker.textContent = 'Media Archive';
+      }
     }
 
     function normalizeMediaItems(data) {
@@ -1828,6 +1868,319 @@
         return 'video';
       }
       return text.includes('video') ? 'video' : (text.includes('image') ? 'image' : '');
+    }
+
+    function normalizeCivitaiImageMetadata(metadata) {
+      if (!metadata || typeof metadata !== 'object') return null;
+      if (String(metadata.kind || '').toLowerCase() !== 'civitai_image_page') return null;
+      const generation = metadata.generation_data || metadata.generationData || {};
+      return {
+        kind: 'civitai_image_page',
+        sourceUrl: metadata.source_url || metadata.sourceUrl || metadata.raw_input || '',
+        image: metadata.image && typeof metadata.image === 'object' ? metadata.image : {},
+        generationData: generation && typeof generation === 'object' ? generation : {},
+        resourceDownloads: Array.isArray(metadata.resource_downloads) ? metadata.resource_downloads : [],
+      };
+    }
+
+    function renderGenerationPanel(metadata) {
+      const generation = metadata.generationData || {};
+      const prompt = generationText(generation.prompt);
+      const negativePrompt = generationText(generation.negative_prompt || generation.negativePrompt);
+      const copyAllText = generationCopyAllText(metadata);
+      const resources = generationResources(generation);
+      const metadataRows = generationMetadataRows(generation);
+      const sourceUrl = metadata.sourceUrl || '';
+      const sourceLink = isHttpUrl(sourceUrl)
+        ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(sourceUrl)}</a>`
+        : '<span>-</span>';
+      const resourceIds = generationModelVersionIds(metadata);
+      const healthButton = resourceIds.length
+        ? `<button type="button" class="generation-small-button" data-resource-health-check ${mediaResourceHealthLoading ? 'disabled' : ''}>${mediaResourceHealthLoading ? 'Checking' : 'Check resources'}</button>`
+        : '';
+      const healthError = mediaResourceHealthError
+        ? `<p class="generation-error">${escapeHtml(mediaResourceHealthError)}</p>`
+        : '';
+      return `<section class="generation-panel" aria-label="Generation data">
+        <header class="generation-head">
+          <div>
+            <h3>Generation data</h3>
+            <p>${sourceLink}</p>
+          </div>
+          <button type="button" class="generation-copy-all" data-generation-copy="all" ${copyAllText ? '' : 'disabled'}>COPY ALL</button>
+        </header>
+        <section class="generation-section">
+          <div class="generation-section-head">
+            <h4>Resources used</h4>
+            ${healthButton}
+          </div>
+          ${healthError}
+          ${renderGenerationResources(resources)}
+        </section>
+        <section class="generation-section">
+          <div class="generation-section-head">
+            <h4>Prompt</h4>
+            <button type="button" class="generation-small-button" data-generation-copy="prompt" ${prompt ? '' : 'disabled'}>COPY</button>
+          </div>
+          <pre class="generation-text">${escapeHtml(prompt || '-')}</pre>
+        </section>
+        <section class="generation-section">
+          <div class="generation-section-head">
+            <h4>Negative prompt</h4>
+            <button type="button" class="generation-small-button" data-generation-copy="negative" ${negativePrompt ? '' : 'disabled'}>COPY</button>
+          </div>
+          <pre class="generation-text">${escapeHtml(negativePrompt || '-')}</pre>
+        </section>
+        <section class="generation-section">
+          <h4>Other metadata</h4>
+          ${renderGenerationMetadata(metadataRows)}
+        </section>
+      </section>`;
+    }
+
+    function renderGenerationResources(resources) {
+      if (!resources.length) {
+        return '<div class="generation-empty">No registered resources.</div>';
+      }
+      return `<div class="generation-resources">${resources.map(resource => {
+        const versionId = resourceModelVersionId(resource);
+        const health = versionId ? mediaResourceHealth.get(versionId) : null;
+        const state = health ? (health.present ? 'present' : 'missing') : 'unknown';
+        const title = health
+          ? (health.present ? `Present${health.target_path ? `: ${health.target_path}` : ''}` : 'Not found')
+          : 'Not checked';
+        const href = resourceHref(resource);
+        const name = resource.name || resource.model_name || resource.modelName || `Version ${versionId || '-'}`;
+        const nameMarkup = href
+          ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(name)}</a>`
+          : `<span>${escapeHtml(name)}</span>`;
+        const badges = resourceBadges(resource, versionId);
+        return `<article class="generation-resource">
+          <span class="generation-health ${state}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>
+          <div class="generation-resource-body">
+            <strong>${nameMarkup}</strong>
+            ${badges ? `<span>${badges}</span>` : ''}
+          </div>
+        </article>`;
+      }).join('')}</div>`;
+    }
+
+    function renderGenerationMetadata(rows) {
+      if (!rows.length) {
+        return '<div class="generation-empty">No other metadata.</div>';
+      }
+      return `<dl class="generation-metadata">${rows.map(row => `
+        <div>
+          <dt>${escapeHtml(row.label)}</dt>
+          <dd>${escapeHtml(row.value)}</dd>
+        </div>
+      `).join('')}</dl>`;
+    }
+
+    function generationText(value) {
+      if (value == null) return '';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return String(value).trim();
+      }
+      if (Array.isArray(value)) {
+        return value.map(generationText).filter(Boolean).join('\n').trim();
+      }
+      if (typeof value === 'object') {
+        for (const key of ['text', 'value', 'prompt']) {
+          if (value[key] != null) {
+            return generationText(value[key]);
+          }
+        }
+      }
+      return '';
+    }
+
+    function generationResources(generation) {
+      const resources = generation.resources || generation.resources_used || generation.resourcesUsed;
+      return Array.isArray(resources) ? resources.filter(resource => resource && typeof resource === 'object') : [];
+    }
+
+    function generationMetadataRows(generation) {
+      const metadata = generation.metadata || generation.other_metadata || generation.otherMetadata;
+      if (Array.isArray(metadata)) {
+        return metadata.map(row => {
+          if (!row || typeof row !== 'object') return null;
+          const label = row.label || row.name || row.key || '';
+          const value = generationScalar(row.value ?? row.text ?? row.content);
+          return label && value ? {label: String(label), value} : null;
+        }).filter(Boolean);
+      }
+      if (metadata && typeof metadata === 'object') {
+        return Object.entries(metadata)
+          .map(([label, value]) => ({label, value: generationScalar(value)}))
+          .filter(row => row.label && row.value);
+      }
+      return [];
+    }
+
+    function generationScalar(value) {
+      if (value == null) return '';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+      }
+      if (Array.isArray(value)) {
+        return value.map(generationScalar).filter(Boolean).join(', ');
+      }
+      if (typeof value === 'object') {
+        return value.text != null ? generationScalar(value.text) : JSON.stringify(value);
+      }
+      return String(value);
+    }
+
+    function generationCopyAllText(metadata) {
+      const generation = metadata.generationData || {};
+      if (generation.copy_all_text || generation.copyAllText) {
+        return String(generation.copy_all_text || generation.copyAllText);
+      }
+      const prompt = generationText(generation.prompt);
+      const negativePrompt = generationText(generation.negative_prompt || generation.negativePrompt);
+      const rows = generationMetadataRows(generation);
+      const resources = generationResources(generation);
+      const lines = [];
+      if (prompt) lines.push(`Prompt: ${prompt}`);
+      if (negativePrompt) lines.push(`Negative prompt: ${negativePrompt}`);
+      rows.forEach(row => lines.push(`${row.label}: ${row.value}`));
+      if (resources.length) {
+        lines.push('Resources used:');
+        resources.forEach(resource => {
+          const badges = [
+            resource.type,
+            resource.version,
+            resource.weight != null ? `weight ${resource.weight}` : '',
+            resourceModelVersionId(resource) ? `modelVersionId ${resourceModelVersionId(resource)}` : '',
+          ].filter(Boolean).join(', ');
+          lines.push(`- ${resource.name || resource.model_name || 'Resource'}${badges ? ` (${badges})` : ''}`);
+        });
+      }
+      return lines.join('\n');
+    }
+
+    function resourceModelVersionId(resource) {
+      const value = resource.model_version_id ?? resource.modelVersionId ?? resource.version_id ?? resource.versionId;
+      return value == null ? '' : String(value).trim();
+    }
+
+    function generationModelVersionIds(metadata) {
+      const generation = metadata?.generationData || {};
+      const ids = [];
+      const append = value => {
+        const text = value == null ? '' : String(value).trim();
+        if (text && !ids.includes(text)) ids.push(text);
+      };
+      const rawIds = generation.model_version_ids || generation.modelVersionIds;
+      if (Array.isArray(rawIds)) {
+        rawIds.forEach(append);
+      }
+      generationResources(generation).forEach(resource => append(resourceModelVersionId(resource)));
+      return ids;
+    }
+
+    function resourceHref(resource) {
+      if (isHttpUrl(resource.href || '')) return resource.href;
+      const modelId = resource.model_id ?? resource.modelId;
+      return modelId ? `https://civitai.com/models/${encodeURIComponent(String(modelId))}` : '';
+    }
+
+    function resourceBadges(resource, versionId) {
+      const values = [
+        resource.type,
+        resource.version,
+        resource.base_model || resource.baseModel,
+        resource.weight != null ? resource.weight : '',
+        versionId ? `vID ${versionId}` : '',
+      ].filter(value => value != null && String(value).trim()).map(value => `<span>${escapeHtml(value)}</span>`);
+      return values.join('');
+    }
+
+    async function copyGenerationText(button) {
+      const kind = button.dataset.generationCopy || '';
+      const text = generationCopyText(kind);
+      if (!text) return;
+      const original = button.textContent;
+      try {
+        await copyTextToClipboard(text);
+        button.textContent = 'COPIED';
+        window.setTimeout(() => {
+          if (button.isConnected) {
+            button.textContent = original;
+          }
+        }, 1200);
+      } catch (err) {
+        window.alert('복사하지 못했습니다.');
+      }
+    }
+
+    function generationCopyText(kind) {
+      if (!mediaArchiveMetadata) return '';
+      const generation = mediaArchiveMetadata.generationData || {};
+      if (kind === 'prompt') return generationText(generation.prompt);
+      if (kind === 'negative') return generationText(generation.negative_prompt || generation.negativePrompt);
+      return generationCopyAllText(mediaArchiveMetadata);
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      if (!copied) {
+        throw new Error('copy failed');
+      }
+    }
+
+    async function checkCivitaiResourceHealth() {
+      if (!mediaArchiveMetadata || mediaResourceHealthLoading) return;
+      const ids = generationModelVersionIds(mediaArchiveMetadata);
+      if (!ids.length) return;
+      mediaResourceHealthLoading = true;
+      mediaResourceHealthError = '';
+      renderMediaStrip();
+      try {
+        const response = await fetch('/api/civitai/resource-health', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({model_version_ids: ids}),
+        });
+        if (!response.ok) {
+          let message = '리소스 상태를 확인하지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          mediaResourceHealthError = message;
+          return;
+        }
+        const data = await response.json();
+        mediaResourceHealth = new Map((Array.isArray(data.resources) ? data.resources : []).map(resource => [
+          String(resource.model_version_id || resource.modelVersionId || ''),
+          resource,
+        ]).filter(([id]) => id));
+      } catch (err) {
+        mediaResourceHealthError = '네트워크 요청을 완료하지 못했습니다.';
+      } finally {
+        mediaResourceHealthLoading = false;
+        renderMediaStrip();
+      }
+    }
+
+    function isHttpUrl(value) {
+      return /^https?:\/\//i.test(String(value || ''));
     }
 
     function showMediaAt(index) {
@@ -2048,6 +2401,11 @@
     }
 
     function renderMediaStrip() {
+      mediaStrip.classList.toggle('generation-strip', Boolean(mediaArchiveMetadata));
+      if (mediaArchiveMetadata) {
+        mediaStrip.innerHTML = renderGenerationPanel(mediaArchiveMetadata);
+        return;
+      }
       mediaStrip.innerHTML = mediaItems.map((item, index) => {
         const label = item.name || `${index + 1}`;
         const preview = item.previewUrl

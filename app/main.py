@@ -76,6 +76,7 @@ MODEL_EXTENSIONS = {
 SIDECAR_FILENAMES = (
     "_archive_metadata.json",
     "_civitai_metadata.json",
+    "_civitai_image_metadata.json",
     "_generic_metadata.json",
     "_hitomi_metadata.json",
     "_workflow_metadata.json",
@@ -314,19 +315,30 @@ def api_media_list(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
     ensure_downloadable_path(source)
     files = media_files_for_path(source)
-    return JSONResponse(
-        {
-            "ok": True,
-            "path": relative_data_path(source),
-            "name": source.name,
-            "items": [media_item_payload(item, index) for index, item in enumerate(files)],
-        }
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "path": relative_data_path(source),
+        "name": source.name,
+        "items": [media_item_payload(item, index) for index, item in enumerate(files)],
+    }
+    metadata = civitai_image_archive_metadata(source)
+    if metadata:
+        payload["metadata"] = metadata
+    return JSONResponse(payload)
 
 
 @app.get("/api/media/archive")
 def api_media_archive(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     return api_media_list(path, _)
+
+
+@app.post("/api/civitai/resource-health")
+async def api_civitai_resource_health(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
+    ids = requested_model_version_ids(payload)
+    return JSONResponse({"ok": True, "resources": civitai_resource_health_payload(ids)})
 
 
 @app.get("/api/media/file")
@@ -860,6 +872,45 @@ def archive_metadata_path(path: Path) -> Path | None:
     return None
 
 
+def civitai_image_archive_metadata(path: Path) -> dict[str, Any]:
+    metadata_path = archive_named_metadata_path(path, "_civitai_image_metadata.json")
+    if metadata_path is None:
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    metadata = dict(payload)
+    metadata.setdefault("kind", "civitai_image_page")
+    if not metadata.get("source_url"):
+        source_url = source_url_from_metadata(metadata)
+        if source_url:
+            metadata["source_url"] = source_url
+    return metadata
+
+
+def archive_named_metadata_path(path: Path, filename: str) -> Path | None:
+    current = path if path.is_dir() else path.parent
+    root = DATA_ROOT.resolve()
+    while True:
+        try:
+            resolved = current.resolve()
+        except OSError:
+            return None
+        if resolved != root and root not in resolved.parents:
+            return None
+
+        candidate = current / filename
+        if candidate.exists():
+            return candidate
+
+        if resolved == root:
+            return None
+        current = current.parent
+
+
 def archive_metadata(path: Path) -> dict[str, Any]:
     current = path if path.is_dir() else path.parent
     root = DATA_ROOT.resolve()
@@ -898,6 +949,175 @@ def source_url_from_metadata(metadata: dict[str, Any]) -> str:
             return f"https://huggingface.co/spaces/{repo}"
         return f"https://huggingface.co/{repo}"
     return ""
+
+
+def requested_model_version_ids(payload: dict[str, Any]) -> list[str]:
+    raw_ids = payload.get("model_version_ids", payload.get("modelVersionIds"))
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="model_version_ids 배열이 필요합니다.")
+    ids: list[str] = []
+    for value in raw_ids:
+        text = str(value).strip()
+        if text and text not in ids:
+            ids.append(text)
+    if len(ids) > 100:
+        raise HTTPException(status_code=400, detail="한 번에 100개 이하의 리소스만 확인할 수 있습니다.")
+    return ids
+
+
+def civitai_resource_health_payload(model_version_ids: list[str]) -> list[dict[str, Any]]:
+    ids = unique_model_version_ids(model_version_ids)
+    results = {
+        model_version_id: {
+            "model_version_id": model_version_id,
+            "present": False,
+            "target_path": "",
+            "job_id": None,
+        }
+        for model_version_id in ids
+    }
+    if not ids:
+        return []
+
+    mark_civitai_job_health(results)
+    missing = {model_version_id for model_version_id, result in results.items() if not result["present"]}
+    if missing:
+        mark_civitai_sidecar_health(results, missing)
+    return [results[model_version_id] for model_version_id in ids]
+
+
+def unique_model_version_ids(values: list[str]) -> list[str]:
+    ids: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in ids:
+            ids.append(text)
+    return ids
+
+
+def mark_civitai_job_health(results: dict[str, dict[str, Any]]) -> None:
+    wanted = set(results)
+    if not wanted:
+        return
+    for job in db.list_jobs(limit=5000):
+        if str(job.get("source") or "") != "civitai" or str(job.get("status") or "") != "done":
+            continue
+        target_dir = str(job.get("target_dir") or "").strip()
+        if not target_dir:
+            continue
+        target = Path(target_dir)
+        if not directory_has_model_file(target):
+            continue
+        matching_ids = civitai_model_version_ids_from_job(job) & wanted
+        if not matching_ids:
+            continue
+        for model_version_id in matching_ids:
+            if results[model_version_id]["present"]:
+                continue
+            results[model_version_id].update(
+                {
+                    "present": True,
+                    "target_path": health_target_path(target),
+                    "job_id": int(job["id"]) if job.get("id") is not None else None,
+                }
+            )
+
+
+def mark_civitai_sidecar_health(results: dict[str, dict[str, Any]], wanted: set[str]) -> None:
+    try:
+        sidecars = DATA_ROOT.rglob("_civitai_metadata.json")
+        for sidecar in sidecars:
+            if not wanted:
+                return
+            try:
+                if not sidecar.is_file() or sidecar.is_symlink():
+                    continue
+                payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            target = sidecar.parent
+            if not directory_has_model_file(target):
+                continue
+            matching_ids = civitai_model_version_ids_from_metadata(payload, include_top_id=False) & wanted
+            for model_version_id in matching_ids:
+                results[model_version_id].update(
+                    {
+                        "present": True,
+                        "target_path": health_target_path(target),
+                        "job_id": None,
+                    }
+                )
+                wanted.discard(model_version_id)
+    except OSError:
+        return
+
+
+def civitai_model_version_ids_from_job(job: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    parsed = parse_job_for_display(job)
+    if parsed and parsed.source == "civitai" and parsed.civitai_version_id:
+        ids.add(str(parsed.civitai_version_id))
+    metadata = parse_json_object(job.get("metadata_json"))
+    ids.update(civitai_model_version_ids_from_metadata(metadata, include_top_id=True))
+    return ids
+
+
+def civitai_model_version_ids_from_metadata(metadata: dict[str, Any], *, include_top_id: bool) -> set[str]:
+    ids: set[str] = set()
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            ids.add(text)
+
+    for key in ("version_id", "model_version_id", "modelVersionId"):
+        add(metadata.get(key))
+    if include_top_id:
+        add(metadata.get("id"))
+
+    nested = metadata.get("metadata")
+    if isinstance(nested, dict):
+        for key in ("id", "model_version_id", "modelVersionId"):
+            add(nested.get(key))
+
+    return ids
+
+
+def parse_json_object(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def directory_has_model_file(path: Path, limit: int = 10000) -> bool:
+    try:
+        if path.is_file():
+            return is_model_file(path)
+        if not path.is_dir():
+            return False
+        for index, item in enumerate(path.rglob("*")):
+            if index >= limit:
+                return False
+            if item.is_file() and not item.is_symlink() and is_model_file(item):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def health_target_path(path: Path) -> str:
+    try:
+        return relative_data_path(path)
+    except (OSError, ValueError):
+        return str(path)
 
 
 def normalize_library_source(value: Any) -> str:
@@ -1274,6 +1494,10 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
             return f"https://huggingface.co/spaces/{repo}"
         return f"https://huggingface.co/{repo}"
     if parsed.source == "civitai":
+        if parsed.civitai_image_url and is_http_url(parsed.civitai_image_url):
+            return parsed.civitai_image_url
+        if parsed.civitai_image_id:
+            return f"https://civitai.com/images/{quote(parsed.civitai_image_id)}"
         if parsed.civitai_model_id:
             return f"https://civitai.com/models/{quote(parsed.civitai_model_id)}"
         if is_http_url(parsed.civitai_download_url or ""):
