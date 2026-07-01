@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -40,7 +41,7 @@ from .parsers import InputParseError, parse_input
 from .utils import human_bytes, safe_join, sanitize_segment
 from .workflows import WorkflowParseError, find_workflow_png, load_workflow_view, save_workflow_bundle, workflow_max_bytes
 
-app = FastAPI(title="NAS Model Archiver", version="0.1.0")
+app = FastAPI(title="hugcivi", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
@@ -52,6 +53,11 @@ security = HTTPBasic()
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+SUBTITLE_EXTENSIONS = {".srt", ".vtt"}
+SUBTITLE_LANGUAGE_LABELS = {
+    "ko": "한국어",
+    "en": "English",
+}
 BROWSER_MP4_EXTENSIONS = {".m4v", ".mp4"}
 BROWSER_MP4_VIDEO_CODECS = {"h264"}
 BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
@@ -338,6 +344,16 @@ def api_media_play(path: str, _: str = Depends(require_auth)) -> FileResponse:
         raise HTTPException(status_code=404, detail="동영상 파일을 찾지 못했습니다.")
     playable = browser_playable_video_path(source)
     return FileResponse(playable, media_type="video/mp4")
+
+
+@app.get("/api/media/subtitle")
+def api_media_subtitle(path: str, _: str = Depends(require_auth)) -> Response:
+    source = existing_data_path(path)
+    if not source.is_file() or not is_subtitle_file(source):
+        raise HTTPException(status_code=404, detail="자막 파일을 찾지 못했습니다.")
+    if source.suffix.lower() == ".vtt":
+        return FileResponse(source, media_type="text/vtt; charset=utf-8", filename=source.name)
+    return PlainTextResponse(srt_to_vtt(source.read_text(encoding="utf-8-sig", errors="replace")), media_type="text/vtt")
 
 
 @app.get("/api/media/poster")
@@ -738,6 +754,10 @@ def is_video_file(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXTENSIONS
 
 
+def is_subtitle_file(path: Path) -> bool:
+    return path.suffix.lower() in SUBTITLE_EXTENSIONS
+
+
 def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
     metadata = archive_metadata(path)
     media_files = media_files_for_path(path, limit=1)
@@ -951,8 +971,83 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
         "thumbnail_url": thumbnail_url,
         "poster_url": thumbnail_url if media_type == "video" else "",
         "mime_type": "video/mp4" if media_type == "video" else media_type_for_path(path),
+        "subtitles": subtitle_payloads_for_media(path) if media_type == "video" else [],
         "size_bytes": path.stat().st_size,
     }
+
+
+def subtitle_payloads_for_media(path: Path) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for index, subtitle in enumerate(subtitle_files_for_media(path)):
+        relative_path = relative_data_path(subtitle)
+        language = subtitle_language_for_media(subtitle, path)
+        payloads.append(
+            {
+                "index": index,
+                "path": relative_path,
+                "name": subtitle.name,
+                "url": f"/api/media/subtitle?path={quote(relative_path, safe='/')}",
+                "language": language,
+                "label": subtitle_label(language, subtitle),
+                "format": subtitle.suffix.lower().removeprefix("."),
+            }
+        )
+    return payloads
+
+
+def subtitle_files_for_media(path: Path) -> list[Path]:
+    if not path.is_file():
+        return []
+    media_stem = path.stem
+    try:
+        candidates = [
+            item
+            for item in path.parent.iterdir()
+            if item.is_file()
+            and not item.is_symlink()
+            and is_subtitle_file(item)
+            and (item.stem == media_stem or item.stem.startswith(f"{media_stem}."))
+        ]
+    except OSError:
+        return []
+    return sorted(candidates, key=lambda item: subtitle_sort_key(item, path))
+
+
+def subtitle_sort_key(path: Path, media_path: Path) -> tuple[int, list[Any], str]:
+    language = subtitle_language_for_media(path, media_path).lower()
+    preferred = {"ko": 0, "en": 1}.get(language.split("-", 1)[0], 2)
+    return preferred, natural_path_key(path), path.name.lower()
+
+
+def subtitle_language_for_media(path: Path, media_path: Path) -> str:
+    prefix = f"{media_path.stem}."
+    stem = path.stem
+    if not stem.startswith(prefix):
+        return ""
+    language = stem.removeprefix(prefix).split(".", 1)[0].strip()
+    return language.lower()
+
+
+def subtitle_label(language: str, path: Path) -> str:
+    if language:
+        base = SUBTITLE_LANGUAGE_LABELS.get(language.split("-", 1)[0], language)
+        return f"{base} ({language})" if base == language else base
+    return path.stem
+
+
+def srt_to_vtt(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    output = ["WEBVTT", ""]
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        if stripped.isdigit() and "-->" in next_line:
+            continue
+        if "-->" in line:
+            line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", line)
+        output.append(line)
+    return "\n".join(output).strip() + "\n"
 
 
 def media_kind(path: Path | None) -> str:

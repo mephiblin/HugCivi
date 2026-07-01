@@ -463,6 +463,67 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertIn("1", command)
         self.assertEqual(command[-1], "https://xhamster3.com/videos/sample-video-123456")
 
+    def test_yt_dlp_command_downloads_manual_youtube_subtitles_first(self) -> None:
+        with (
+            mock.patch.object(downloader, "db", FakeDb({})),
+            mock.patch.object(downloader.shutil, "which", return_value=None),
+            mock.patch.object(
+                downloader,
+                "yt_dlp_subtitle_info",
+                return_value={
+                    "subtitles": {"en": [], "ko": []},
+                    "automatic_captions": {"en": [], "ko": []},
+                },
+            ),
+        ):
+            command = downloader.yt_dlp_command(
+                "ytdl:https://www.youtube.com/watch?v=abc123",
+                Path("/downloads/youtube"),
+            )
+
+        self.assertIn("--write-subs", command)
+        self.assertNotIn("--write-auto-subs", command)
+        self.assertIn("--sub-langs", command)
+        self.assertEqual(command[command.index("--sub-langs") + 1], "ko,en")
+        self.assertIn("--convert-subs", command)
+        self.assertEqual(command[command.index("--convert-subs") + 1], "srt")
+
+    def test_yt_dlp_command_falls_back_to_auto_english_subtitles(self) -> None:
+        with (
+            mock.patch.object(downloader, "db", FakeDb({})),
+            mock.patch.object(downloader.shutil, "which", return_value=None),
+            mock.patch.object(
+                downloader,
+                "yt_dlp_subtitle_info",
+                return_value={"subtitles": {}, "automatic_captions": {"en": [], "ko": []}},
+            ),
+        ):
+            command = downloader.yt_dlp_command(
+                "https://youtu.be/abc123",
+                Path("/downloads/youtube"),
+            )
+
+        self.assertIn("--write-auto-subs", command)
+        self.assertNotIn("--write-subs", command)
+        self.assertEqual(command[command.index("--sub-langs") + 1], "en")
+
+    def test_yt_dlp_command_keeps_explicit_subtitle_options(self) -> None:
+        fake_db = FakeDb({}, secrets={"YT_DLP_EXTRA_OPTIONS": "cmdline-args=--write-auto-subs --sub-langs ja"})
+
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader.shutil, "which", return_value=None),
+            mock.patch.object(downloader, "yt_dlp_subtitle_info") as probe,
+        ):
+            command = downloader.yt_dlp_command(
+                "https://www.youtube.com/watch?v=abc123",
+                Path("/downloads/youtube"),
+            )
+
+        probe.assert_not_called()
+        self.assertEqual(command.count("--write-auto-subs"), 1)
+        self.assertEqual(command[command.index("--sub-langs") + 1], "ja")
+
     def test_stall_watchdog_defaults_to_enabled(self) -> None:
         with mock.patch.object(downloader, "db", FakeDb({})):
             self.assertEqual(downloader.queue_stall_timeout_seconds(), downloader.DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)

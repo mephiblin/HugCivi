@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NAS Model Archiver</title>
+  <title>hugcivi</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -33,7 +33,7 @@
   <div class="app-frame">
     <aside class="sidebar mobile-panel" data-mobile-panel="folders">
       <button type="button" class="brand-button" id="home-button">
-        <span class="brand-title">Model Archiver</span>
+        <span class="brand-title">hugcivi</span>
         <span class="brand-subtitle">저장소로 모델 파일을 보관합니다</span>
       </button>
 
@@ -86,7 +86,7 @@
       </div>
 
       <section class="hero mobile-panel is-mobile-panel-active workflow-drop-zone" data-mobile-panel="download" data-workflow-drop-zone aria-label="다운로드 입력">
-        <h1>civitai - Hugging Face - Hitomi - gallery-dl</h1>
+        <h1>hugcivi</h1>
         <form class="download-form" id="command-form" method="post" action="/add">
           <input id="target_subdir" name="target_subdir" type="hidden">
           <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
@@ -492,7 +492,7 @@
     </div>
   </section>
 
-  <section class="media-modal" id="media-modal" role="dialog" aria-modal="true" aria-labelledby="media-title" hidden>
+  <section class="media-modal media-lightbox" id="media-modal" role="dialog" aria-modal="true" aria-labelledby="media-title" tabindex="-1" hidden>
     <div class="media-panel">
       <header class="media-head">
         <div>
@@ -502,7 +502,14 @@
         </div>
         <div class="media-head-actions">
           <span class="media-counter" id="media-counter">0 / 0</span>
-          <button type="button" id="media-close" aria-label="미디어 보기 닫기">×</button>
+          <div class="media-overlay-actions" role="group" aria-label="미디어 보기 제어">
+            <button type="button" class="media-fullscreen-button" id="media-fullscreen" aria-label="전체 화면 보기" aria-pressed="false">
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M5 9V5h4V3H3v6h2Zm10-6v2h4v4h2V3h-6Zm4 16h-4v2h6v-6h-2v4ZM5 15H3v6h6v-2H5v-4Z"/>
+              </svg>
+            </button>
+            <button type="button" class="media-close-button" id="media-close" aria-label="미디어 보기 닫기">×</button>
+          </div>
         </div>
       </header>
       <div class="media-body">
@@ -608,6 +615,7 @@
     const propertiesList = document.getElementById('properties-list');
     const mediaModal = document.getElementById('media-modal');
     const mediaClose = document.getElementById('media-close');
+    const mediaFullscreen = document.getElementById('media-fullscreen');
     const mediaTitle = document.getElementById('media-title');
     const mediaPath = document.getElementById('media-path');
     const mediaCounter = document.getElementById('media-counter');
@@ -626,6 +634,7 @@
     const workflowSummary = document.getElementById('workflow-summary');
     const workflowGraph = document.getElementById('workflow-graph');
     const workflowJson = document.getElementById('workflow-json');
+    const mediaMobileQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 760px)') : null;
     let contextTarget = null;
     let downloadQueue = [];
     let downloadQueueActive = false;
@@ -638,6 +647,9 @@
     let mediaRequestId = 0;
     let mediaItems = [];
     let mediaIndex = 0;
+    let mediaReturnFocus = null;
+    let mediaReturnPath = '';
+    let mediaFullscreenFallbackActive = false;
     let workflowRequestId = 0;
     let workflowDropDepth = 0;
     let workflowDropTimer = null;
@@ -713,14 +725,7 @@
     });
 
     document.addEventListener('keydown', event => {
-      if (!mediaModal.hidden && event.key === 'ArrowLeft') {
-        event.preventDefault();
-        showPreviousMedia();
-        return;
-      }
-      if (!mediaModal.hidden && event.key === 'ArrowRight') {
-        event.preventDefault();
-        showNextMedia();
+      if (!mediaModal.hidden && handleMediaViewerKeydown(event)) {
         return;
       }
       if (event.key === 'Escape') {
@@ -757,13 +762,23 @@
       event.preventDefault();
       savePropertiesNote(button.dataset.notePath || '');
     });
-    mediaClose.addEventListener('click', closeMediaViewer);
+    mediaClose.addEventListener('click', () => closeMediaViewer());
+    mediaFullscreen?.addEventListener('click', toggleMediaFullscreen);
     mediaModal.addEventListener('click', event => {
       if (event.target === mediaModal) {
         closeMediaViewer();
       }
       event.stopPropagation();
     });
+    document.addEventListener('fullscreenchange', syncMediaFullscreenState);
+    if (mediaMobileQuery) {
+      const syncMediaViewportMode = () => syncMediaMobileMode();
+      if (typeof mediaMobileQuery.addEventListener === 'function') {
+        mediaMobileQuery.addEventListener('change', syncMediaViewportMode);
+      } else if (typeof mediaMobileQuery.addListener === 'function') {
+        mediaMobileQuery.addListener(syncMediaViewportMode);
+      }
+    }
     mediaPrev.addEventListener('click', showPreviousMedia);
     mediaNext.addEventListener('click', showNextMedia);
     mediaStrip.addEventListener('click', event => {
@@ -1520,8 +1535,134 @@
       document.body.classList.remove('modal-open');
     }
 
+    function handleMediaViewerKeydown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMediaViewer();
+        return true;
+      }
+      if (event.key === 'ArrowLeft') {
+        if (shouldIgnoreMediaShortcut(event)) return false;
+        event.preventDefault();
+        showPreviousMedia();
+        return true;
+      }
+      if (event.key === 'ArrowRight') {
+        if (shouldIgnoreMediaShortcut(event)) return false;
+        event.preventDefault();
+        showNextMedia();
+        return true;
+      }
+      return false;
+    }
+
+    function shouldIgnoreMediaShortcut(event) {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return true;
+      const target = event.target;
+      if (!(target instanceof Element)) return false;
+      if (target.closest('input, textarea, select, [contenteditable="true"]')) return true;
+      return Boolean(target.closest('[data-player-subtitle-menu]:not([hidden])'));
+    }
+
+    function rememberMediaReturnState(target) {
+      const activeElement = document.activeElement;
+      mediaReturnFocus = activeElement instanceof HTMLElement && activeElement !== document.body && !mediaModal.contains(activeElement)
+        ? activeElement
+        : null;
+      mediaReturnPath = normalizePath(target?.path || '');
+    }
+
+    function restoreMediaReturnFocus() {
+      const focusTarget = resolveMediaReturnFocusTarget();
+      mediaReturnFocus = null;
+      mediaReturnPath = '';
+      if (!focusTarget) return;
+      window.requestAnimationFrame(() => {
+        if (!isUsableMediaFocusTarget(focusTarget)) return;
+        try {
+          focusTarget.focus({preventScroll: true});
+        } catch (err) {
+          focusTarget.focus();
+        }
+      });
+    }
+
+    function resolveMediaReturnFocusTarget() {
+      if (isUsableMediaFocusTarget(mediaReturnFocus)) {
+        return mediaReturnFocus;
+      }
+      if (!mediaReturnPath) return null;
+      return Array.from(libraryGrid.querySelectorAll('.asset-card.media-archive'))
+        .find(card => normalizePath(card.dataset.path || '') === mediaReturnPath) || null;
+    }
+
+    function isUsableMediaFocusTarget(element) {
+      return element instanceof HTMLElement
+        && element.isConnected
+        && !element.hasAttribute('disabled')
+        && !element.closest('[hidden]');
+    }
+
+    function syncMediaMobileMode() {
+      const isMobileFullscreen = Boolean(mediaMobileQuery?.matches);
+      mediaModal.classList.toggle('is-mobile-fullscreen', !mediaModal.hidden && isMobileFullscreen);
+      mediaModal.classList.toggle('is-desktop-lightbox', !mediaModal.hidden && !isMobileFullscreen);
+    }
+
+    function isMediaFullscreenActive() {
+      if (mediaModal.hidden) return false;
+      const fullscreenElement = document.fullscreenElement;
+      return mediaFullscreenFallbackActive || Boolean(fullscreenElement && (
+        fullscreenElement === mediaModal || mediaModal.contains(fullscreenElement)
+      ));
+    }
+
+    function syncMediaFullscreenState() {
+      const isFullscreen = isMediaFullscreenActive();
+      mediaModal.classList.toggle('is-viewer-fullscreen', isFullscreen);
+      if (mediaFullscreen) {
+        mediaFullscreen.setAttribute('aria-pressed', isFullscreen ? 'true' : 'false');
+        mediaFullscreen.setAttribute('aria-label', isFullscreen ? '전체 화면 종료' : '전체 화면 보기');
+      }
+    }
+
+    function toggleMediaFullscreen() {
+      if (isMediaFullscreenActive()) {
+        mediaFullscreenFallbackActive = false;
+        if (document.fullscreenElement && mediaModal.contains(document.fullscreenElement)) {
+          const exitPromise = document.exitFullscreen?.();
+          exitPromise?.catch?.(() => {});
+        }
+        syncMediaFullscreenState();
+        return;
+      }
+      if (typeof mediaModal.requestFullscreen === 'function') {
+        const fullscreenPromise = mediaModal.requestFullscreen();
+        fullscreenPromise?.catch?.(() => {
+          if (mediaModal.hidden) return;
+          mediaFullscreenFallbackActive = true;
+          syncMediaFullscreenState();
+        });
+        return;
+      }
+      mediaFullscreenFallbackActive = true;
+      syncMediaFullscreenState();
+    }
+
+    function exitMediaFullscreen() {
+      mediaFullscreenFallbackActive = false;
+      if (document.fullscreenElement && mediaModal.contains(document.fullscreenElement)) {
+        const exitPromise = document.exitFullscreen?.();
+        exitPromise?.catch?.(() => {});
+      }
+      syncMediaFullscreenState();
+    }
+
     async function openMediaViewer(target) {
       if (!target || !target.path) return;
+      if (mediaModal.hidden) {
+        rememberMediaReturnState(target);
+      }
       const requestId = mediaRequestId + 1;
       mediaRequestId = requestId;
       mediaItems = [];
@@ -1530,8 +1671,15 @@
       mediaPath.textContent = target.path ? `/data/${target.path}` : '/data';
       setMediaLoading('미디어를 불러오는 중');
       mediaModal.hidden = false;
+      mediaModal.classList.add('is-open');
+      syncMediaMobileMode();
+      syncMediaFullscreenState();
       document.body.classList.add('modal-open');
-      mediaClose.focus();
+      try {
+        mediaClose.focus({preventScroll: true});
+      } catch (err) {
+        mediaClose.focus();
+      }
 
       try {
         const response = await fetch(`/api/media/list?path=${encodeURIComponent(target.path)}`);
@@ -1560,16 +1708,23 @@
     function closeMediaViewer() {
       if (mediaModal.hidden) return;
       stopMediaPlayback();
+      exitMediaFullscreen();
       mediaModal.hidden = true;
+      mediaModal.classList.remove('is-open');
+      syncMediaMobileMode();
+      syncMediaFullscreenState();
       mediaRequestId += 1;
       mediaItems = [];
       mediaIndex = 0;
+      mediaDisplay.classList.remove('video-active');
       document.body.classList.remove('modal-open');
+      restoreMediaReturnFocus();
     }
 
     function setMediaLoading(message) {
       stopMediaPlayback();
       mediaCounter.textContent = '0 / 0';
+      mediaDisplay.classList.remove('video-active');
       mediaDisplay.innerHTML = `<div class="media-loading">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = message;
@@ -1581,6 +1736,7 @@
     function setMediaError(message) {
       stopMediaPlayback();
       mediaCounter.textContent = '0 / 0';
+      mediaDisplay.classList.remove('video-active');
       mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = '불러오기 실패';
@@ -1624,12 +1780,39 @@
         url,
         previewUrl,
         posterUrl: item.poster_url || item.posterUrl || previewUrl,
+        subtitles: normalizeSubtitleTracks(item.subtitles || item.subtitle_tracks || item.subtitleTracks),
         width: Number(item.width) || null,
         height: Number(item.height) || null,
         durationSeconds: Number(item.duration_seconds ?? item.durationSeconds) || null,
         sizeBytes: Number(item.size_bytes ?? item.sizeBytes) || null,
         mimeType: item.mime_type || item.mimeType || '',
       };
+    }
+
+    function normalizeSubtitleTracks(value) {
+      if (!Array.isArray(value)) return [];
+      return value.map((track, index) => normalizeSubtitleTrack(track, index)).filter(Boolean);
+    }
+
+    function normalizeSubtitleTrack(track, index) {
+      if (!track || typeof track !== 'object') return null;
+      const url = track.url || track.src || '';
+      if (!url) return null;
+      const language = String(track.language || track.lang || track.srclang || '').trim();
+      const label = track.label || subtitleLabelForLanguage(language) || track.name || `자막 ${index + 1}`;
+      return {
+        id: track.id || track.path || url || index,
+        url,
+        language: language || `track-${index + 1}`,
+        label,
+      };
+    }
+
+    function subtitleLabelForLanguage(language) {
+      const base = String(language || '').split('-', 1)[0].toLowerCase();
+      if (base === 'ko') return '한국어';
+      if (base === 'en') return 'English';
+      return language;
     }
 
     function normalizeMediaType(value) {
@@ -1651,7 +1834,11 @@
       mediaCounter.textContent = `${mediaIndex + 1} / ${mediaItems.length}`;
       mediaPrev.disabled = mediaIndex <= 0;
       mediaNext.disabled = mediaIndex >= mediaItems.length - 1;
+      mediaDisplay.classList.toggle('video-active', item.type === 'video');
       mediaDisplay.innerHTML = renderMediaDisplay(item);
+      if (item.type === 'video') {
+        setupMediaPlayer(item);
+      }
       mediaItemTitle.textContent = item.name || `${mediaIndex + 1}`;
       mediaItemMeta.textContent = mediaItemMetaText(item);
       renderMediaStrip();
@@ -1661,12 +1848,161 @@
       if (item.type === 'video') {
         const typeAttr = item.mimeType ? ` type="${escapeHtml(item.mimeType)}"` : '';
         const posterAttr = item.posterUrl ? ` poster="${escapeHtml(item.posterUrl)}"` : '';
-        return `<video class="media-video" controls preload="metadata" playsinline${posterAttr}>
-          <source src="${escapeHtml(item.url)}"${typeAttr}>
-          이 브라우저에서 재생할 수 없는 비디오입니다.
-        </video>`;
+        const tracks = item.subtitles.map(track => {
+          const srclang = track.language ? ` srclang="${escapeHtml(track.language)}"` : '';
+          return `<track kind="subtitles" src="${escapeHtml(track.url)}" label="${escapeHtml(track.label)}"${srclang}>`;
+        }).join('');
+        const subtitleButtons = [
+          `<button type="button" class="media-subtitle-option active" data-subtitle-index="-1">사용 안함</button>`,
+          ...item.subtitles.map((track, index) => (
+            `<button type="button" class="media-subtitle-option" data-subtitle-index="${index}">${escapeHtml(track.label)}</button>`
+          )),
+        ].join('');
+        return `<div class="media-player" data-media-player>
+          <video class="media-video" preload="metadata" playsinline${posterAttr}>
+            <source src="${escapeHtml(item.url)}"${typeAttr}>
+            ${tracks}
+            이 브라우저에서 재생할 수 없는 비디오입니다.
+          </video>
+          <div class="media-player-controls" data-player-controls>
+            <input class="media-progress" data-player-progress type="range" min="0" max="1000" value="0" step="1" aria-label="재생 위치">
+            <div class="media-control-row">
+              <button type="button" class="media-control-button media-play-toggle" data-player-play aria-label="재생">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path class="play-icon" d="M8 5v14l11-7z"></path><path class="pause-icon" d="M7 5h4v14H7zm6 0h4v14h-4z"></path></svg>
+              </button>
+              <button type="button" class="media-control-button media-volume-toggle" data-player-volume aria-label="음소거">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.2-3.9v7.8a4.5 4.5 0 0 0 2.2-3.9z"></path></svg>
+              </button>
+              <span class="media-time" data-player-time>0:00 / 0:00</span>
+              <span class="media-control-spacer"></span>
+              <div class="media-subtitle-wrap">
+                <button type="button" class="media-control-button media-subtitle-toggle" data-player-subtitles aria-label="자막" ${item.subtitles.length ? '' : 'disabled'}>
+                  <span aria-hidden="true">CC</span>
+                </button>
+                <div class="media-subtitle-menu" data-player-subtitle-menu hidden>
+                  <div class="media-subtitle-menu-head">자막</div>
+                  ${subtitleButtons}
+                </div>
+              </div>
+              <button type="button" class="media-control-button media-fullscreen-toggle" data-player-fullscreen aria-label="전체 화면">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9V5h4V3H3v6h2zm10-6v2h4v4h2V3h-6zm4 16h-4v2h6v-6h-2v4zM5 15H3v6h6v-2H5v-4z"></path></svg>
+              </button>
+            </div>
+          </div>
+        </div>`;
       }
       return `<img class="media-image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name || 'media')}">`;
+    }
+
+    function setupMediaPlayer(item) {
+      const player = mediaDisplay.querySelector('[data-media-player]');
+      const video = player?.querySelector('video');
+      if (!player || !video) return;
+      const playButton = player.querySelector('[data-player-play]');
+      const volumeButton = player.querySelector('[data-player-volume]');
+      const progress = player.querySelector('[data-player-progress]');
+      const time = player.querySelector('[data-player-time]');
+      const subtitleButton = player.querySelector('[data-player-subtitles]');
+      const subtitleMenu = player.querySelector('[data-player-subtitle-menu]');
+      const fullscreenButton = player.querySelector('[data-player-fullscreen]');
+      const subtitleOptions = Array.from(player.querySelectorAll('[data-subtitle-index]'));
+
+      const updatePlayState = () => {
+        player.classList.toggle('is-paused', video.paused);
+        player.classList.toggle('is-playing', !video.paused);
+        if (playButton) {
+          playButton.setAttribute('aria-label', video.paused ? '재생' : '일시정지');
+        }
+      };
+      const updateTime = () => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        if (progress) {
+          progress.value = duration > 0 ? String(Math.round((current / duration) * 1000)) : '0';
+          progress.style.setProperty('--progress', `${duration > 0 ? (current / duration) * 100 : 0}%`);
+        }
+        if (time) {
+          time.textContent = `${formatDuration(current)} / ${formatDuration(duration)}`;
+        }
+      };
+      const setSubtitle = index => {
+        const tracks = Array.from(video.textTracks || []);
+        tracks.forEach((track, trackIndex) => {
+          track.mode = trackIndex === index ? 'showing' : 'disabled';
+        });
+        subtitleOptions.forEach(button => {
+          button.classList.toggle('active', Number(button.dataset.subtitleIndex) === index);
+        });
+        subtitleButton?.classList.toggle('active', index >= 0);
+        if (subtitleMenu) {
+          subtitleMenu.hidden = true;
+        }
+      };
+
+      updatePlayState();
+      updateTime();
+      setSubtitle(-1);
+
+      playButton?.addEventListener('click', () => {
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+      video.addEventListener('click', () => {
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      });
+      volumeButton?.addEventListener('click', () => {
+        video.muted = !video.muted;
+        volumeButton.classList.toggle('active', video.muted);
+      });
+      progress?.addEventListener('input', () => {
+        if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+        video.currentTime = (Number(progress.value) / 1000) * video.duration;
+      });
+      subtitleButton?.addEventListener('click', event => {
+        event.stopPropagation();
+        if (!subtitleMenu || !item.subtitles.length) return;
+        const willOpen = subtitleMenu.hidden;
+        subtitleMenu.hidden = !willOpen;
+        if (willOpen) {
+          window.setTimeout(() => {
+            document.addEventListener('click', outsideEvent => {
+              if (!player.contains(outsideEvent.target)) {
+                subtitleMenu.hidden = true;
+              }
+            }, {once: true});
+          }, 0);
+        }
+      });
+      subtitleOptions.forEach(button => {
+        button.addEventListener('click', event => {
+          event.stopPropagation();
+          setSubtitle(Number(button.dataset.subtitleIndex));
+        });
+      });
+      fullscreenButton?.addEventListener('click', () => {
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.();
+          return;
+        }
+        player.requestFullscreen?.();
+      });
+      player.addEventListener('click', event => {
+        if (subtitleMenu && !subtitleMenu.hidden && !event.target.closest('.media-subtitle-wrap')) {
+          subtitleMenu.hidden = true;
+        }
+      });
+      video.addEventListener('play', updatePlayState);
+      video.addEventListener('pause', updatePlayState);
+      video.addEventListener('loadedmetadata', updateTime);
+      video.addEventListener('durationchange', updateTime);
+      video.addEventListener('timeupdate', updateTime);
     }
 
     function renderMediaStrip() {
@@ -1712,6 +2048,7 @@
       if (!video) return;
       video.pause();
       video.removeAttribute('src');
+      video.querySelectorAll('source').forEach(source => source.removeAttribute('src'));
       video.load();
     }
 

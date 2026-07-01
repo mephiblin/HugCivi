@@ -1,7 +1,7 @@
 services:
-  nas-model-archiver:
+  hugcivi:
     build: .
-    container_name: nas-model-archiver
+    container_name: hugcivi
     restart: unless-stopped
     ports:
       - "8088:8088"

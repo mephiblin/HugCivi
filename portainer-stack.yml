@@ -7,7 +7,7 @@
 #   HUGCIVI_IMAGE is optional and defaults to the GitHub Container Registry image.
 
 services:
-  nas-model-archiver:
+  hugcivi:
     image: "${HUGCIVI_IMAGE:-ghcr.io/mephiblin/hugcivi:latest}"
     restart: unless-stopped
     ports:

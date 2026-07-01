@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app.defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
 from app.models import ParsedDownload
@@ -289,5 +290,38 @@ def test_existing_data_path_preserves_downloaded_media_filename_punctuation(app_
     relative = f"gallery-dl/youtube.com/video-XlFu9nJCA1A/{filename}"
 
     assert main.existing_data_path(relative) == media
-    with pytest.raises(ValueError):
+    with pytest.raises(HTTPException) as exc_info:
         main.data_path_from_request_path("../outside")
+    assert exc_info.value.status_code == 400
+
+
+def test_media_item_payload_exposes_sidecar_subtitles(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "gallery-dl" / "youtube.com" / "video-abc123"
+    target.mkdir(parents=True)
+    media = target / "Sample Video [abc123].mp4"
+    media.write_bytes(b"video")
+    (target / "Sample Video [abc123].en.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
+    (target / "Sample Video [abc123].ko.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕\n", encoding="utf-8")
+
+    payload = main.media_item_payload(media, 0)
+
+    assert [track["language"] for track in payload["subtitles"]] == ["ko", "en"]
+    assert payload["subtitles"][0]["label"] == "한국어"
+    assert payload["subtitles"][1]["label"] == "English"
+    assert payload["subtitles"][0]["url"].startswith("/api/media/subtitle?path=gallery-dl/youtube.com/video-abc123/")
+
+
+def test_media_subtitle_endpoint_converts_srt_to_vtt(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    subtitle = data_root / "gallery-dl" / "youtube.com" / "video-abc123" / "Sample Video [abc123].en.srt"
+    subtitle.parent.mkdir(parents=True)
+    subtitle.write_text("1\n00:00:01,500 --> 00:00:02,750\nHello\n", encoding="utf-8")
+
+    response = main.api_media_subtitle("gallery-dl/youtube.com/video-abc123/Sample Video [abc123].en.srt", "_")
+
+    assert response.media_type == "text/vtt"
+    body = response.body.decode("utf-8")
+    assert body.startswith("WEBVTT")
+    assert "00:00:01.500 --> 00:00:02.750" in body
+    assert "\n1\n" not in body

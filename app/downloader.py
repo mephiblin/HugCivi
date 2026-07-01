@@ -80,6 +80,10 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "youtu.be",
 }
+YOUTUBE_MANUAL_SUBTITLE_LANGS = ("ko", "en")
+YOUTUBE_AUTO_SUBTITLE_LANGS = ("en",)
+YOUTUBE_SUBTITLE_FORMAT = "vtt/srt/best"
+YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
@@ -128,6 +132,21 @@ YT_DLP_BLOCKED_CONFIG_OPTIONS = {
     "postprocessor-args",
     "ppa",
     "use-postprocessor",
+}
+YT_DLP_SUBTITLE_CMDLINE_OPTIONS = {
+    "--all-subs",
+    "--convert-subs",
+    "--embed-subs",
+    "--list-subs",
+    "--no-write-auto-subs",
+    "--no-write-subs",
+    "--sub-format",
+    "--sub-langs",
+    "--srt-langs",
+    "--write-auto-subs",
+    "--write-subs",
+    "--write-sub",
+    "--write-subtitles",
 }
 
 
@@ -1700,7 +1719,9 @@ def yt_dlp_command(source_url: str, target: Path) -> list[str]:
     if ytdlp_format:
         command.extend(["--format", ytdlp_format])
     extra_args = ytdlp_direct_cmdline_args()
-    command.extend(default_ytdlp_site_cmdline_args(url, extra_args))
+    subtitle_args = default_youtube_subtitle_cmdline_args(url, extra_args)
+    command.extend(default_ytdlp_site_cmdline_args(url, extra_args + subtitle_args))
+    command.extend(subtitle_args)
     command.extend(extra_args)
     command.append(url)
     return command
@@ -1778,6 +1799,93 @@ def ytdlp_direct_cmdline_args() -> list[str]:
     return args
 
 
+def default_youtube_subtitle_cmdline_args(url: str, existing_args: list[str]) -> list[str]:
+    if not is_youtube_url(url) or has_any_ytdlp_cmdline_option(existing_args, YT_DLP_SUBTITLE_CMDLINE_OPTIONS):
+        return []
+
+    info = yt_dlp_subtitle_info(url, existing_args)
+    manual_languages = preferred_subtitle_languages(info.get("subtitles"), YOUTUBE_MANUAL_SUBTITLE_LANGS)
+    if manual_languages:
+        return [
+            "--write-subs",
+            "--sub-langs",
+            ",".join(manual_languages),
+            "--sub-format",
+            YOUTUBE_SUBTITLE_FORMAT,
+            "--convert-subs",
+            "srt",
+        ]
+
+    auto_languages = preferred_subtitle_languages(info.get("automatic_captions"), YOUTUBE_AUTO_SUBTITLE_LANGS)
+    if auto_languages:
+        return [
+            "--write-auto-subs",
+            "--sub-langs",
+            ",".join(auto_languages),
+            "--sub-format",
+            YOUTUBE_SUBTITLE_FORMAT,
+            "--convert-subs",
+            "srt",
+        ]
+    return []
+
+
+def yt_dlp_subtitle_info(url: str, existing_args: list[str]) -> dict[str, Any]:
+    try:
+        timeout = int(os.getenv("YT_DLP_SUBTITLE_PROBE_TIMEOUT_SECONDS", str(YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS)))
+    except ValueError:
+        timeout = YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-config",
+        "--skip-download",
+        "--dump-single-json",
+        "--no-warnings",
+        *existing_args,
+        url,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        parsed = json.loads(completed.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def preferred_subtitle_languages(candidates: Any, preferred_languages: tuple[str, ...]) -> list[str]:
+    if not isinstance(candidates, dict):
+        return []
+    available = [str(language).strip() for language in candidates if str(language).strip()]
+    selected: list[str] = []
+    for preferred in preferred_languages:
+        match = preferred_language_match(available, preferred)
+        if match and match not in selected:
+            selected.append(match)
+    return selected
+
+
+def preferred_language_match(available: list[str], preferred: str) -> str:
+    preferred_lower = preferred.lower()
+    for language in available:
+        if language.lower() == preferred_lower:
+            return language
+    for language in available:
+        language_lower = language.lower()
+        if language_lower.startswith(f"{preferred_lower}-") or language_lower.startswith(f"{preferred_lower}."):
+            return language
+    return ""
+
+
 def parse_ytdlp_extra_cmdline_args(extra_options: str | None) -> list[str]:
     args: list[str] = []
     if not extra_options:
@@ -1836,6 +1944,13 @@ def is_xhamster_url(url: str) -> bool:
 
 def has_ytdlp_cmdline_option(tokens: list[str], option_name: str) -> bool:
     return any(token == option_name or token.startswith(f"{option_name}=") for token in tokens)
+
+
+def has_any_ytdlp_cmdline_option(tokens: list[str], option_names: set[str]) -> bool:
+    return any(
+        token.split("=", 1)[0] in option_names or token in option_names
+        for token in tokens
+    )
 
 
 def ytdlp_setting(name: str) -> str | None:

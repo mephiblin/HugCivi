@@ -1,4 +1,4 @@
-# NAS Model Archiver
+# hugcivi
 
 Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, YouTube/yt-dlp, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
