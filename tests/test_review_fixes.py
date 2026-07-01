@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
+from app.defaults import (
+    DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    YT_DLP_DEFAULT_FORMAT,
+)
 from app.models import ParsedDownload
 
 
@@ -68,6 +73,12 @@ def test_settings_status_never_returns_secret_values(
     assert status["HF_TOKEN"]["configured"] is True
     assert status["CIVITAI_TOKEN"]["configured"] is True
     assert status["youtube"]["YT_DLP_FORMAT"]["value"] == YT_DLP_DEFAULT_FORMAT
+    assert status["queue"]["QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS"]["value"] == str(
+        QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS
+    )
+    assert status["queue"]["QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS"]["value"] == str(
+        QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS
+    )
     assert status["queue"]["DOWNLOAD_STALL_TIMEOUT_SECONDS"]["value"] == str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
     assert status["startup"]["GALLERY_DL_AUTO_UPDATE"]["value"] == "1"
 

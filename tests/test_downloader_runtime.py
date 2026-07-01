@@ -856,6 +856,87 @@ class DownloaderRuntimeTests(unittest.TestCase):
         with downloader._SCHEDULER_CONDITION:
             self.assertEqual(downloader._PENDING_JOB_IDS, [1, 3])
 
+    def test_same_provider_cooldown_delays_next_schedulable_job(self) -> None:
+        parsed = ParsedDownload(source="generic", raw_input="https://example.test/a.bin", url="https://example.test/a.bin")
+        job = {"status": "queued", "parsed_json": json.dumps(parsed.to_dict())}
+
+        with (
+            mock.patch.object(downloader.db, "get_job", return_value=job),
+            mock.patch.object(downloader, "queue_global_limit", return_value=3),
+            mock.patch.object(downloader, "queue_per_provider_limit", return_value=1),
+            mock.patch.object(downloader, "queue_provider_cooldown_range_seconds", return_value=(2, 2)),
+        ):
+            with downloader._SCHEDULER_CONDITION:
+                downloader._PENDING_JOB_IDS[:] = [1]
+                downloader._ACTIVE_GLOBAL_JOBS = 0
+                downloader._ACTIVE_PROVIDER_JOBS.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL["generic:example.test"] = downloader.time.monotonic() + 2
+
+                selected, wait_seconds = downloader.pick_next_schedulable_job_locked()
+
+                self.assertIsNone(selected)
+                self.assertIsNotNone(wait_seconds)
+                self.assertGreater(wait_seconds, 0)
+                self.assertLessEqual(wait_seconds, 2)
+                self.assertEqual(downloader._PENDING_JOB_IDS, [1])
+
+            with downloader._SCHEDULER_CONDITION:
+                downloader._PENDING_JOB_IDS.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    def test_same_provider_cooldown_can_be_disabled(self) -> None:
+        parsed = ParsedDownload(source="generic", raw_input="https://example.test/a.bin", url="https://example.test/a.bin")
+        job = {"status": "queued", "parsed_json": json.dumps(parsed.to_dict())}
+
+        with (
+            mock.patch.object(downloader.db, "get_job", return_value=job),
+            mock.patch.object(downloader, "queue_global_limit", return_value=3),
+            mock.patch.object(downloader, "queue_per_provider_limit", return_value=1),
+            mock.patch.object(downloader, "queue_provider_cooldown_range_seconds", return_value=(0, 0)),
+        ):
+            with downloader._SCHEDULER_CONDITION:
+                downloader._PENDING_JOB_IDS[:] = [1]
+                downloader._ACTIVE_GLOBAL_JOBS = 0
+                downloader._ACTIVE_PROVIDER_JOBS.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL["generic:example.test"] = downloader.time.monotonic() + 20
+
+                selected, wait_seconds = downloader.pick_next_schedulable_job_locked()
+
+                self.assertEqual(selected, (1, "generic:example.test"))
+                self.assertIsNone(wait_seconds)
+                self.assertEqual(downloader._PENDING_JOB_IDS, [])
+
+            with downloader._SCHEDULER_CONDITION:
+                downloader._PENDING_JOB_IDS.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+
+    def test_provider_cooldown_randomizes_once_when_slot_is_released(self) -> None:
+        provider = "generic:example.test"
+        with (
+            mock.patch.object(downloader, "queue_provider_cooldown_range_seconds", return_value=(2, 7)),
+            mock.patch.object(downloader.random, "uniform", return_value=4.5) as uniform,
+        ):
+            with downloader._SCHEDULER_CONDITION:
+                downloader._ACTIVE_GLOBAL_JOBS = 1
+                downloader._ACTIVE_PROVIDER_JOBS.clear()
+                downloader._ACTIVE_PROVIDER_JOBS[provider] = 1
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+                before = downloader.time.monotonic()
+
+            downloader.release_provider_slot(provider)
+
+            with downloader._SCHEDULER_CONDITION:
+                cooldown_until = downloader._PROVIDER_COOLDOWN_UNTIL[provider]
+                downloader._ACTIVE_GLOBAL_JOBS = 0
+                downloader._ACTIVE_PROVIDER_JOBS.clear()
+                downloader._PROVIDER_COOLDOWN_UNTIL.clear()
+
+        uniform.assert_called_once_with(2.0, 7.0)
+        self.assertGreaterEqual(cooldown_until, before + 4.0)
+        self.assertLessEqual(cooldown_until, before + 5.0)
+
     def test_huggingface_process_stops_child_when_job_is_deleted(self) -> None:
         class CapturingStdin:
             def __init__(self) -> None:
@@ -1151,6 +1232,13 @@ class DownloaderRuntimeTests(unittest.TestCase):
 
     def test_stall_watchdog_defaults_to_enabled(self) -> None:
         with mock.patch.object(downloader, "db", FakeDb({})):
+            self.assertEqual(
+                downloader.queue_provider_cooldown_range_seconds(),
+                (
+                    downloader.QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+                    downloader.QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+                ),
+            )
             self.assertEqual(downloader.queue_stall_timeout_seconds(), downloader.DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
 
     def test_ytdl_command_uses_yt_dlp_module_and_settings(self) -> None:

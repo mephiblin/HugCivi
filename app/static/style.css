@@ -331,7 +331,8 @@ a:hover {
   background: #202938;
 }
 
-.token-modal {
+.token-modal,
+.bulk-add-modal {
   position: fixed;
   inset: 0;
   z-index: 100;
@@ -342,7 +343,8 @@ a:hover {
   background: rgba(15, 23, 42, 0.48);
 }
 
-.token-modal[hidden] {
+.token-modal[hidden],
+.bulk-add-modal[hidden] {
   display: none;
 }
 
@@ -361,6 +363,95 @@ a:hover {
   border-radius: 14px;
   background: #ffffff;
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.bulk-add-panel {
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto auto;
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(680px, calc(100dvh - 48px));
+  overflow: hidden;
+  border: 1px solid #d7dde8;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.bulk-add-head {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid #edf1f7;
+  padding: 16px 22px;
+}
+
+.bulk-add-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 26px;
+}
+
+.bulk-add-head p,
+.bulk-add-status {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.bulk-add-close {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  color: #111827;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.bulk-add-close:hover {
+  background: #f1f5f9;
+}
+
+.bulk-add-input {
+  min-width: 0;
+  width: auto;
+  min-height: 220px;
+  margin: 18px 22px 0;
+  resize: vertical;
+  border: 1px solid #d7dde8;
+  border-radius: 8px;
+  padding: 12px;
+  color: #111827;
+  background: #fbfcfe;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  outline: 0;
+}
+
+.bulk-add-input:focus {
+  border-color: #94a3b8;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.16);
+}
+
+.bulk-add-status {
+  min-height: 24px;
+  padding: 6px 22px 0;
+}
+
+.bulk-add-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid #edf1f7;
+  padding: 16px 22px;
 }
 
 .mobile-tabbar {
@@ -866,6 +957,28 @@ a:hover {
 .submit-orb {
   border: 0;
   flex: 0 0 auto;
+}
+
+.bulk-add-button {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d7dde8;
+  border-radius: 50%;
+  color: #111827;
+  background: #f8fafc;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.bulk-add-button:hover,
+.bulk-add-button:focus-visible {
+  border-color: #cbd5e1;
+  background: #eef2f7;
 }
 
 .download-input {
@@ -3145,9 +3258,31 @@ a:hover {
     margin-top: 18px;
   }
 
-  .token-modal {
+  .token-modal,
+  .bulk-add-modal {
     align-items: stretch;
     padding: 10px;
+  }
+
+  .bulk-add-panel {
+    width: 100%;
+    max-height: calc(100dvh - 20px);
+  }
+
+  .bulk-add-input {
+    margin-right: 14px;
+    margin-left: 14px;
+  }
+
+  .bulk-add-head,
+  .bulk-add-footer {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .bulk-add-status {
+    padding-right: 14px;
+    padding-left: 14px;
   }
 
   .settings-panel {

@@ -22,7 +22,12 @@ from urllib.parse import parse_qsl, quote, urlparse, urlunparse, unquote
 import requests
 
 from . import db
-from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
+from .defaults import (
+    DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    YT_DLP_DEFAULT_FORMAT,
+)
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
@@ -53,6 +58,7 @@ _SCHEDULER_CONDITION = threading.Condition()
 _PENDING_JOB_IDS: list[int] = []
 _ACTIVE_GLOBAL_JOBS = 0
 _ACTIVE_PROVIDER_JOBS: dict[str, int] = {}
+_PROVIDER_COOLDOWN_UNTIL: dict[str, float] = {}
 _HOST_THROTTLE_LOCK = threading.Lock()
 _HOST_NEXT_REQUEST_AT: dict[str, float] = {}
 _FINAL_PATH_LOCKS_LOCK = threading.Lock()
@@ -550,9 +556,9 @@ def scheduler_loop() -> None:
         with _SCHEDULER_CONDITION:
             selected: tuple[int, str] | None = None
             while selected is None:
-                selected = pick_next_schedulable_job_locked()
+                selected, wait_seconds = pick_next_schedulable_job_locked()
                 if selected is None:
-                    _SCHEDULER_CONDITION.wait()
+                    _SCHEDULER_CONDITION.wait(wait_seconds)
             job_id, provider = selected
             reserve_provider_slot_locked(provider)
 
@@ -565,11 +571,12 @@ def scheduler_loop() -> None:
         thread.start()
 
 
-def pick_next_schedulable_job_locked() -> tuple[int, str] | None:
+def pick_next_schedulable_job_locked() -> tuple[tuple[int, str] | None, float | None]:
     if _ACTIVE_GLOBAL_JOBS >= queue_global_limit():
-        return None
+        return None, None
 
     provider_limit = queue_per_provider_limit()
+    cooldown_wait: float | None = None
     index = 0
     while index < len(_PENDING_JOB_IDS):
         job_id = _PENDING_JOB_IDS[index]
@@ -585,10 +592,15 @@ def pick_next_schedulable_job_locked() -> tuple[int, str] | None:
             db.append_log(job_id, f"FAILED: {exc}")
             continue
         if _ACTIVE_PROVIDER_JOBS.get(provider, 0) < provider_limit:
+            provider_wait = provider_cooldown_remaining_locked(provider)
+            if provider_wait > 0:
+                cooldown_wait = provider_wait if cooldown_wait is None else min(cooldown_wait, provider_wait)
+                index += 1
+                continue
             _PENDING_JOB_IDS.pop(index)
-            return job_id, provider
+            return (job_id, provider), None
         index += 1
-    return None
+    return None, cooldown_wait
 
 
 def reserve_provider_slot_locked(provider: str) -> None:
@@ -601,12 +613,32 @@ def release_provider_slot(provider: str) -> None:
     global _ACTIVE_GLOBAL_JOBS
     with _SCHEDULER_CONDITION:
         _ACTIVE_GLOBAL_JOBS = max(0, _ACTIVE_GLOBAL_JOBS - 1)
+        cooldown = random_provider_cooldown_seconds()
+        if cooldown > 0:
+            _PROVIDER_COOLDOWN_UNTIL[provider] = time.monotonic() + cooldown
+        else:
+            _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
         current = max(0, _ACTIVE_PROVIDER_JOBS.get(provider, 0) - 1)
         if current:
             _ACTIVE_PROVIDER_JOBS[provider] = current
         else:
             _ACTIVE_PROVIDER_JOBS.pop(provider, None)
         _SCHEDULER_CONDITION.notify_all()
+
+
+def provider_cooldown_remaining_locked(provider: str) -> float:
+    _min_seconds, max_seconds = queue_provider_cooldown_range_seconds()
+    if max_seconds <= 0:
+        _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
+        return 0.0
+    cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider)
+    if cooldown_until is None:
+        return 0.0
+    remaining = cooldown_until - time.monotonic()
+    if remaining <= 0:
+        _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
+        return 0.0
+    return remaining
 
 
 def job_runner(job_id: int, provider: str) -> None:
@@ -885,6 +917,34 @@ def queue_global_limit() -> int:
 
 def queue_per_provider_limit() -> int:
     return positive_int_setting("QUEUE_PER_PROVIDER_LIMIT", 1)
+
+
+def queue_provider_cooldown_range_seconds() -> tuple[int, int]:
+    legacy_default = legacy_queue_provider_cooldown_seconds()
+    min_seconds = nonnegative_int_setting("QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS", legacy_default)
+    max_seconds = nonnegative_int_setting("QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS", legacy_default)
+    if max_seconds < min_seconds:
+        return max_seconds, min_seconds
+    return min_seconds, max_seconds
+
+
+def legacy_queue_provider_cooldown_seconds() -> int:
+    raw_value = db.get_setting("QUEUE_PROVIDER_COOLDOWN_SECONDS") or os.getenv("QUEUE_PROVIDER_COOLDOWN_SECONDS")
+    if raw_value is None:
+        return QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        return QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS
+
+
+def random_provider_cooldown_seconds() -> float:
+    min_seconds, max_seconds = queue_provider_cooldown_range_seconds()
+    if max_seconds <= 0:
+        return 0.0
+    if min_seconds == max_seconds:
+        return float(min_seconds)
+    return random.uniform(float(min_seconds), float(max_seconds))
 
 
 def queue_stall_timeout_seconds() -> int:

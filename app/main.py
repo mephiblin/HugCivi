@@ -24,7 +24,12 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
 from . import db
-from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
+from .defaults import (
+    DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    YT_DLP_DEFAULT_FORMAT,
+)
 from .downloader import (
     cleanup_job_local_files,
     cleanup_job_partial_files,
@@ -61,6 +66,9 @@ SUBTITLE_LANGUAGE_LABELS = {
     "ko": "한국어",
     "en": "English",
 }
+BULK_ADD_MAX_ITEMS = 500
+BULK_ADD_MAX_TEXT_LENGTH = 200_000
+BULK_LINE_PREFIX_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
 BROWSER_MP4_EXTENSIONS = {".m4v", ".mp4"}
 BROWSER_MP4_VIDEO_CODECS = {"h264"}
 BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
@@ -181,6 +189,57 @@ def add_job(
     return RedirectResponse(url="/", status_code=303)
 
 
+@app.post("/api/jobs/bulk")
+def add_jobs_bulk(
+    input_text: str = Form(...),
+    target_subdir: str = Form(""),
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    if len(input_text) > BULK_ADD_MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=413, detail="입력 내용이 너무 큽니다.")
+    lines = bulk_input_lines(input_text)
+    if not lines:
+        raise HTTPException(status_code=400, detail="추가할 URL이 없습니다.")
+    if len(lines) > BULK_ADD_MAX_ITEMS:
+        raise HTTPException(status_code=400, detail=f"한 번에 최대 {BULK_ADD_MAX_ITEMS}개까지 추가할 수 있습니다.")
+
+    target = target_subdir.strip() or None
+    created: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for line_number, value in lines:
+        try:
+            parsed = parse_input(value, target)
+            job_id = db.create_job(parsed)
+            enqueue_job(job_id)
+        except InputParseError as exc:
+            failed.append({"line": line_number, "input": value, "error": str(exc)})
+            continue
+        created.append({"line": line_number, "input": value, "job_id": job_id, "source": parsed.source})
+
+    return JSONResponse(
+        {
+            "submitted_count": len(lines),
+            "created_count": len(created),
+            "failed_count": len(failed),
+            "created": created,
+            "failed": failed,
+            "jobs": decorate_jobs(db.list_jobs()),
+        }
+    )
+
+
+def bulk_input_lines(input_text: str) -> list[tuple[int, str]]:
+    lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(input_text.splitlines(), start=1):
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        value = BULK_LINE_PREFIX_RE.sub("", value).strip()
+        if value:
+            lines.append((line_number, value))
+    return lines
+
+
 @app.post("/settings")
 def save_settings(
     hf_token: str = Form(""),
@@ -205,6 +264,8 @@ def save_settings(
     route_upscaler_root: str = Form(""),
     queue_global_limit: str = Form("3"),
     queue_per_provider_limit: str = Form("1"),
+    queue_provider_cooldown_min_seconds: str = Form(str(QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS)),
+    queue_provider_cooldown_max_seconds: str = Form(str(QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS)),
     queue_stall_timeout_seconds: str = Form(str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)),
     gallery_dl_auto_update: str = Form("0"),
     _: str = Depends(require_auth),
@@ -254,6 +315,30 @@ def save_settings(
 
     db.set_setting("MAX_CONCURRENT_DOWNLOADS", normalize_int_setting(queue_global_limit, 3, minimum=1))
     db.set_setting("QUEUE_PER_PROVIDER_LIMIT", normalize_int_setting(queue_per_provider_limit, 1, minimum=1))
+    cooldown_min = int(
+        normalize_int_setting(
+            queue_provider_cooldown_min_seconds,
+            QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+            minimum=0,
+        )
+    )
+    cooldown_max = int(
+        normalize_int_setting(
+            queue_provider_cooldown_max_seconds,
+            QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+            minimum=0,
+        )
+    )
+    if cooldown_max < cooldown_min:
+        cooldown_min, cooldown_max = cooldown_max, cooldown_min
+    db.set_setting(
+        "QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS",
+        str(cooldown_min),
+    )
+    db.set_setting(
+        "QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS",
+        str(cooldown_max),
+    )
     db.set_setting(
         "DOWNLOAD_STALL_TIMEOUT_SECONDS",
         normalize_int_setting(queue_stall_timeout_seconds, DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, minimum=0),

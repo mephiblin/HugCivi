@@ -104,6 +104,7 @@
           <input id="target_subdir" name="target_subdir" type="hidden">
           <label class="sr-only" for="input_text">URL 또는 CLI 입력</label>
           <div class="download-bar">
+            <button type="button" class="bulk-add-button" id="bulk-add-button" title="URL 일괄 추가" aria-label="URL 일괄 추가">+</button>
             <input id="input_text" name="input_text" class="download-input"
                    placeholder="URL, hf download, hitomi 123456, gallery-dl URL" autocomplete="off" required>
             <button type="submit" class="submit-orb" title="다운로드 시작" aria-label="다운로드 시작">
@@ -379,6 +380,18 @@
                      value="{{ settings.queue.MAX_CONCURRENT_DOWNLOADS.value }}" autocomplete="off">
               <small>전체 실행 슬롯입니다. 이 수를 넘으면 공급자가 달라도 대기합니다.</small>
             </label>
+            <label class="setting-field" for="queue_provider_cooldown_min_seconds">
+              <span>같은 공급자 대기 최소값</span>
+              <input id="queue_provider_cooldown_min_seconds" name="queue_provider_cooldown_min_seconds" type="number" min="0" step="1"
+                     value="{{ settings.queue.QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS.value }}" autocomplete="off">
+              <small>초 단위입니다. 같은 사이트 작업이 끝난 뒤 이 값 이상 기다립니다. 0은 대기 없음입니다.</small>
+            </label>
+            <label class="setting-field" for="queue_provider_cooldown_max_seconds">
+              <span>같은 공급자 대기 최대값</span>
+              <input id="queue_provider_cooldown_max_seconds" name="queue_provider_cooldown_max_seconds" type="number" min="0" step="1"
+                     value="{{ settings.queue.QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS.value }}" autocomplete="off">
+              <small>초 단위입니다. 최소값과 같으면 고정 대기, 다르면 두 값 사이에서 랜덤 대기합니다.</small>
+            </label>
             <label class="setting-field" for="queue_stall_timeout_seconds">
               <span>타임아웃 시간</span>
               <input id="queue_stall_timeout_seconds" name="queue_stall_timeout_seconds" type="number" min="0" step="1"
@@ -474,6 +487,26 @@
         </footer>
       </form>
     </div>
+  </section>
+
+  <section class="bulk-add-modal" id="bulk-add-modal" role="dialog" aria-modal="true" aria-labelledby="bulk-add-title" hidden>
+    <form class="bulk-add-panel" id="bulk-add-form">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="bulk-add-title">URL 일괄 추가</h2>
+          <p id="bulk-add-target">자동 분류</p>
+        </div>
+        <button type="button" class="bulk-add-close" id="bulk-add-close" aria-label="URL 일괄 추가 닫기">×</button>
+      </header>
+      <label class="sr-only" for="bulk-add-input">추가할 URL 목록</label>
+      <textarea id="bulk-add-input" class="bulk-add-input" name="input_text" spellcheck="false"
+                placeholder="한 줄에 하나씩 붙여넣기"></textarea>
+      <div class="bulk-add-status" id="bulk-add-status" role="status" aria-live="polite"></div>
+      <footer class="bulk-add-footer">
+        <button type="button" class="settings-cancel" id="bulk-add-cancel">취소</button>
+        <button type="submit" class="settings-save" id="bulk-add-submit">대기열 추가</button>
+      </footer>
+    </form>
   </section>
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
@@ -617,6 +650,15 @@
     const storageUsed = document.getElementById('storage-used');
     const storageTotal = document.getElementById('storage-total');
     const thumbnailBlurToggle = document.getElementById('thumbnail-blur-toggle');
+    const bulkAddButton = document.getElementById('bulk-add-button');
+    const bulkAddModal = document.getElementById('bulk-add-modal');
+    const bulkAddForm = document.getElementById('bulk-add-form');
+    const bulkAddClose = document.getElementById('bulk-add-close');
+    const bulkAddCancel = document.getElementById('bulk-add-cancel');
+    const bulkAddInput = document.getElementById('bulk-add-input');
+    const bulkAddStatus = document.getElementById('bulk-add-status');
+    const bulkAddSubmit = document.getElementById('bulk-add-submit');
+    const bulkAddTarget = document.getElementById('bulk-add-target');
     const commandInput = document.getElementById('input_text');
     const workflowDropZone = document.querySelector('[data-workflow-drop-zone]');
     const workflowDropOverlay = document.getElementById('workflow-drop-overlay');
@@ -751,6 +793,7 @@
 
     document.addEventListener('click', () => {
       closeSettingsModal();
+      closeBulkAddModal();
       closePropertiesModal();
       closeMediaViewer();
       closeWorkflowViewer();
@@ -763,6 +806,7 @@
       }
       if (event.key === 'Escape') {
         closeSettingsModal();
+        closeBulkAddModal();
         closePropertiesModal();
         closeMediaViewer();
         closeWorkflowViewer();
@@ -774,6 +818,19 @@
     thumbnailBlurToggle.addEventListener('click', () => {
       applyThumbnailBlurPreference(!thumbnailBlurEnabled, true);
     });
+    bulkAddButton.addEventListener('click', event => {
+      event.stopPropagation();
+      openBulkAddModal();
+    });
+    bulkAddClose.addEventListener('click', closeBulkAddModal);
+    bulkAddCancel.addEventListener('click', closeBulkAddModal);
+    bulkAddModal.addEventListener('click', event => {
+      if (event.target === bulkAddModal) {
+        closeBulkAddModal();
+      }
+      event.stopPropagation();
+    });
+    bulkAddForm.addEventListener('submit', submitBulkAdd);
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -959,6 +1016,74 @@
       if (tokenModal.hidden) return;
       tokenModal.hidden = true;
       document.body.classList.remove('modal-open');
+    }
+
+    function openBulkAddModal() {
+      bulkAddModal.hidden = false;
+      document.body.classList.add('modal-open');
+      bulkAddStatus.textContent = '';
+      bulkAddTarget.textContent = targetInput.value ? `/data/${targetInput.value}` : '자동 분류';
+      bulkAddSubmit.disabled = false;
+      window.setTimeout(() => bulkAddInput.focus(), 0);
+    }
+
+    function closeBulkAddModal() {
+      if (bulkAddModal.hidden) return;
+      bulkAddModal.hidden = true;
+      document.body.classList.remove('modal-open');
+      bulkAddSubmit.disabled = false;
+    }
+
+    async function submitBulkAdd(event) {
+      event.preventDefault();
+      const inputText = bulkAddInput.value.trim();
+      if (!inputText) {
+        bulkAddStatus.textContent = '추가할 URL을 입력하세요.';
+        bulkAddInput.focus();
+        return;
+      }
+      bulkAddSubmit.disabled = true;
+      bulkAddStatus.textContent = '대기열에 추가 중...';
+      const formData = new FormData();
+      formData.append('input_text', inputText);
+      formData.append('target_subdir', targetInput.value || '');
+      try {
+        const response = await fetch('/api/jobs/bulk', {
+          method: 'POST',
+          body: formData,
+        });
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (err) {
+          data = {};
+        }
+        if (!response.ok) {
+          bulkAddStatus.textContent = data.detail || 'URL을 대기열에 추가하지 못했습니다.';
+          return;
+        }
+
+        if (Array.isArray(data.jobs)) {
+          currentJobs = data.jobs;
+          renderJobs(currentJobs);
+        } else {
+          await refreshJobs();
+        }
+        const failed = Array.isArray(data.failed) ? data.failed : [];
+        if (failed.length) {
+          bulkAddInput.value = failed.map(item => item.input || '').filter(Boolean).join('\n');
+          bulkAddStatus.textContent = `${data.created_count || 0}개 추가, ${failed.length}개 실패`;
+          return;
+        }
+        bulkAddInput.value = '';
+        bulkAddStatus.textContent = `${data.created_count || 0}개를 대기열에 추가했습니다.`;
+        window.setTimeout(closeBulkAddModal, 500);
+      } catch (err) {
+        console.error(err);
+        bulkAddStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      } finally {
+        bulkAddSubmit.disabled = false;
+      }
     }
 
     function activateSettingsPane(targetId) {

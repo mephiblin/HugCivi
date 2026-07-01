@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .defaults import DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS, YT_DLP_DEFAULT_FORMAT
+from .defaults import (
+    DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
+    QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
+    YT_DLP_DEFAULT_FORMAT,
+)
 from .models import ParsedDownload
 from .utils import redact_sensitive_text, safe_join
 
@@ -586,11 +591,14 @@ def settings_status() -> dict[str, Any]:
             "value": "",
         }
     status["routes"] = library_route_settings()
+    legacy_cooldown_default = legacy_queue_provider_cooldown_default(db_settings)
     status["queue"] = {
         key: settings_status_entry(key, default, db_settings)
         for key, default in {
             "MAX_CONCURRENT_DOWNLOADS": "3",
             "QUEUE_PER_PROVIDER_LIMIT": "1",
+            "QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS": legacy_cooldown_default,
+            "QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS": legacy_cooldown_default,
             "DOWNLOAD_STALL_TIMEOUT_SECONDS": str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS),
         }.items()
     }
@@ -612,3 +620,16 @@ def settings_status_entry(key: str, default: str, db_settings: dict[str, dict[st
         "updated_at": db_value["updated_at"] if db_value else None,
         "value": db_value["value"] if db_value else (env_value or default),
     }
+
+
+def legacy_queue_provider_cooldown_default(db_settings: dict[str, dict[str, str]]) -> str:
+    default = str(QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS)
+    raw_value = db_settings.get("QUEUE_PROVIDER_COOLDOWN_SECONDS", {}).get("value") or os.getenv(
+        "QUEUE_PROVIDER_COOLDOWN_SECONDS"
+    )
+    if raw_value is None:
+        return default
+    try:
+        return str(max(0, int(raw_value)))
+    except ValueError:
+        return default
