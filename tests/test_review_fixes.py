@@ -235,6 +235,33 @@ def test_library_items_restore_filesystem_card_after_job_row_deleted(app_modules
     assert rows[0]["favorite"] is False
 
 
+def test_retry_failed_job_requeues_existing_job(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    parsed = ParsedDownload(
+        source="civitai",
+        raw_input="https://civitai.com/models/123?modelVersionId=456",
+        civitai_model_id="123",
+        civitai_version_id="456",
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="failed", error="temporary failure", progress_bytes=123, total_bytes=456)
+    enqueued: list[int] = []
+    monkeypatch.setattr(main, "enqueue_job", lambda queued_id: enqueued.append(queued_id))
+
+    main.api_retry_job(job_id, "tester")
+
+    job = db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == "queued"
+    assert job["error"] is None
+    assert job["progress_bytes"] == 0
+    assert job["total_bytes"] is None
+    assert enqueued == [job_id]
+
+
 def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "generic"

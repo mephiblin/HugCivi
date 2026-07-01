@@ -285,6 +285,18 @@ def api_resume_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     return jobs_response()
 
 
+@app.post("/api/jobs/{job_id}/retry")
+def api_retry_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    job = require_job(job_id)
+    status = str(job.get("status"))
+    if status not in {"failed", "canceled"}:
+        raise HTTPException(status_code=400, detail="재시도할 수 있는 작업 상태가 아닙니다.")
+    db.update_job(job_id, status="queued", error=None, progress_bytes=0, total_bytes=None)
+    db.append_log(job_id, "retry requested")
+    enqueue_job(job_id)
+    return jobs_response()
+
+
 @app.delete("/api/jobs/{job_id}")
 def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
     job = require_job(job_id)

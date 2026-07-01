@@ -176,6 +176,9 @@
                       {% if job.status == 'paused' %}
                         <button type="button" data-job-action="resume" data-job-id="{{ job.id }}">재개</button>
                       {% endif %}
+                      {% if job.status in ['failed', 'canceled'] %}
+                        <button type="button" data-job-action="retry" data-job-id="{{ job.id }}">재시도</button>
+                      {% endif %}
                       <button type="button" data-job-action="delete" data-job-id="{{ job.id }}" class="danger" {% if job.status == 'deleting' %}disabled{% endif %}>삭제</button>
                     </div>
                   </td>
@@ -1218,6 +1221,9 @@
       }
       if (status === 'paused') {
         buttons.push(jobActionButton(job.id, 'resume', '재개'));
+      }
+      if (['failed', 'canceled'].includes(status)) {
+        buttons.push(jobActionButton(job.id, 'retry', '재시도'));
       }
       buttons.push(jobActionButton(job.id, 'delete', '삭제', 'danger', status === 'deleting'));
       return `<div class="job-action-buttons">${buttons.join('')}</div>`;
