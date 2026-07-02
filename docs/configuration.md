@@ -77,8 +77,9 @@ These keys can be saved in the UI and are also read from env fallback.
 | `GALLERY_DL_EXTRA_OPTIONS` | empty | env/UI | Lines converted to `gallery-dl -o key=value`. Can contain secrets. |
 | `YT_DLP_COOKIES_FILE` | empty | env/UI | Container path to cookies file. Alias `YTDLP_COOKIES_FILE` is also read. |
 | `YT_DLP_COOKIES_FROM_BROWSER` | empty | env/UI | Browser profile mode. Alias `YTDLP_COOKIES_FROM_BROWSER` is also read. |
+| `YT_DLP_PROXY` | empty | env/UI | HTTP/HTTPS/SOCKS proxy URL passed to yt-dlp as `--proxy`. Alias `YTDLP_PROXY` is also read. Treat authenticated proxy URLs as secrets. |
 | `YT_DLP_FORMAT` | H.264 MP4 first | env/UI | Format selector. Alias `YTDLP_FORMAT` is also read. |
-| `YT_DLP_EXTRA_OPTIONS` | empty | env/UI | Supports `cmdline-args=` and selected config keys. Output/path/exec/plugin/downloader/config overrides are blocked. Alias `YTDLP_EXTRA_OPTIONS` is also read. |
+| `YT_DLP_EXTRA_OPTIONS` | empty | env/UI | Supports `cmdline-args=` and selected config keys for advanced yt-dlp tuning. Output/path/exec/plugin/downloader/config overrides are blocked. Alias `YTDLP_EXTRA_OPTIONS` is also read. Prefer `YT_DLP_PROXY` for proxy configuration. |
 
 ## Queue And Request Safety
 

@@ -162,6 +162,7 @@ HITOMI_ACTIVE_OR_PRESENT_STATUSES = {"queued", "running", "paused", "pausing", "
 YT_DLP_SETTING_ALIASES = {
     "YT_DLP_COOKIES_FILE": ("YT_DLP_COOKIES_FILE", "YTDLP_COOKIES_FILE"),
     "YT_DLP_COOKIES_FROM_BROWSER": ("YT_DLP_COOKIES_FROM_BROWSER", "YTDLP_COOKIES_FROM_BROWSER"),
+    "YT_DLP_PROXY": ("YT_DLP_PROXY", "YTDLP_PROXY"),
     "YT_DLP_EXTRA_OPTIONS": ("YT_DLP_EXTRA_OPTIONS", "YTDLP_EXTRA_OPTIONS"),
     "YT_DLP_FORMAT": ("YT_DLP_FORMAT", "YTDLP_FORMAT"),
 }
@@ -3559,6 +3560,7 @@ def ytdl_gallery_dl_args(source_url: str) -> list[str]:
     if cookies_from_browser:
         cmdline_args.extend(["--cookies-from-browser", cookies_from_browser])
     parse_ytdlp_extra_options(extra_options, cmdline_args, config_options)
+    add_ytdlp_proxy_arg(cmdline_args)
     cmdline_args.extend(default_ytdlp_site_cmdline_args(ytdl_inner_url(source_url) or source_url, cmdline_args))
     if not has_ytdlp_cmdline_option(cmdline_args, "--js-runtimes"):
         cmdline_args.extend(default_ytdlp_js_runtime_args())
@@ -3587,6 +3589,7 @@ def ytdlp_direct_cmdline_args() -> list[str]:
     if cookies_from_browser:
         args.extend(["--cookies-from-browser", cookies_from_browser])
     args.extend(parse_ytdlp_extra_cmdline_args(extra_options))
+    add_ytdlp_proxy_arg(args)
     if not has_ytdlp_cmdline_option(args, "--js-runtimes"):
         args.extend(default_ytdlp_js_runtime_args())
     return args
@@ -3787,6 +3790,12 @@ def ytdlp_setting(name: str) -> str | None:
     return None
 
 
+def add_ytdlp_proxy_arg(cmdline_args: list[str]) -> None:
+    proxy = ytdlp_setting("YT_DLP_PROXY")
+    if proxy and not has_ytdlp_cmdline_option(cmdline_args, "--proxy"):
+        cmdline_args.extend(["--proxy", proxy])
+
+
 def parse_ytdlp_extra_options(
     extra_options: str | None,
     cmdline_args: list[str],
@@ -3904,6 +3913,8 @@ def gallery_dl_auth_summary(source_url: str | None = None) -> str:
             values.append("yt-dlp-cookies-file")
         if ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER"):
             values.append("yt-dlp-browser-cookies")
+        if ytdlp_setting("YT_DLP_PROXY"):
+            values.append("yt-dlp-proxy")
         if ytdlp_setting("YT_DLP_EXTRA_OPTIONS"):
             values.append("yt-dlp-extra-options")
     return ", ".join(values) if values else "none"
@@ -3915,6 +3926,8 @@ def ytdlp_auth_summary() -> str:
         values.append("cookies-file")
     if ytdlp_setting("YT_DLP_COOKIES_FROM_BROWSER"):
         values.append("browser-cookies")
+    if ytdlp_setting("YT_DLP_PROXY"):
+        values.append("proxy")
     if ytdlp_setting("YT_DLP_EXTRA_OPTIONS"):
         values.append("extra-options")
     return ", ".join(values) if values else "none"

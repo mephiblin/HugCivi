@@ -14,6 +14,8 @@ Use this page to decide which document is authoritative for current development.
 | [Architecture](architecture.md) | current developer reference | Runtime shape, data boundaries, schedulers, DB, API groups, invariants. |
 | [Feature and Code Map](feature-code-map.md) | current developer reference | Feature-by-feature file/function/test map. Start here for code changes. |
 | [Configuration](configuration.md) | current operator/developer reference | Environment variables, UI-saved settings, compose differences. |
+| [CasaOS Install Guide](install-casaos.md) | current operator install guide | CasaOS Custom App/Compose deployment, durable folders, proxy notes. |
+| [Ubuntu Install Guide](install-ubuntu.md) | current operator install guide | Docker Engine setup, Compose deployment, durable folders, proxy notes. |
 | [Development](development.md) | current developer reference | Local setup, change patterns, verification commands. |
 | [Operations](operations.md) | current operator reference | NAS/Portainer behavior, backup, recovery, tuning, troubleshooting. |
 | [Developer Skill Set](../SKILL_Dev/SKILL.md) | current repo-local skill reference | Stable build, safety, DB/job, provider, frontend/addon, and docs handoff skills. |

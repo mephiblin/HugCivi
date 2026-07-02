@@ -1362,12 +1362,46 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertIn("--force-ipv4", cmdline_args)
         self.assertEqual(command[-1], f"ytdl:{url}")
 
+    def test_gallery_dl_command_passes_dedicated_ytdlp_proxy(self) -> None:
+        fake_db = FakeDb({}, secrets={"YT_DLP_PROXY": "socks5://192.168.200.100:1080"})
+
+        with mock.patch.object(downloader, "db", fake_db):
+            command = downloader.gallery_dl_command(
+                "ytdl:https://www.youtube.com/watch?v=abc123",
+                Path("/downloads/youtube"),
+            )
+
+        options = {
+            command[index + 1].split("=", 1)[0]: command[index + 1].split("=", 1)[1]
+            for index, value in enumerate(command)
+            if value == "-o"
+        }
+        cmdline_args = json.loads(options["extractor.ytdl.cmdline-args"])
+        self.assertIn("--proxy", cmdline_args)
+        self.assertEqual(cmdline_args[cmdline_args.index("--proxy") + 1], "socks5://192.168.200.100:1080")
+
+    def test_ytdlp_extra_proxy_prevents_dedicated_proxy_duplicate(self) -> None:
+        fake_db = FakeDb(
+            {},
+            secrets={
+                "YT_DLP_PROXY": "socks5://192.168.200.100:1080",
+                "YT_DLP_EXTRA_OPTIONS": "cmdline-args=--proxy socks5://legacy-proxy:1080",
+            },
+        )
+
+        with mock.patch.object(downloader, "db", fake_db):
+            args = downloader.ytdlp_direct_cmdline_args()
+
+        self.assertEqual(args.count("--proxy"), 1)
+        self.assertEqual(args[args.index("--proxy") + 1], "socks5://legacy-proxy:1080")
+
     def test_yt_dlp_command_uses_direct_cli_with_auth_and_format(self) -> None:
         fake_db = FakeDb(
             {},
             secrets={
                 "YT_DLP_COOKIES_FILE": "/config/yt-dlp-cookies.txt",
                 "YT_DLP_COOKIES_FROM_BROWSER": "firefox:default",
+                "YT_DLP_PROXY": "socks5://192.168.200.100:1080",
                 "YT_DLP_FORMAT": "best[ext=mp4]/best",
                 "YT_DLP_EXTRA_OPTIONS": "cmdline-args=--playlist-items 1",
             },
@@ -1403,6 +1437,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertIn("/config/yt-dlp-cookies.txt", command)
         self.assertIn("--cookies-from-browser", command)
         self.assertIn("firefox:default", command)
+        self.assertIn("--proxy", command)
+        self.assertEqual(command[command.index("--proxy") + 1], "socks5://192.168.200.100:1080")
         self.assertIn("--playlist-items", command)
         self.assertIn("1", command)
         self.assertEqual(command[-1], "https://xhamster3.com/videos/sample-video-123456")

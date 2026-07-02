@@ -421,6 +421,13 @@
                      placeholder="best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best">
               <small>기본값은 브라우저 재생 가능성이 높은 H.264 MP4 우선 포맷입니다.</small>
             </label>
+            <label class="setting-field" for="yt_dlp_proxy">
+              <span>YouTube/yt-dlp Proxy</span>
+              <input id="yt_dlp_proxy" name="yt_dlp_proxy" type="text" autocomplete="off"
+                     value=""
+                     placeholder="{% if settings.YT_DLP_PROXY.configured %}설정됨 · {{ settings.YT_DLP_PROXY.source }}{% else %}socks5://192.168.200.100:1080{% endif %}">
+              <small>yt-dlp 계열 사이트에만 적용합니다. SOCKS/HTTP 프록시 URL을 입력합니다.</small>
+            </label>
             <label class="setting-field wide" for="yt_dlp_extra_options">
               <span>YouTube/yt-dlp Extra Options</span>
               <textarea id="yt_dlp_extra_options" name="yt_dlp_extra_options" rows="4" autocomplete="off"

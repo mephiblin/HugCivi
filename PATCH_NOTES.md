@@ -28,6 +28,7 @@
 - README에 현재 구조 요약과 최신 기능을 반영했습니다.
 - [아키텍처](docs/architecture.md), [운영 가이드](docs/operations.md), [개발 가이드](docs/development.md), [프로젝트 철학](docs/philosophy.md)을 추가했습니다.
 - [문서 인덱스](docs/index.md), [기능별 코드 맵](docs/feature-code-map.md), [구성 레퍼런스](docs/configuration.md)를 추가해 사람이든 LLM이든 바로 코드 위치와 설정을 찾을 수 있게 했습니다.
+- [CasaOS 설치 가이드](docs/install-casaos.md)와 [Ubuntu 설치 가이드](docs/install-ubuntu.md)에 Docker/Compose 배포, `/data`와 `/config` 영속 폴더, `YT_DLP_PROXY` 사용 기준을 추가했습니다.
 - LLM/인수인계 시작점은 [README_LLM.md](README_LLM.md)에 두고, 날짜별 상세 작업 내역은 [docs/patch-notes](docs/patch-notes)에 기록하도록 정리했습니다.
 
 ### 크롬 확장
@@ -47,6 +48,7 @@
 - YouTube playlist URL은 `/data/gallery-dl/youtube.com/playlist/<playlist-id>`에 저장하도록 정리했습니다.
 - 일반 YouTube 영상과 채널 URL은 yt-dlp metadata의 채널명을 사용해 `/data/gallery-dl/youtube.com/channel/<channel-name>`에 저장합니다.
 - 채널명을 확인할 수 없는 경우에는 기존 URL 기반 폴더명으로 fallback합니다.
+- yt-dlp 전용 프록시 설정 `YT_DLP_PROXY`와 웹 UI `YouTube/yt-dlp Proxy` 입력을 추가했습니다. 이 값은 yt-dlp에 `--proxy`로 전달되며, 전체 컨테이너 프록시가 이미 동작하는 환경에서는 비워둘 수 있습니다.
 - [YouTube 구독 설계](docs/youtube-subscriptions-design-2026-07-02.md)를 구현 기준 문서로 정리해 독립 구독 탭, 구독 scheduler, 구독 queue, 초기 다운로드 정책을 문서화했습니다.
 - YouTube 구독 Phase 1-6으로 `subscriptions`, `subscription_items` SQLite 테이블, subscription CRUD API, 수동/예약 discovery, 왼쪽 `구독` 탭, 추가 모달, 독립 구독 다운로드 worker, 항목별 queue/skip/retry 조작, 구독별 저장 용량 표시를 추가했습니다.
 - `구독` 탭이 활성화되면 메인 작업 영역이 일반 `작업 목록`에서 `구독 작업 목록`으로 전환되며, aggregate `/api/subscriptions/items` API와 상태 필터로 구독 항목을 일반 `jobs`와 분리해 확인할 수 있습니다.

@@ -93,6 +93,11 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 로컬 Ubuntu나 개발 PC에서 바로 실행할 때는 [docker-compose.yml](docker-compose.yml)을 사용할 수 있지만, 운영 배포 기준은 [portainer-stack.yml](portainer-stack.yml)입니다.
 
+상세 설치 매뉴얼:
+
+- [CasaOS 설치 가이드](docs/install-casaos.md)
+- [Ubuntu 설치 가이드](docs/install-ubuntu.md)
+
 ## 설치 A: Portainer + Repository
 
 Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GitHub Actions가 배포하는 `ghcr.io/mephiblin/hugcivi:latest`입니다.
@@ -152,6 +157,7 @@ YouTube/yt-dlp 쿠키를 Portainer 환경변수로 미리 넣으려면 아래 �
 ```text
 YT_DLP_COOKIES_FILE=/config/yt-dlp/cookies.txt
 YT_DLP_COOKIES_FROM_BROWSER=
+YT_DLP_PROXY=
 YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
 YT_DLP_EXTRA_OPTIONS=
 ```
@@ -177,6 +183,8 @@ Portainer가 `pull access denied` 오류를 내면 GitHub Packages의 `ghcr.io/m
 
 개발 PC나 Ubuntu 서버처럼 현재 폴더에서 직접 빌드할 수 있는 환경에서만 사용합니다.
 
+Ubuntu 서버에 Docker Engine부터 설치하는 전체 절차는 [Ubuntu 설치 가이드](docs/install-ubuntu.md)를 참고하세요.
+
 ```bash
 mkdir -p data config
 APP_PASSWORD=원하는_긴_비밀번호 docker compose up -d --build
@@ -191,6 +199,10 @@ PUID="$(id -u)" PGID="$(id -g)" \
 APP_PASSWORD=원하는_긴_비밀번호 \
 docker compose up -d --build
 ```
+
+## 설치 C: CasaOS
+
+CasaOS에서는 Custom App 또는 Compose import로 HugCivi 컨테이너를 등록합니다. 경로, `APP_PASSWORD`, `PUID`/`PGID`, 선택적 `YT_DLP_PROXY` 설정은 [CasaOS 설치 가이드](docs/install-casaos.md)에 정리되어 있습니다.
 
 ## Portainer에서 꼭 확인할 값
 
@@ -358,6 +370,7 @@ YouTube 저장 경로는 `/data/gallery-dl/youtube.com/` 아래에서 플레이�
 - `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.
 - `YouTube/yt-dlp Browser Cookies`: 브라우저 프로필을 컨테이너에 별도로 마운트한 고급 구성에서만 사용합니다.
 - `YouTube/yt-dlp Format`: 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다.
+- `YouTube/yt-dlp Proxy`: `socks5://192.168.200.100:1080` 같은 HTTP/HTTPS/SOCKS 프록시 URL을 입력합니다. yt-dlp 계열 사이트와 메타데이터 probe에만 적용됩니다.
 - `YouTube/yt-dlp Extra Options`: `cmdline-args=--max-filesize 500M`, `raw-options.writesubtitles=true`처럼 한 줄에 하나씩 입력합니다.
   저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 차단됩니다.
 
@@ -503,6 +516,7 @@ gallery-dl이 지원하는 사이트 중 일부는 로그인, 쿠키, OAuth, API
 
 - `YouTube/yt-dlp Cookies File`
 - `YouTube/yt-dlp Browser Cookies`
+- `YouTube/yt-dlp Proxy`
 - `YouTube/yt-dlp Format`
 - `YouTube/yt-dlp Extra Options`
 
@@ -511,11 +525,12 @@ gallery-dl이 지원하는 사이트 중 일부는 로그인, 쿠키, OAuth, API
 ```text
 YT_DLP_COOKIES_FILE
 YT_DLP_COOKIES_FROM_BROWSER
+YT_DLP_PROXY
 YT_DLP_FORMAT
 YT_DLP_EXTRA_OPTIONS
 ```
 
-`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다.
+`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Proxy`는 yt-dlp에 `--proxy`로 전달되는 HTTP/HTTPS/SOCKS URL입니다. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다. 프록시는 `Extra Options` 대신 `YT_DLP_PROXY`를 사용하세요.
 
 토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
 
@@ -557,6 +572,7 @@ GALLERY_DL_COOKIES_FROM_BROWSER=
 GALLERY_DL_EXTRA_OPTIONS=
 YT_DLP_COOKIES_FILE=
 YT_DLP_COOKIES_FROM_BROWSER=
+YT_DLP_PROXY=
 YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
 YT_DLP_EXTRA_OPTIONS=
 ```

@@ -492,6 +492,7 @@ def save_settings(
     gallery_dl_extra_options: str = Form(""),
     yt_dlp_cookies_file: str = Form(""),
     yt_dlp_cookies_from_browser: str = Form(""),
+    yt_dlp_proxy: str = Form(""),
     yt_dlp_format: str = Form(""),
     yt_dlp_extra_options: str = Form(""),
     library_active: str = Form("ComfyUI"),
@@ -532,6 +533,7 @@ def save_settings(
     yt_dlp_fields = {
         "YT_DLP_COOKIES_FILE": yt_dlp_cookies_file,
         "YT_DLP_COOKIES_FROM_BROWSER": yt_dlp_cookies_from_browser,
+        "YT_DLP_PROXY": yt_dlp_proxy,
         "YT_DLP_EXTRA_OPTIONS": yt_dlp_extra_options,
     }
     for key, value in yt_dlp_fields.items():

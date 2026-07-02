@@ -115,6 +115,18 @@ SUBSCRIPTION_DOWNLOAD_MAX_ATTEMPTS=3
 
 Set `SUBSCRIPTION_CHECK_SCHEDULER_ENABLED=0` if you want to keep subscriptions in manual-check mode only.
 
+## yt-dlp Proxy
+
+Some video sites may load in a browser but fail from the HugCivi server process because yt-dlp leaves through the server's direct network path. Use `YT_DLP_PROXY` when yt-dlp-supported sources need an HTTP, HTTPS, SOCKS4, or SOCKS5 proxy:
+
+```text
+YT_DLP_PROXY=socks5://192.168.200.100:1080
+```
+
+The same value can be saved in the web UI settings modal as `YouTube/yt-dlp Proxy`. UI-saved values are stored in `/config/jobs.sqlite3` and take precedence over environment variables. Authenticated proxy URLs can contain credentials, so treat DB backups as credential backups.
+
+This setting only affects yt-dlp-backed downloads and yt-dlp metadata probes, including YouTube, xHamster, Pornhub, and other preferred yt-dlp video hosts. It does not proxy Hugging Face, Civitai, generic HTTP downloads, native Hitomi requests, or internal server-local ZIP/media jobs.
+
 ## Expensive Local Work
 
 Folder downloads:

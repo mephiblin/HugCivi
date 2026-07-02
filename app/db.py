@@ -1632,6 +1632,7 @@ def settings_status() -> dict[str, Any]:
         "GALLERY_DL_EXTRA_OPTIONS",
         "YT_DLP_COOKIES_FILE",
         "YT_DLP_COOKIES_FROM_BROWSER",
+        "YT_DLP_PROXY",
         "YT_DLP_EXTRA_OPTIONS",
     )
     for key in secret_keys:

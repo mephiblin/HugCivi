@@ -110,7 +110,7 @@ The `jobs` table is migrated additively. Current structural columns include:
 - `artifact_path`, `artifact_url`, `artifact_expires_at`: result file metadata for internal jobs.
 - model/library display columns such as `model_title`, `model_category`, `model_type`, `base_model`, `file_format`, `precision`, `thumbnail_url`, and `metadata_json`.
 
-`settings` may contain tokens, passwords, cookie paths, and extra options. A DB backup is therefore also a credential backup.
+`settings` may contain tokens, passwords, cookie paths, authenticated proxy URLs, and extra options. A DB backup is therefore also a credential backup.
 
 ## Job Model
 

@@ -57,6 +57,7 @@ def test_settings_status_never_returns_secret_values(
     db.set_setting("GALLERY_DL_USERNAME", "login-name")
     db.set_setting("GALLERY_DL_EXTRA_OPTIONS", "extractor.example.api-key=secret")
     db.set_setting("YT_DLP_COOKIES_FILE", "/config/yt-dlp/cookies.txt")
+    db.set_setting("YT_DLP_PROXY", "socks5://user:secret@proxy.local:1080")
     db.set_setting("YT_DLP_EXTRA_OPTIONS", "cmdline-args=--cookies /tmp/private.txt")
 
     status = db.settings_status()
@@ -71,6 +72,7 @@ def test_settings_status_never_returns_secret_values(
         "GALLERY_DL_EXTRA_OPTIONS",
         "YT_DLP_COOKIES_FILE",
         "YT_DLP_COOKIES_FROM_BROWSER",
+        "YT_DLP_PROXY",
         "YT_DLP_EXTRA_OPTIONS",
     ):
         assert status[key]["value"] == ""
@@ -766,6 +768,16 @@ def test_home_template_declares_subscription_sidebar_ui(app_modules: tuple) -> N
     assert ".subscription-work-section" in stylesheet
     assert ".subscription-work-table" in stylesheet
     assert ".subscription-work-mobile-card" in stylesheet
+
+
+def test_home_template_declares_ytdlp_proxy_setting(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="yt_dlp_proxy"' in template
+    assert 'name="yt_dlp_proxy"' in template
+    assert "YouTube/yt-dlp Proxy" in template
+    assert "settings.YT_DLP_PROXY.configured" in template
 
 
 def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> None:
