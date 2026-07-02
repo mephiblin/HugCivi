@@ -745,16 +745,27 @@ def test_home_template_declares_subscription_sidebar_ui(app_modules: tuple) -> N
     stylesheet = (main.BASE_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     assert 'data-sidebar-tab="subscriptions"' in template
+    assert 'id="jobs-section"' in template
+    assert 'id="subscription-work-section"' in template
+    assert 'data-subscription-work-filter="active"' in template
+    assert 'data-subscription-work-filter="downloading"' in template
     assert 'id="subscription-modal"' in template
     assert 'name="initial_policy" value="from_now"' in template
     assert 'name="initial_policy" value="full_backfill"' in template
     assert "fetch('/api/subscriptions'" in template
+    assert "`/api/subscriptions/items?${params.toString()}`" in template
     assert "`/api/subscriptions/${encodeURIComponent(subscriptionId)}/check`" in template
     assert 'data-subscription-item-action="${escapeHtml(action)}"' in template
+    assert 'data-subscription-work-action="${escapeHtml(action)}"' in template
+    assert "let activeWorkMode = 'jobs';" in template
+    assert "activeWorkMode === 'subscriptions'" in template
     assert "`/api/subscriptions/items/${encodeURIComponent(itemId)}/${action}`" in template
     assert ".subscription-list" in stylesheet
     assert ".subscription-items" in stylesheet
     assert ".subscription-modal-panel" in stylesheet
+    assert ".subscription-work-section" in stylesheet
+    assert ".subscription-work-table" in stylesheet
+    assert ".subscription-work-mobile-card" in stylesheet
 
 
 def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> None:

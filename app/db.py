@@ -589,6 +589,25 @@ def subscription_item_counts(subscription_ids: list[int]) -> dict[int, dict[str,
     return counts
 
 
+def subscription_item_status_counts(subscription_id: int | None = None) -> dict[str, int]:
+    where_sql = ""
+    params: list[Any] = []
+    if subscription_id is not None:
+        where_sql = "WHERE subscription_id = ?"
+        params.append(subscription_id)
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT status, COUNT(*) AS count
+            FROM subscription_items
+            {where_sql}
+            GROUP BY status
+            """,
+            params,
+        ).fetchall()
+    return {str(row["status"]): int(row["count"] or 0) for row in rows}
+
+
 def subscription_item_storage(subscription_ids: list[int]) -> dict[int, int]:
     if not subscription_ids:
         return {}
@@ -764,6 +783,50 @@ def list_ready_subscription_items(now: str, limit: int = 1, max_attempts: int = 
             LIMIT ?
             """,
             (max_attempts, now, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_subscription_item_summaries(
+    *,
+    statuses: list[str] | tuple[str, ...] | None = None,
+    subscription_id: int | None = None,
+    limit: int = 100,
+    before_id: int | None = None,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    where: list[str] = []
+    params: list[Any] = []
+    if subscription_id is not None:
+        where.append("i.subscription_id = ?")
+        params.append(subscription_id)
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        where.append(f"i.status IN ({placeholders})")
+        params.extend(statuses)
+    if before_id is not None:
+        where.append("i.id < ?")
+        params.append(before_id)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                i.*,
+                s.provider AS subscription_provider,
+                s.kind AS subscription_kind,
+                s.source_url AS subscription_source_url,
+                s.canonical_id AS subscription_canonical_id,
+                s.title AS subscription_title,
+                s.enabled AS subscription_enabled,
+                s.auto_queue AS subscription_auto_queue
+            FROM subscription_items i
+            JOIN subscriptions s ON s.id = i.subscription_id
+            {where_sql}
+            ORDER BY i.id DESC
+            LIMIT ?
+            """,
+            params + [safe_limit],
         ).fetchall()
     return [dict(row) for row in rows]
 

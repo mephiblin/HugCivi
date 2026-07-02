@@ -669,6 +669,28 @@ async def api_create_subscription(request: Request, _: str = Depends(require_aut
     return JSONResponse({"ok": True, "subscription": subscription})
 
 
+@app.get("/api/subscriptions/items")
+def api_subscription_item_summaries(
+    status: str = "active",
+    subscription_id: int | None = None,
+    limit: int = 100,
+    cursor: int | None = None,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    if subscription_id is not None and not db.get_subscription(subscription_id):
+        raise HTTPException(status_code=404, detail="subscription not found")
+    try:
+        summary = subscriptions.list_item_summary_payload(
+            status=status,
+            subscription_id=subscription_id,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, **summary, "scheduler": subscriptions.scheduler_status()})
+
+
 @app.get("/api/subscriptions/{subscription_id}/items")
 def api_subscription_items(
     subscription_id: int,

@@ -73,6 +73,12 @@ ITEM_STATUSES = (
     ITEM_STATUS_FAILED,
     ITEM_STATUS_UNAVAILABLE,
 )
+ACTIVE_ITEM_STATUSES = (
+    ITEM_STATUS_ELIGIBLE,
+    ITEM_STATUS_QUEUED,
+    ITEM_STATUS_DOWNLOADING,
+    ITEM_STATUS_FAILED,
+)
 
 
 @dataclass(frozen=True)
@@ -310,6 +316,33 @@ def get_subscription_payload(subscription_id: int) -> dict[str, Any] | None:
 
 def list_item_payloads(subscription_id: int, limit: int = 500) -> list[dict[str, Any]]:
     return [item_payload(row) for row in db.list_subscription_items(subscription_id, limit=limit)]
+
+
+def list_item_summary_payload(
+    *,
+    status: Any = "active",
+    subscription_id: int | None = None,
+    limit: int = 100,
+    cursor: int | None = None,
+) -> dict[str, Any]:
+    status_filter, statuses = normalize_item_status_filter(status)
+    safe_limit = max(1, min(500, int(limit)))
+    before_id = normalize_cursor(cursor)
+    rows = db.list_subscription_item_summaries(
+        statuses=statuses,
+        subscription_id=subscription_id,
+        limit=safe_limit,
+        before_id=before_id,
+    )
+    items = [item_payload(row) for row in rows]
+    raw_counts = db.subscription_item_status_counts(subscription_id=subscription_id)
+    counts = {item_status: int(raw_counts.get(item_status, 0)) for item_status in ITEM_STATUSES}
+    return {
+        "items": items,
+        "counts": counts,
+        "next_cursor": items[-1]["id"] if len(items) >= safe_limit else None,
+        "status": status_filter,
+    }
 
 
 def get_item_payload(item_id: int) -> dict[str, Any] | None:
@@ -925,6 +958,29 @@ def normalize_check_interval(value: Any) -> int:
     return interval or SUBSCRIPTION_DEFAULT_CHECK_INTERVAL_SECONDS
 
 
+def normalize_item_status_filter(value: Any) -> tuple[str, tuple[str, ...] | None]:
+    status = str(value or "active").strip().lower() or "active"
+    if status in {"active", "default"}:
+        return "active", ACTIVE_ITEM_STATUSES
+    if status == "all":
+        return "all", None
+    if status in ITEM_STATUSES:
+        return status, (status,)
+    raise ValueError(f"unsupported subscription item status filter: {status}")
+
+
+def normalize_cursor(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        cursor = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cursor must be a subscription item id") from exc
+    if cursor < 1:
+        raise ValueError("cursor must be a subscription item id")
+    return cursor
+
+
 def normalize_optional_int(value: Any, *, minimum: int = 0) -> int | None:
     if value is None or value == "":
         return None
@@ -1048,7 +1104,12 @@ def subscription_payload(
 
 
 def item_payload(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    progress_bytes = int(row.get("progress_bytes") or 0)
+    total_bytes = normalize_optional_int(row.get("total_bytes"), minimum=0)
+    percent = None
+    if total_bytes and total_bytes > 0:
+        percent = round(min(100.0, max(0.0, progress_bytes * 100.0 / total_bytes)), 1)
+    payload = {
         "id": int(row["id"]),
         "subscription_id": int(row["subscription_id"]),
         "provider_item_id": str(row.get("provider_item_id") or ""),
@@ -1063,8 +1124,11 @@ def item_payload(row: dict[str, Any]) -> dict[str, Any]:
         "download_finished_at": row.get("download_finished_at"),
         "target_dir": row.get("target_dir"),
         "filename": row.get("filename"),
-        "progress_bytes": int(row.get("progress_bytes") or 0),
-        "total_bytes": row.get("total_bytes"),
+        "progress_bytes": progress_bytes,
+        "total_bytes": total_bytes,
+        "progress_human": human_bytes(progress_bytes),
+        "total_human": human_bytes(total_bytes) if total_bytes is not None else None,
+        "percent": percent,
         "attempt_count": int(row.get("attempt_count") or 0),
         "last_attempt_at": row.get("last_attempt_at"),
         "next_attempt_at": row.get("next_attempt_at"),
@@ -1074,6 +1138,19 @@ def item_payload(row: dict[str, Any]) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+    if "subscription_title" in row or "subscription_kind" in row or "subscription_enabled" in row:
+        payload.update(
+            {
+                "subscription_title": row.get("subscription_title"),
+                "subscription_kind": row.get("subscription_kind"),
+                "subscription_enabled": bool(row.get("subscription_enabled")),
+                "subscription_provider": row.get("subscription_provider"),
+                "subscription_source_url": row.get("subscription_source_url"),
+                "subscription_canonical_id": row.get("subscription_canonical_id"),
+                "subscription_auto_queue": bool(row.get("subscription_auto_queue")),
+            }
+        )
+    return payload
 
 
 def parse_json_object(value: Any) -> dict[str, Any]:

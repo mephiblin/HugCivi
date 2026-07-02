@@ -603,4 +603,5 @@ UI tests:
 - Current decision: `from_now` records older videos returned by bounded discovery as `known`, not eligible. This keeps recent context without auto-backfilling.
 - Current decision: `latest_n` uses 5 as the UI default.
 - Current decision: playlist subscriptions store under `playlist/<id>` even if the playlist owner also has a channel subscription.
+- Current implementation: the sidebar `구독` tab switches the main work-list area to subscription-specific work. See [YouTube Subscription Main Panel Design 2026-07-02](youtube-subscription-main-panel-design-2026-07-02.md).
 - Future optional: duplicate detection against existing `/data/gallery-dl/youtube.com` info JSON files can be added through the library index rather than inside the Phase 6 subscription worker.

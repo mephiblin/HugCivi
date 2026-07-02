@@ -151,8 +151,8 @@
         </div>
       </section>
 
-      <section class="view active mobile-panel" id="home-view" data-mobile-panel="download" aria-label="작업 목록">
-        <section class="jobs-section">
+      <section class="view active mobile-panel is-mobile-panel-active" id="home-view" data-mobile-panel="download" aria-label="작업 목록">
+        <section class="jobs-section" id="jobs-section">
           <div class="jobs-heading">
             <h2>작업 목록</h2>
             <button type="button" class="clear-history-button" id="clear-jobs-button">기록 지우기</button>
@@ -233,6 +233,45 @@
             </table>
           </div>
           <div class="mobile-jobs-list" id="mobile-jobs-list" aria-live="polite"></div>
+        </section>
+        <section class="subscription-work-section" id="subscription-work-section" hidden>
+          <div class="subscription-work-heading">
+            <div>
+              <h2>구독 작업 목록</h2>
+              <div class="subscription-work-status" id="subscription-work-status" role="status" aria-live="polite"></div>
+            </div>
+            <button type="button" class="subscription-work-refresh" id="subscription-work-refresh">새로고침</button>
+          </div>
+          <div class="subscription-work-filters" id="subscription-work-filters" role="tablist" aria-label="구독 작업 필터">
+            <button type="button" class="active" data-subscription-work-filter="active" aria-selected="true">활성</button>
+            <button type="button" data-subscription-work-filter="eligible" aria-selected="false">대상</button>
+            <button type="button" data-subscription-work-filter="queued" aria-selected="false">대기</button>
+            <button type="button" data-subscription-work-filter="downloading" aria-selected="false">다운로드중</button>
+            <button type="button" data-subscription-work-filter="failed" aria-selected="false">실패</button>
+            <button type="button" data-subscription-work-filter="done" aria-selected="false">완료</button>
+            <button type="button" data-subscription-work-filter="skipped" aria-selected="false">건너뜀</button>
+            <button type="button" data-subscription-work-filter="all" aria-selected="false">전체</button>
+          </div>
+          <div class="table-shell subscription-work-table-shell">
+            <table class="subscription-work-table">
+              <thead>
+                <tr>
+                  <th class="sub-col-status">상태</th>
+                  <th class="sub-col-source">구독</th>
+                  <th class="sub-col-item">항목</th>
+                  <th class="sub-col-date">게시일</th>
+                  <th class="sub-col-progress">진행률</th>
+                  <th class="sub-col-attempts">재시도</th>
+                  <th class="sub-col-detail">파일/오류</th>
+                  <th class="sub-col-actions">제어</th>
+                </tr>
+              </thead>
+              <tbody id="subscription-work-body">
+                <tr><td colspan="8" class="subscription-work-empty-row">진행 중인 구독 항목이 없습니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="subscription-work-mobile-list" id="subscription-work-mobile-list" aria-live="polite"></div>
         </section>
       </section>
 
@@ -893,8 +932,15 @@
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
+    const jobsSection = document.getElementById('jobs-section');
     const clearJobsButton = document.getElementById('clear-jobs-button');
     const mobileJobsList = document.getElementById('mobile-jobs-list');
+    const subscriptionWorkSection = document.getElementById('subscription-work-section');
+    const subscriptionWorkStatus = document.getElementById('subscription-work-status');
+    const subscriptionWorkFilters = document.getElementById('subscription-work-filters');
+    const subscriptionWorkRefresh = document.getElementById('subscription-work-refresh');
+    const subscriptionWorkBody = document.getElementById('subscription-work-body');
+    const subscriptionWorkMobileList = document.getElementById('subscription-work-mobile-list');
     const propertiesModal = document.getElementById('properties-modal');
     const propertiesClose = document.getElementById('properties-close');
     const propertiesTitle = document.getElementById('properties-title');
@@ -939,6 +985,16 @@
     let subscriptionItemsLoading = false;
     let subscriptionScheduler = null;
     let subscriptionSettings = {};
+    let activeWorkMode = 'jobs';
+    let subscriptionWorkItems = [];
+    let subscriptionWorkCounts = {};
+    let subscriptionWorkFilter = 'active';
+    let subscriptionWorkCursor = null;
+    let subscriptionWorkNextCursor = null;
+    let subscriptionWorkLoading = false;
+    let subscriptionWorkError = '';
+    let subscriptionWorkScheduler = null;
+    let subscriptionWorkPollTimer = null;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
@@ -1063,6 +1119,32 @@
       event.preventDefault();
       event.stopPropagation();
       handleSubscriptionAction(Number(button.dataset.subscriptionId), button.dataset.subscriptionAction || '');
+    });
+    subscriptionWorkFilters?.addEventListener('click', event => {
+      const button = event.target.closest('[data-subscription-work-filter]');
+      if (!button) return;
+      event.preventDefault();
+      subscriptionWorkFilter = button.dataset.subscriptionWorkFilter || 'active';
+      refreshSubscriptionWorkItems({force: true});
+    });
+    subscriptionWorkRefresh?.addEventListener('click', event => {
+      event.preventDefault();
+      refreshSubscriptionWorkItems({force: true});
+    });
+    subscriptionWorkSection?.addEventListener('click', event => {
+      const moreButton = event.target.closest('[data-subscription-work-more]');
+      if (moreButton) {
+        event.preventDefault();
+        refreshSubscriptionWorkItems({append: true});
+        return;
+      }
+      const actionButton = event.target.closest('[data-subscription-work-action]');
+      if (!actionButton) return;
+      event.preventDefault();
+      handleSubscriptionWorkAction(
+        Number(actionButton.dataset.subscriptionWorkItemId),
+        actionButton.dataset.subscriptionWorkAction || ''
+      );
     });
 
     tokenButton.addEventListener('click', event => {
@@ -1692,19 +1774,326 @@
     }
 
     function activateSidebarTab(tab) {
+      const activeTab = tab === 'subscriptions' ? 'subscriptions' : 'folders';
       sidebarTabs.forEach(button => {
-        const active = button.dataset.sidebarTab === tab;
+        const active = button.dataset.sidebarTab === activeTab;
         button.classList.toggle('active', active);
         button.setAttribute('aria-selected', active ? 'true' : 'false');
       });
       sidebarPanels.forEach(panel => {
-        const active = panel.dataset.sidebarPanel === tab;
+        const active = panel.dataset.sidebarPanel === activeTab;
         panel.classList.toggle('active', active);
         panel.hidden = !active;
       });
-      if (tab === 'subscriptions') {
+      activeWorkMode = activeTab === 'subscriptions' ? 'subscriptions' : 'jobs';
+      renderWorkMode();
+      if (activeTab === 'subscriptions') {
         refreshSubscriptions();
+        refreshSubscriptionWorkItems({force: true});
       }
+    }
+
+    function renderWorkMode() {
+      if (jobsSection) jobsSection.hidden = activeWorkMode !== 'jobs';
+      if (subscriptionWorkSection) subscriptionWorkSection.hidden = activeWorkMode !== 'subscriptions';
+      if (activeWorkMode === 'subscriptions') {
+        startSubscriptionWorkPolling();
+      } else {
+        stopSubscriptionWorkPolling();
+      }
+    }
+
+    function startSubscriptionWorkPolling() {
+      if (subscriptionWorkPollTimer !== null) return;
+      subscriptionWorkPollTimer = window.setInterval(() => {
+        if (activeWorkMode === 'subscriptions') {
+          refreshSubscriptionWorkItems();
+        }
+      }, 5000);
+    }
+
+    function stopSubscriptionWorkPolling() {
+      if (subscriptionWorkPollTimer === null) return;
+      window.clearInterval(subscriptionWorkPollTimer);
+      subscriptionWorkPollTimer = null;
+    }
+
+    async function refreshSubscriptionWorkItems(options = {}) {
+      if (!subscriptionWorkSection) return;
+      if (subscriptionWorkLoading && !options.force) return;
+      const append = Boolean(options.append);
+      const cursor = append ? subscriptionWorkNextCursor : null;
+      if (append && !cursor) return;
+      subscriptionWorkLoading = true;
+      subscriptionWorkError = '';
+      renderSubscriptionWorkItems();
+      const params = new URLSearchParams();
+      params.set('status', subscriptionWorkFilter || 'active');
+      params.set('limit', '100');
+      if (cursor) params.set('cursor', String(cursor));
+      try {
+        const response = await fetch(`/api/subscriptions/items?${params.toString()}`);
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          subscriptionWorkError = data.detail || '구독 작업을 불러오지 못했습니다.';
+          if (!append) subscriptionWorkItems = [];
+          return;
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        subscriptionWorkItems = append ? subscriptionWorkItems.concat(items) : items;
+        subscriptionWorkCounts = data.counts && typeof data.counts === 'object' ? data.counts : {};
+        subscriptionWorkCursor = cursor;
+        subscriptionWorkNextCursor = data.next_cursor || null;
+        subscriptionWorkScheduler = data.scheduler || null;
+      } catch (err) {
+        subscriptionWorkError = '네트워크 요청을 완료하지 못했습니다.';
+        if (!append) subscriptionWorkItems = [];
+      } finally {
+        subscriptionWorkLoading = false;
+        renderSubscriptionWorkItems();
+      }
+    }
+
+    function renderSubscriptionWorkItems() {
+      renderSubscriptionWorkFilters();
+      renderSubscriptionWorkStatus();
+      if (!subscriptionWorkBody && !subscriptionWorkMobileList) return;
+      if (subscriptionWorkLoading && !subscriptionWorkItems.length) {
+        renderSubscriptionWorkEmpty('구독 작업을 불러오는 중입니다.');
+        return;
+      }
+      if (subscriptionWorkError) {
+        renderSubscriptionWorkEmpty(subscriptionWorkError, 'error');
+        return;
+      }
+      if (!subscriptionWorkItems.length) {
+        renderSubscriptionWorkEmpty(subscriptionWorkEmptyMessage(subscriptionWorkFilter));
+        return;
+      }
+      const rows = subscriptionWorkItems.map(renderSubscriptionWorkRow);
+      if (subscriptionWorkNextCursor) {
+        rows.push('<tr><td colspan="8" class="subscription-work-empty-row"><button type="button" class="subscription-work-more" data-subscription-work-more="1">더 보기</button></td></tr>');
+      }
+      if (subscriptionWorkBody) {
+        subscriptionWorkBody.innerHTML = rows.join('');
+      }
+      if (subscriptionWorkMobileList) {
+        const cards = subscriptionWorkItems.map(renderSubscriptionWorkMobileCard);
+        if (subscriptionWorkNextCursor) {
+          cards.push('<button type="button" class="subscription-work-more" data-subscription-work-more="1">더 보기</button>');
+        }
+        subscriptionWorkMobileList.innerHTML = cards.join('');
+      }
+    }
+
+    function renderSubscriptionWorkEmpty(message, className = '') {
+      const cls = className ? ` ${escapeHtml(className)}` : '';
+      if (subscriptionWorkBody) {
+        subscriptionWorkBody.innerHTML = `<tr><td colspan="8" class="subscription-work-empty-row${cls}">${escapeHtml(message)}</td></tr>`;
+      }
+      if (subscriptionWorkMobileList) {
+        subscriptionWorkMobileList.innerHTML = `<div class="subscription-work-mobile-empty${cls}">${escapeHtml(message)}</div>`;
+      }
+    }
+
+    function renderSubscriptionWorkFilters() {
+      if (!subscriptionWorkFilters) return;
+      subscriptionWorkFilters.querySelectorAll('[data-subscription-work-filter]').forEach(button => {
+        const filter = button.dataset.subscriptionWorkFilter || 'active';
+        const active = filter === subscriptionWorkFilter;
+        const count = subscriptionWorkFilterCount(filter);
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        button.textContent = `${subscriptionWorkFilterLabel(filter)} ${formatCount(count)}`;
+      });
+    }
+
+    function renderSubscriptionWorkStatus() {
+      if (!subscriptionWorkStatus) return;
+      if (subscriptionWorkLoading && !subscriptionWorkItems.length) {
+        subscriptionWorkStatus.textContent = '불러오는 중...';
+        return;
+      }
+      if (subscriptionWorkError) {
+        subscriptionWorkStatus.textContent = subscriptionWorkError;
+        return;
+      }
+      const visible = subscriptionWorkItems.length;
+      const total = subscriptionWorkFilterCount(subscriptionWorkFilter);
+      const countText = total > visible ? `${formatCount(visible)} / ${formatCount(total)}` : formatCount(visible);
+      const parts = [`${subscriptionWorkFilterLabel(subscriptionWorkFilter)} ${countText}`];
+      if (subscriptionWorkNextCursor) parts.push('다음 항목 있음');
+      const schedulerText = subscriptionWorkSchedulerText(subscriptionWorkScheduler);
+      if (schedulerText) parts.push(schedulerText);
+      subscriptionWorkStatus.textContent = parts.join(' · ');
+    }
+
+    function renderSubscriptionWorkRow(item) {
+      const status = item.status || 'known';
+      const sourceMeta = [
+        subscriptionKindLabel(item.subscription_kind),
+        item.subscription_enabled === false ? '비활성' : '활성',
+      ].filter(Boolean).join(' · ');
+      const detail = item.error || item.filename || item.target_dir || item.url || '';
+      return `<tr>
+        <td data-label="상태"><span class="status ${escapeHtml(status)}">${escapeHtml(subscriptionItemStatusLabel(status))}</span></td>
+        <td data-label="구독">
+          <div class="subscription-work-primary">${escapeHtml(item.subscription_title || item.subscription_canonical_id || 'YouTube 구독')}</div>
+          <div class="subscription-work-muted">${escapeHtml(sourceMeta)}</div>
+        </td>
+        <td data-label="항목">${renderSubscriptionWorkTitle(item)}</td>
+        <td data-label="게시일">${escapeHtml(item.published_at ? formatDate(item.published_at) : '-')}</td>
+        <td data-label="진행률">${renderSubscriptionWorkProgress(item)}</td>
+        <td data-label="재시도">${renderSubscriptionWorkAttempts(item)}</td>
+        <td data-label="파일/오류" class="subscription-work-detail ${item.error ? 'error' : ''}">${escapeHtml(detail || '-')}</td>
+        <td data-label="제어">${renderSubscriptionWorkActions(item)}</td>
+      </tr>`;
+    }
+
+    function renderSubscriptionWorkMobileCard(item) {
+      const status = item.status || 'known';
+      const detail = item.error || item.filename || item.target_dir || item.url || '';
+      return `<article class="subscription-work-mobile-card">
+        <div class="subscription-work-mobile-head">
+          <span class="status ${escapeHtml(status)}">${escapeHtml(subscriptionItemStatusLabel(status))}</span>
+          <small>${escapeHtml(item.subscription_title || 'YouTube 구독')}</small>
+        </div>
+        ${renderSubscriptionWorkTitle(item)}
+        <div class="subscription-work-mobile-meta">${escapeHtml(item.published_at ? formatDate(item.published_at) : '-')} · ${escapeHtml(renderSubscriptionWorkAttempts(item, true))}</div>
+        <div class="subscription-work-mobile-progress">${renderSubscriptionWorkProgress(item)}</div>
+        ${detail ? `<div class="subscription-work-mobile-detail ${item.error ? 'error' : ''}">${escapeHtml(detail)}</div>` : ''}
+        <div class="subscription-work-mobile-actions">${renderSubscriptionWorkActions(item)}</div>
+      </article>`;
+    }
+
+    function renderSubscriptionWorkTitle(item) {
+      const title = item.title || item.provider_item_id || item.url || 'YouTube 영상';
+      const detail = [item.provider_item_id, item.policy_reason ? subscriptionPolicyReasonLabel(item.policy_reason) : '']
+        .filter(Boolean)
+        .join(' · ');
+      const titleHtml = item.url
+        ? `<a class="subscription-work-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${escapeHtml(title)}</a>`
+        : `<div class="subscription-work-primary">${escapeHtml(title)}</div>`;
+      return `<div class="subscription-work-title">${titleHtml}${detail ? `<div class="subscription-work-muted">${escapeHtml(detail)}</div>` : ''}</div>`;
+    }
+
+    function renderSubscriptionWorkProgress(item) {
+      const pct = item.percent === null || item.percent === undefined ? null : Number(item.percent);
+      const text = subscriptionWorkProgressText(item);
+      if (pct !== null && Number.isFinite(pct)) {
+        return `<div class="progress-readout"><div class="progress"><div style="width:${Math.max(0, Math.min(100, pct))}%"></div></div><span>${Math.round(pct)}% · ${escapeHtml(text)}</span></div>`;
+      }
+      return `<div class="progress-readout"><span>${escapeHtml(text || '-')}</span></div>`;
+    }
+
+    function subscriptionWorkProgressText(item) {
+      const progress = item.progress_human || '';
+      const total = item.total_human || '';
+      if (progress && total) return `${progress} / ${total}`;
+      if (progress) return progress;
+      return subscriptionItemProgressText(item);
+    }
+
+    function renderSubscriptionWorkAttempts(item, compact = false) {
+      const attempts = Number(item.attempt_count || 0);
+      const next = item.next_attempt_at ? formatDate(item.next_attempt_at) : '';
+      if (compact) {
+        return next ? `시도 ${formatCount(attempts)} · 다음 ${next}` : `시도 ${formatCount(attempts)}`;
+      }
+      return `<div class="subscription-work-primary">${formatCount(attempts)}</div>${next ? `<div class="subscription-work-muted">${escapeHtml(next)}</div>` : ''}`;
+    }
+
+    function renderSubscriptionWorkActions(item) {
+      const status = item.status || 'known';
+      const actions = [];
+      if (['known', 'eligible'].includes(status)) {
+        actions.push(['queue', '대기열']);
+        actions.push(['skip', '건너뜀']);
+      } else if (status === 'queued') {
+        actions.push(['skip', '건너뜀']);
+      } else if (status === 'failed') {
+        actions.push(['retry', '재시도']);
+        actions.push(['skip', '건너뜀']);
+      } else if (status === 'skipped') {
+        actions.push(['retry', '재시도']);
+      }
+      if (!actions.length) {
+        return '<span class="subscription-work-muted">읽기 전용</span>';
+      }
+      return `<div class="subscription-work-actions">${actions.map(([action, label]) => (
+        `<button type="button" data-subscription-work-action="${escapeHtml(action)}" data-subscription-work-item-id="${escapeHtml(item.id)}">${escapeHtml(label)}</button>`
+      )).join('')}</div>`;
+    }
+
+    async function handleSubscriptionWorkAction(itemId, action) {
+      if (!itemId || !action) return;
+      if (subscriptionWorkStatus) subscriptionWorkStatus.textContent = '항목 저장 중...';
+      try {
+        const response = await fetch(`/api/subscriptions/items/${encodeURIComponent(itemId)}/${action}`, {method: 'POST'});
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          if (subscriptionWorkStatus) subscriptionWorkStatus.textContent = data.detail || '항목을 수정하지 못했습니다.';
+          return;
+        }
+        if (data.item && data.item.subscription_id) {
+          activeSubscriptionId = Number(data.item.subscription_id);
+          replaceSubscriptionWorkItem(data.item);
+        }
+        if (Array.isArray(data.items)) {
+          currentSubscriptionItems = data.items;
+        }
+        mergeSubscriptionState(data.subscription);
+        renderSubscriptions();
+        if (subscriptionWorkStatus) subscriptionWorkStatus.textContent = subscriptionItemActionMessage(action);
+        await refreshSubscriptionWorkItems({force: true});
+      } catch (err) {
+        if (subscriptionWorkStatus) subscriptionWorkStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    function replaceSubscriptionWorkItem(nextItem) {
+      if (!nextItem || nextItem.id === undefined || nextItem.id === null) return;
+      subscriptionWorkItems = subscriptionWorkItems.map(item => (
+        Number(item.id) === Number(nextItem.id) ? {...item, ...nextItem} : item
+      ));
+    }
+
+    function subscriptionWorkFilterLabel(filter) {
+      if (filter === 'active') return '활성';
+      if (filter === 'eligible') return '대상';
+      if (filter === 'queued') return '대기';
+      if (filter === 'downloading') return '다운로드중';
+      if (filter === 'failed') return '실패';
+      if (filter === 'done') return '완료';
+      if (filter === 'skipped') return '건너뜀';
+      if (filter === 'known') return '발견';
+      if (filter === 'unavailable') return '불가';
+      if (filter === 'all') return '전체';
+      return filter || '활성';
+    }
+
+    function subscriptionWorkFilterCount(filter) {
+      const counts = subscriptionWorkCounts || {};
+      if (filter === 'active') {
+        return ['eligible', 'queued', 'downloading', 'failed'].reduce((sum, key) => sum + Number(counts[key] || 0), 0);
+      }
+      if (filter === 'all') {
+        return Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+      }
+      return Number(counts[filter] || 0);
+    }
+
+    function subscriptionWorkEmptyMessage(filter) {
+      if (filter === 'active') return '진행 중인 구독 항목이 없습니다.';
+      return `${subscriptionWorkFilterLabel(filter)} 구독 항목이 없습니다.`;
+    }
+
+    function subscriptionWorkSchedulerText(scheduler) {
+      if (!scheduler) return '';
+      const download = scheduler.download_scheduler_running ? '다운로드 작동' : '다운로드 정지';
+      const check = scheduler.check_scheduler_running ? '확인 작동' : '확인 정지';
+      const phase = scheduler.phase ? subscriptionPhaseLabel(scheduler.phase) : '';
+      return [phase, check, download].filter(Boolean).join(' · ');
     }
 
     function openSubscriptionModal() {
@@ -1988,7 +2377,14 @@
           currentSubscriptionItems = data.items;
         }
         mergeSubscriptionState(data.subscription);
+        if (data.item) {
+          replaceSubscriptionWorkItem(data.item);
+        }
         renderSubscriptions();
+        if (activeWorkMode === 'subscriptions') {
+          renderSubscriptionWorkItems();
+          refreshSubscriptionWorkItems({force: true});
+        }
         subscriptionStatus.textContent = subscriptionItemActionMessage(action);
       } catch (err) {
         subscriptionStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
@@ -4750,6 +5146,7 @@
     }
 
     renderJobs(currentJobs);
+    renderWorkMode();
     refreshSubscriptions();
     setInterval(refreshJobs, 2500);
     setInterval(refreshSubscriptions, 30000);

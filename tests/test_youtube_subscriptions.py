@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 
 class JsonRequest:
@@ -38,6 +39,39 @@ def app_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     importlib.reload(main)
     db.init_db()
     return db, subscriptions, main, config_root
+
+
+AGGREGATE_ITEM_STATUSES = (
+    "known",
+    "eligible",
+    "queued",
+    "downloading",
+    "done",
+    "skipped",
+    "failed",
+    "unavailable",
+)
+
+
+def seed_subscription_items(db, *, title: str = "Aggregate Channel", enabled: bool = True) -> tuple[int, dict[str, int]]:
+    subscription_id = db.create_subscription(
+        kind="channel",
+        source_url=f"https://www.youtube.com/@{title.lower().replace(' ', '-')}",
+        canonical_id=f"@{title.lower().replace(' ', '-')}",
+        title=title,
+        enabled=enabled,
+    )
+    item_ids: dict[str, int] = {}
+    for index, status in enumerate(AGGREGATE_ITEM_STATUSES, start=1):
+        item_ids[status] = db.upsert_subscription_item(
+            subscription_id=subscription_id,
+            provider_item_id=f"{status}-item",
+            url=f"https://www.youtube.com/watch?v={status}",
+            title=f"{status} video",
+            published_at=f"2026-07-02T00:0{index}:00+00:00",
+            status=status,
+        )
+    return subscription_id, item_ids
 
 
 def test_subscription_tables_and_indexes_are_created(app_modules: tuple) -> None:
@@ -227,6 +261,89 @@ def test_subscription_api_returns_detail_and_items(app_modules: tuple) -> None:
     with pytest.raises(HTTPException) as exc_info:
         main.api_subscription(subscription_id + 1)
     assert exc_info.value.status_code == 404
+
+
+def test_subscription_aggregate_items_default_active_counts_and_metadata(app_modules: tuple) -> None:
+    db, _subscriptions, main, _config_root = app_modules
+    subscription_id, item_ids = seed_subscription_items(db)
+    other_subscription_id = db.create_subscription(
+        kind="playlist",
+        source_url="https://www.youtube.com/playlist?list=PL-other",
+        canonical_id="PL-other",
+        title="Other Playlist",
+        enabled=False,
+    )
+    db.upsert_subscription_item(
+        subscription_id=other_subscription_id,
+        provider_item_id="other-failed",
+        url="https://www.youtube.com/watch?v=other",
+        title="Other failed",
+        status="failed",
+    )
+    db.update_subscription_item(item_ids["downloading"], progress_bytes=512, total_bytes=1024)
+
+    response = TestClient(main.app).get(
+        "/api/subscriptions/items",
+        params={"subscription_id": subscription_id},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["ok"] is True
+    assert {item["status"] for item in payload["items"]} == {"eligible", "queued", "downloading", "failed"}
+    assert all(item["subscription_id"] == subscription_id for item in payload["items"])
+    assert all(item["subscription_title"] == "Aggregate Channel" for item in payload["items"])
+    assert all(item["subscription_kind"] == "channel" for item in payload["items"])
+    assert all(item["subscription_enabled"] is True for item in payload["items"])
+    assert payload["counts"] == {status: 1 for status in AGGREGATE_ITEM_STATUSES}
+    assert payload["scheduler"]["check_scheduler_running"] is False
+    downloading = next(item for item in payload["items"] if item["status"] == "downloading")
+    assert downloading["progress_human"] == "512.0 B"
+    assert downloading["total_human"] == "1.0 KB"
+    assert downloading["percent"] == 50.0
+
+
+def test_subscription_aggregate_items_all_filter_and_cursor(app_modules: tuple) -> None:
+    db, _subscriptions, main, _config_root = app_modules
+    subscription_id, _item_ids = seed_subscription_items(db)
+
+    all_payload = json.loads(
+        main.api_subscription_item_summaries(status="all", subscription_id=subscription_id, limit=500).body.decode(
+            "utf-8"
+        )
+    )
+    first_page = json.loads(
+        main.api_subscription_item_summaries(status="all", subscription_id=subscription_id, limit=3).body.decode(
+            "utf-8"
+        )
+    )
+    second_page = json.loads(
+        main.api_subscription_item_summaries(
+            status="all",
+            subscription_id=subscription_id,
+            limit=3,
+            cursor=first_page["next_cursor"],
+        ).body.decode("utf-8")
+    )
+
+    assert {item["status"] for item in all_payload["items"]} == set(AGGREGATE_ITEM_STATUSES)
+    assert len(first_page["items"]) == 3
+    assert first_page["next_cursor"] == first_page["items"][-1]["id"]
+    assert {item["id"] for item in first_page["items"]}.isdisjoint({item["id"] for item in second_page["items"]})
+    assert all(item["id"] < first_page["next_cursor"] for item in second_page["items"])
+
+
+def test_subscription_aggregate_items_rejects_invalid_filter_and_missing_subscription(app_modules: tuple) -> None:
+    _db, _subscriptions, main, _config_root = app_modules
+
+    with pytest.raises(HTTPException) as invalid:
+        main.api_subscription_item_summaries(status="bogus")
+    assert invalid.value.status_code == 400
+
+    with pytest.raises(HTTPException) as missing:
+        main.api_subscription_item_summaries(subscription_id=999)
+    assert missing.value.status_code == 404
 
 
 def test_subscription_api_create_update_and_delete(app_modules: tuple) -> None:

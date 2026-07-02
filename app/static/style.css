@@ -1640,12 +1640,14 @@ a:hover {
   display: block;
 }
 
-.jobs-section {
+.jobs-section,
+.subscription-work-section {
   width: min(1070px, 100%);
   margin: 64px auto 0;
 }
 
-.jobs-heading {
+.jobs-heading,
+.subscription-work-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1653,13 +1655,27 @@ a:hover {
   margin: 0 0 14px;
 }
 
-.jobs-section h2 {
+.subscription-work-heading > div {
+  min-width: 0;
+}
+
+.jobs-section h2,
+.subscription-work-section h2 {
   margin: 0;
   font-size: 16px;
   font-weight: 800;
 }
 
-.clear-history-button {
+.subscription-work-status {
+  min-height: 18px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.clear-history-button,
+.subscription-work-refresh {
   min-height: 30px;
   border: 1px solid #d8dee8;
   border-radius: 6px;
@@ -1670,15 +1686,45 @@ a:hover {
   font-weight: 800;
 }
 
-.clear-history-button:hover {
+.clear-history-button:hover,
+.subscription-work-refresh:hover {
   background: #f8fafc;
+}
+
+.subscription-work-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.subscription-work-filters button {
+  min-height: 30px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  padding: 5px 9px;
+  color: #475569;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.subscription-work-filters button:hover {
+  background: #f8fafc;
+}
+
+.subscription-work-filters button.active {
+  border-color: #111827;
+  color: #ffffff;
+  background: #111827;
 }
 
 .table-shell {
   overflow: auto;
 }
 
-.mobile-jobs-list {
+.mobile-jobs-list,
+.subscription-work-mobile-list {
   display: none;
 }
 
@@ -1689,8 +1735,17 @@ a:hover {
   table-layout: fixed;
 }
 
+.subscription-work-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
 .jobs-table th,
-.jobs-table td {
+.jobs-table td,
+.subscription-work-table th,
+.subscription-work-table td {
   border-bottom: 1px solid #edf0f4;
   padding: 11px 10px;
   text-align: left;
@@ -1698,10 +1753,123 @@ a:hover {
   font-size: 15px;
 }
 
-.jobs-table th {
+.jobs-table th,
+.subscription-work-table th {
   color: #34435a;
   font-size: 14px;
   font-weight: 500;
+}
+
+.sub-col-status {
+  width: 8%;
+}
+
+.sub-col-source {
+  width: 16%;
+}
+
+.sub-col-item {
+  width: 24%;
+}
+
+.sub-col-date {
+  width: 11%;
+}
+
+.sub-col-progress {
+  width: 15%;
+}
+
+.sub-col-attempts {
+  width: 9%;
+}
+
+.sub-col-detail {
+  width: 12%;
+}
+
+.sub-col-actions {
+  width: 9%;
+}
+
+.subscription-work-primary,
+.subscription-work-link {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.subscription-work-link {
+  text-decoration: none;
+}
+
+.subscription-work-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.subscription-work-muted {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.subscription-work-title,
+.subscription-work-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.subscription-work-detail {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.subscription-work-detail.error,
+.subscription-work-mobile-detail.error,
+.subscription-work-empty-row.error,
+.subscription-work-mobile-empty.error {
+  color: var(--red);
+}
+
+.subscription-work-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.subscription-work-actions button,
+.subscription-work-more {
+  min-height: 28px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #34435a;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.subscription-work-actions button:hover,
+.subscription-work-more:hover {
+  background: #f8fafc;
+}
+
+.subscription-work-empty-row {
+  height: 84px;
+  color: #64748b;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .col-id {
@@ -1831,6 +1999,14 @@ a:hover {
   background: #edf2f7;
 }
 
+.status.eligible,
+.status.downloading {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.status.skipped,
+.status.unavailable,
 .status.paused {
   color: #475569;
   background: #f1f5f9;
@@ -4125,30 +4301,46 @@ a:hover {
     padding-left: 3px;
   }
 
-  .jobs-section {
+  .jobs-section,
+  .subscription-work-section {
     margin-top: 18px;
   }
 
-  .jobs-heading {
+  .jobs-heading,
+  .subscription-work-heading {
     align-items: center;
   }
 
-  .clear-history-button {
+  .clear-history-button,
+  .subscription-work-refresh {
     min-height: 32px;
     padding: 5px 9px;
     font-size: 12px;
+  }
+
+  .subscription-work-filters {
+    gap: 5px;
+    margin-bottom: 10px;
+  }
+
+  .subscription-work-filters button {
+    min-height: 30px;
+    padding: 5px 7px;
+    font-size: 11px;
   }
 
   .table-shell {
     display: none;
   }
 
-  .mobile-jobs-list {
+  .mobile-jobs-list,
+  .subscription-work-mobile-list {
     display: grid;
     gap: 10px;
   }
 
-  .mobile-jobs-empty {
+  .mobile-jobs-empty,
+  .subscription-work-mobile-empty {
     display: flex;
     min-height: 120px;
     align-items: center;
@@ -4158,6 +4350,72 @@ a:hover {
     color: #64748b;
     background: #ffffff;
     font-weight: 800;
+  }
+
+  .subscription-work-mobile-empty {
+    border-radius: 8px;
+  }
+
+  .subscription-work-mobile-card {
+    display: grid;
+    gap: 9px;
+    overflow: hidden;
+    border: 1px solid #e3e8ef;
+    border-radius: 8px;
+    padding: 11px;
+    background: #ffffff;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
+  }
+
+  .subscription-work-mobile-head {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .subscription-work-mobile-head small {
+    min-width: 0;
+    overflow: hidden;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .subscription-work-mobile-meta,
+  .subscription-work-mobile-detail {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 16px;
+  }
+
+  .subscription-work-mobile-progress .progress-readout {
+    display: grid;
+    gap: 5px;
+  }
+
+  .subscription-work-mobile-progress .progress-readout span {
+    overflow: hidden;
+    color: #475569;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .subscription-work-mobile-actions .subscription-work-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .subscription-work-more {
+    justify-self: center;
+    min-width: 96px;
   }
 
   .mobile-job-card {
