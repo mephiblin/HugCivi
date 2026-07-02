@@ -1,8 +1,8 @@
 # YouTube Subscription Design 2026-07-02
 
-Status: future design with Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 partially implemented.
+Status: implemented MVP with Phase 1 through Phase 6 complete in current code.
 
-This document captures the planned shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing. Phase 1 has added subscription tables, DB helpers, default payload helpers, and subscription read APIs. Phase 2 has added backend create/update/delete APIs and manual yt-dlp discovery that stores `subscription_items`. Phase 3 has added the left-sidebar `구독` tab, add-subscription modal, subscription list, and manual check controls. Phase 4 has added the independent subscription check scheduler with startup jitter, due checks, backoff scheduling, and restart recovery. Phase 5 has added the independent subscription download worker with item progress, logs, retry backoff, and no normal `jobs` rows.
+This document captures the implemented shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing, plus an independent subscription system. Phase 1 added subscription tables, DB helpers, default payload helpers, and subscription read APIs. Phase 2 added backend create/update/delete APIs and manual yt-dlp discovery that stores `subscription_items`. Phase 3 added the left-sidebar `구독` tab, add-subscription modal, subscription list, and manual check controls. Phase 4 added the independent subscription check scheduler with startup jitter, due checks, backoff scheduling, and restart recovery. Phase 5 added the independent subscription download worker with item progress, logs, retry backoff, and no normal `jobs` rows. Phase 6 added item-level queue/skip/retry controls and per-subscription storage readouts.
 
 ## Goal
 
@@ -98,9 +98,11 @@ Subscriptions
 - Last checked
 - Next check
 - Discovered / queued / downloading / done / failed counts
+- Stored media size
+- Expandable item list with queue / skip / retry controls
 ```
 
-The center content area can stay focused on the current download jobs and library at first. A later UI pass may add a dedicated subscription detail view, but the first implementation should keep the subscription surface compact and predictable.
+The center content area stays focused on the current download jobs and library. Subscription details stay compact in the left sidebar so long-lived subscription state remains visually separate from one-shot jobs.
 
 ## Add Subscription Flow
 
@@ -318,8 +320,8 @@ known/eligible/queued
   -> skipped
 
 downloading
-  -> failed
   -> queued     retryable failure with next_attempt_at
+  -> failed     retry cap hit or no retry scheduled
   -> done
 ```
 
@@ -348,6 +350,7 @@ POST   /api/subscriptions/{id}/check
 GET    /api/subscriptions/{id}/items
 POST   /api/subscriptions/items/{id}/queue
 POST   /api/subscriptions/items/{id}/skip
+POST   /api/subscriptions/items/{id}/retry
 ```
 
 `POST /api/subscriptions` should accept:
@@ -361,6 +364,8 @@ POST   /api/subscriptions/items/{id}/skip
   "auto_queue": true
 }
 ```
+
+Subscription payloads include `item_counts`, `storage_bytes`, and `storage_human` so the sidebar can show both item state and saved media size without scanning `/data`.
 
 ## Discovery Behavior
 
@@ -423,22 +428,20 @@ Use the direct subscription execution path first:
 - Write logs and progress into `subscription_items.metadata_json`, `progress_bytes`, `total_bytes`, and `error`.
 - Do not create a normal `jobs` row by default.
 
-Refactor target in `app/downloader.py` before implementing downloads:
+Current implementation reuses existing downloader helpers for the pieces needed by subscription downloads:
 
 ```text
-build_ytdlp_command(source_url, target, extra_args=None)
-resolve_gallerydl_target_path(source_url, info=None)
-run_external_process(command, callbacks)
-gallery_downloaded_files(target)
+yt_dlp_command(source_url, target, extra_args=None)
+gallery_dl_target_path_parts(source_url, info=None)
+gallery_dl_downloaded_files(target)
+gallery_dl_progress_snapshot(target)
 ```
 
-The existing `download_gallerydl()` can keep the old visible-job behavior by wrapping these helpers with job-specific callbacks.
-
-If this refactor feels too large, implement Phase 2 discovery and UI first. It is better to ship a correct independent subscription list without auto-download than to leak subscription activity into the normal job list.
+`download_gallerydl()` keeps the old visible-job behavior. Subscription downloads run their own subprocess loop and write progress/log/error state into `subscription_items`.
 
 ## Configuration Defaults
 
-Add these settings only when the corresponding runtime code lands:
+Runtime setting surface:
 
 ```text
 SUBSCRIPTION_CHECK_MAX_CONCURRENT=1
@@ -450,9 +453,12 @@ SUBSCRIPTION_STARTUP_JITTER_MIN_SECONDS=30
 SUBSCRIPTION_STARTUP_JITTER_MAX_SECONDS=300
 SUBSCRIPTION_RETRY_BACKOFF_SECONDS=900,3600,21600,86400
 SUBSCRIPTION_DISCOVERY_RECENT_WINDOW=50
+SUBSCRIPTION_CHECK_POLL_SECONDS=60
+SUBSCRIPTION_DOWNLOAD_POLL_SECONDS=30
+SUBSCRIPTION_DOWNLOAD_MAX_ATTEMPTS=3
 ```
 
-Expose the default interval and auto-queue behavior in the UI only after the backend defaults are covered by tests.
+The UI exposes the default interval and auto-queue behavior through the add-subscription modal.
 
 ## UI Notes
 
@@ -468,6 +474,7 @@ Expected controls:
 - Initial policy labels.
 - Per-subscription counters.
 - Item detail list with queue/skip/retry controls.
+- Per-subscription storage readout.
 
 Avoid making subscription management a marketing-style dashboard. It should feel like a compact operational panel in the left-side management area.
 
@@ -477,7 +484,7 @@ Initial UI cut:
 - `구독` tab content lives inside the existing sidebar width.
 - Add button opens the subscription modal.
 - Subscription list rows show title, state, interval, next check, and a compact count line.
-- Selecting a subscription can show item rows in the main panel in a later phase.
+- Selecting a subscription expands item rows inside the `구독` sidebar panel.
 
 Modal copy should be direct:
 
@@ -538,13 +545,14 @@ Phase 5: independent subscription download worker
 - Done: add subscription download worker with conservative defaults.
 - Done: add progress/log persistence on `subscription_items`.
 - Done: add retry/backoff for failed subscription item downloads.
-- Pending polish: add richer item-level pause/resume controls beyond subscription enable/auto-queue controls.
 
 Phase 6: polish
 
-- Add storage readouts per subscription.
-- Add optional per-subscription format/profile overrides only if needed.
-- Add import/export or backup notes if subscription state becomes operationally important.
+- Done: add storage readouts per subscription.
+- Done: add expandable item detail rows in the sidebar.
+- Done: add item-level queue, skip, and retry controls.
+- Future optional: add per-subscription format/profile overrides only if needed.
+- Future optional: add import/export or backup notes if subscription state becomes operationally important.
 
 ## Test Plan
 
@@ -575,20 +583,24 @@ Download tests:
 
 - Subscription downloads write under the current YouTube archive layout.
 - Per-subscription active download limit is 1.
-- Failed downloads increment `attempt_count` and set `next_attempt_at`.
+- Retryable failed downloads increment `attempt_count`, requeue the item, and set `next_attempt_at`.
+- Failed downloads that hit the retry cap remain `failed` without `next_attempt_at`.
 - Deleting a subscription does not delete files.
+- Item queue/skip/retry APIs update item status and return refreshed subscription/item payloads.
+- Per-subscription storage payloads sum completed media size and in-progress downloaded bytes.
 
 UI tests:
 
 - Existing storage folder tree still renders as default.
 - Switching to `구독` tab does not mutate folder state.
 - Add modal enforces explicit confirmation for full backfill.
+- Subscription rows expose item controls in the sidebar.
 - Saved secret values are never returned to the browser.
 
-## Open Questions
+## Resolved Decisions And Future Work
 
-- How aggressively should subscription downloads yield to normal one-shot downloads? Default should be one-shot priority, but the exact implementation can wait until Phase 5.
-- Should `from_now` record skipped older videos, or ignore them to keep the DB small?
-- Should `latest_n` default to 5, 10, or be hidden behind an advanced option?
-- Should playlist subscriptions always store under `playlist/<id>` even when the playlist belongs to a channel that also has a channel subscription?
-- Should duplicate detection scan existing `/data/gallery-dl/youtube.com` info JSON files in Phase 5, or be a later library-index enhancement?
+- Current decision: subscription downloads stay separate from normal one-shot downloads and run with conservative subscription-specific concurrency. Normal one-shot downloads do not wait behind subscription items because they use the existing `jobs` scheduler.
+- Current decision: `from_now` records older videos returned by bounded discovery as `known`, not eligible. This keeps recent context without auto-backfilling.
+- Current decision: `latest_n` uses 5 as the UI default.
+- Current decision: playlist subscriptions store under `playlist/<id>` even if the playlist owner also has a channel subscription.
+- Future optional: duplicate detection against existing `/data/gallery-dl/youtube.com` info JSON files can be added through the library index rather than inside the Phase 6 subscription worker.

@@ -589,6 +589,33 @@ def subscription_item_counts(subscription_ids: list[int]) -> dict[int, dict[str,
     return counts
 
 
+def subscription_item_storage(subscription_ids: list[int]) -> dict[int, int]:
+    if not subscription_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in subscription_ids)
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                subscription_id,
+                SUM(
+                    CASE
+                      WHEN status = 'done'
+                      THEN COALESCE(total_bytes, progress_bytes, 0)
+                      WHEN status = 'downloading'
+                      THEN COALESCE(progress_bytes, 0)
+                      ELSE 0
+                    END
+                ) AS bytes
+            FROM subscription_items
+            WHERE subscription_id IN ({placeholders})
+            GROUP BY subscription_id
+            """,
+            subscription_ids,
+        ).fetchall()
+    return {int(row["subscription_id"]): int(row["bytes"] or 0) for row in rows}
+
+
 def upsert_subscription_item(
     *,
     subscription_id: int,
@@ -727,11 +754,11 @@ def list_ready_subscription_items(now: str, limit: int = 1, max_attempts: int = 
             JOIN subscriptions s ON s.id = i.subscription_id
             WHERE s.enabled = 1
               AND s.auto_queue = 1
-              AND i.status IN ('eligible', 'queued', 'failed')
+              AND i.status IN ('eligible', 'queued')
               AND COALESCE(i.attempt_count, 0) < ?
               AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= ?)
             ORDER BY
-              CASE i.status WHEN 'queued' THEN 0 WHEN 'eligible' THEN 1 ELSE 2 END,
+              CASE i.status WHEN 'queued' THEN 0 ELSE 1 END,
               COALESCE(i.published_at, i.discovered_at) ASC,
               i.id ASC
             LIMIT ?

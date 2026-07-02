@@ -867,6 +867,9 @@
     let downloadQueueId = 1;
     let activeHitomiListingJobId = null;
     let currentSubscriptions = [];
+    let activeSubscriptionId = null;
+    let currentSubscriptionItems = [];
+    let subscriptionItemsLoading = false;
     let subscriptionScheduler = null;
     let subscriptionSettings = {};
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
@@ -957,6 +960,16 @@
     subscriptionInterval.addEventListener('change', updateSubscriptionModalState);
     subscriptionBackfillConfirm.addEventListener('change', updateSubscriptionModalState);
     subscriptionList.addEventListener('click', event => {
+      const itemButton = event.target.closest('[data-subscription-item-action]');
+      if (itemButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleSubscriptionItemAction(
+          Number(itemButton.dataset.subscriptionItemId),
+          itemButton.dataset.subscriptionItemAction || ''
+        );
+        return;
+      }
       const button = event.target.closest('[data-subscription-action]');
       if (!button) return;
       event.preventDefault();
@@ -1429,6 +1442,12 @@
         currentSubscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
         subscriptionScheduler = data.scheduler || null;
         subscriptionSettings = data.settings || {};
+        if (activeSubscriptionId && currentSubscriptions.some(item => Number(item.id) === Number(activeSubscriptionId))) {
+          await refreshSubscriptionItems(activeSubscriptionId, false);
+        } else if (activeSubscriptionId) {
+          activeSubscriptionId = null;
+          currentSubscriptionItems = [];
+        }
         renderSubscriptions();
       } catch (err) {
         console.error(err);
@@ -1442,10 +1461,13 @@
         ? `${formatCount(currentSubscriptions.length)}개 · ${subscriptionPhaseLabel(phase)}`
         : subscriptionPhaseLabel(phase);
       if (!currentSubscriptions.length) {
+        activeSubscriptionId = null;
+        currentSubscriptionItems = [];
         subscriptionList.innerHTML = '<div class="subscription-empty">등록된 구독이 없습니다.</div>';
         return;
       }
       subscriptionList.innerHTML = currentSubscriptions.map(subscription => {
+        const selected = activeSubscriptionId !== null && Number(subscription.id) === Number(activeSubscriptionId);
         const title = subscription.title || subscription.canonical_id || subscription.source_url || 'YouTube';
         const status = subscription.check_status || (subscription.enabled ? 'idle' : 'paused');
         const counts = subscription.item_counts || {};
@@ -1454,8 +1476,9 @@
         const nextCheck = subscription.next_check_at ? formatDate(subscription.next_check_at) : '-';
         const interval = formatSubscriptionInterval(subscription.check_interval_seconds || subscriptionSettings.default_check_interval_seconds);
         const enabledLabel = subscription.enabled ? '정지' : '재개';
+        const storageText = subscription.storage_human || formatFileSize(subscription.storage_bytes || 0);
         const checkDisabled = status === 'checking' ? 'disabled' : '';
-        return `<article class="subscription-row">
+        return `<article class="subscription-row${selected ? ' selected' : ''}">
           <div class="subscription-row-head">
             <div>
               <div class="subscription-title">${escapeHtml(title)}</div>
@@ -1465,11 +1488,14 @@
           </div>
           <div class="subscription-meta">다음 ${escapeHtml(nextCheck)} · ${escapeHtml(subscription.initialPolicyLabel || initialPolicyLabel(subscription.initial_policy))}</div>
           <div class="subscription-counts">${escapeHtml(countText)}</div>
+          <div class="subscription-meta">저장 ${escapeHtml(storageText)}</div>
           <div class="subscription-row-actions">
+            <button type="button" data-subscription-action="select" data-subscription-id="${escapeHtml(subscription.id)}">${selected ? '접기' : '항목'}</button>
             <button type="button" data-subscription-action="check" data-subscription-id="${escapeHtml(subscription.id)}" ${checkDisabled}>확인</button>
             <button type="button" data-subscription-action="toggle" data-subscription-id="${escapeHtml(subscription.id)}">${escapeHtml(enabledLabel)}</button>
             <button type="button" class="danger" data-subscription-action="delete" data-subscription-id="${escapeHtml(subscription.id)}">삭제</button>
           </div>
+          ${selected ? renderSubscriptionItems(subscription) : ''}
         </article>`;
       }).join('');
     }
@@ -1479,11 +1505,123 @@
       const subscription = currentSubscriptions.find(item => Number(item.id) === subscriptionId);
       if (action === 'check') {
         await checkSubscriptionNow(subscriptionId);
+      } else if (action === 'select') {
+        await selectSubscription(subscriptionId);
       } else if (action === 'toggle') {
         await updateSubscription(subscriptionId, {enabled: !(subscription && subscription.enabled)});
       } else if (action === 'delete') {
         if (!window.confirm('이 구독을 삭제할까요? 다운로드된 파일은 삭제하지 않습니다.')) return;
         await deleteSubscription(subscriptionId);
+      }
+    }
+
+    async function selectSubscription(subscriptionId) {
+      if (activeSubscriptionId !== null && Number(activeSubscriptionId) === Number(subscriptionId)) {
+        activeSubscriptionId = null;
+        currentSubscriptionItems = [];
+        renderSubscriptions();
+        return;
+      }
+      activeSubscriptionId = subscriptionId;
+      currentSubscriptionItems = [];
+      await refreshSubscriptionItems(subscriptionId);
+    }
+
+    async function refreshSubscriptionItems(subscriptionId, renderAfter = true) {
+      if (!subscriptionId) return;
+      subscriptionItemsLoading = true;
+      if (renderAfter) renderSubscriptions();
+      try {
+        const response = await fetch(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/items`);
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          subscriptionStatus.textContent = data.detail || '구독 항목을 불러오지 못했습니다.';
+          currentSubscriptionItems = [];
+          return;
+        }
+        activeSubscriptionId = subscriptionId;
+        currentSubscriptionItems = Array.isArray(data.items) ? data.items : [];
+        mergeSubscriptionState(data.subscription);
+      } catch (err) {
+        console.error(err);
+        subscriptionStatus.textContent = '구독 항목을 불러오지 못했습니다.';
+        currentSubscriptionItems = [];
+      } finally {
+        subscriptionItemsLoading = false;
+        if (renderAfter) renderSubscriptions();
+      }
+    }
+
+    function renderSubscriptionItems(subscription) {
+      if (subscriptionItemsLoading) {
+        return '<div class="subscription-items"><div class="subscription-item-empty">항목을 불러오는 중입니다.</div></div>';
+      }
+      if (!currentSubscriptionItems.length) {
+        return '<div class="subscription-items"><div class="subscription-item-empty">발견된 항목이 없습니다.</div></div>';
+      }
+      return `<div class="subscription-items">${currentSubscriptionItems.map(item => {
+        const title = item.title || item.provider_item_id || item.url || 'YouTube 영상';
+        const status = item.status || 'known';
+        const date = item.published_at || item.discovered_at;
+        const progress = subscriptionItemProgressText(item);
+        const meta = [
+          date ? formatDate(date) : '',
+          item.policy_reason ? subscriptionPolicyReasonLabel(item.policy_reason) : '',
+          Number(item.attempt_count || 0) > 0 ? `시도 ${formatCount(item.attempt_count)}` : '',
+        ].filter(Boolean).join(' · ');
+        const detail = item.error || item.filename || item.url || '';
+        return `<article class="subscription-item">
+          <div class="subscription-item-head">
+            <div class="subscription-item-title">${escapeHtml(title)}</div>
+            <span class="status ${escapeHtml(status)}">${escapeHtml(subscriptionItemStatusLabel(status))}</span>
+          </div>
+          ${meta ? `<div class="subscription-item-meta">${escapeHtml(meta)}</div>` : ''}
+          ${progress ? `<div class="subscription-item-meta">${escapeHtml(progress)}</div>` : ''}
+          ${detail ? `<div class="subscription-item-detail">${escapeHtml(detail)}</div>` : ''}
+          ${renderSubscriptionItemActions(item)}
+        </article>`;
+      }).join('')}</div>`;
+    }
+
+    function renderSubscriptionItemActions(item) {
+      const status = item.status || 'known';
+      const actions = [];
+      if (['known', 'eligible'].includes(status)) {
+        actions.push(['queue', '대기열']);
+      }
+      if (['failed', 'skipped'].includes(status)) {
+        actions.push(['retry', '재시도']);
+      }
+      if (['known', 'eligible', 'queued', 'failed'].includes(status)) {
+        actions.push(['skip', '건너뜀']);
+      }
+      if (!actions.length) return '';
+      return `<div class="subscription-item-actions">${actions.map(([action, label]) => (
+        `<button type="button" data-subscription-item-action="${escapeHtml(action)}" data-subscription-item-id="${escapeHtml(item.id)}">${escapeHtml(label)}</button>`
+      )).join('')}</div>`;
+    }
+
+    async function handleSubscriptionItemAction(itemId, action) {
+      if (!itemId || !action) return;
+      subscriptionStatus.textContent = '항목 저장 중...';
+      try {
+        const response = await fetch(`/api/subscriptions/items/${encodeURIComponent(itemId)}/${action}`, {method: 'POST'});
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          subscriptionStatus.textContent = data.detail || '항목을 수정하지 못했습니다.';
+          return;
+        }
+        if (data.item && data.item.subscription_id) {
+          activeSubscriptionId = Number(data.item.subscription_id);
+        }
+        if (Array.isArray(data.items)) {
+          currentSubscriptionItems = data.items;
+        }
+        mergeSubscriptionState(data.subscription);
+        renderSubscriptions();
+        subscriptionStatus.textContent = subscriptionItemActionMessage(action);
+      } catch (err) {
+        subscriptionStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       }
     }
 
@@ -1534,10 +1672,21 @@
           subscriptionStatus.textContent = data.detail || '구독을 삭제하지 못했습니다.';
           return;
         }
+        if (activeSubscriptionId !== null && Number(activeSubscriptionId) === Number(subscriptionId)) {
+          activeSubscriptionId = null;
+          currentSubscriptionItems = [];
+        }
         await refreshSubscriptions();
       } catch (err) {
         subscriptionStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       }
+    }
+
+    function mergeSubscriptionState(subscription) {
+      if (!subscription || subscription.id === undefined || subscription.id === null) return;
+      currentSubscriptions = currentSubscriptions.map(item => (
+        Number(item.id) === Number(subscription.id) ? subscription : item
+      ));
     }
 
     function markSubscriptionStatus(subscriptionId, status) {
@@ -1599,6 +1748,47 @@
       if (phase === 'scheduled_discovery') return '예약 확인';
       if (phase === 'manual_discovery') return '수동 확인';
       return '준비 중';
+    }
+
+    function subscriptionItemStatusLabel(status) {
+      if (status === 'eligible') return '대상';
+      if (status === 'queued') return '대기';
+      if (status === 'downloading') return '받는중';
+      if (status === 'done') return '완료';
+      if (status === 'skipped') return '건너뜀';
+      if (status === 'failed') return '실패';
+      if (status === 'unavailable') return '불가';
+      return '발견';
+    }
+
+    function subscriptionPolicyReasonLabel(reason) {
+      if (reason === 'manual') return '수동';
+      if (reason === 'full_backfill') return '전체';
+      if (reason === 'latest_n') return '최근';
+      if (reason === 'from_now') return '오늘부터';
+      if (reason === 'new_after_first_check') return '신규';
+      if (reason === 'older_than_cutoff') return '기준 이전';
+      if (reason === 'outside_latest_n') return '최근 범위 밖';
+      return reason;
+    }
+
+    function subscriptionItemProgressText(item) {
+      const progress = Number(item.progress_bytes || 0);
+      const total = item.total_bytes === null || item.total_bytes === undefined ? null : Number(item.total_bytes);
+      if (Number.isFinite(total) && total > 0) {
+        return `${formatFileSize(progress)} / ${formatFileSize(total)}`;
+      }
+      if (progress > 0) {
+        return formatFileSize(progress);
+      }
+      return '';
+    }
+
+    function subscriptionItemActionMessage(action) {
+      if (action === 'queue') return '항목을 대기열에 넣었습니다.';
+      if (action === 'skip') return '항목을 건너뜀으로 표시했습니다.';
+      if (action === 'retry') return '항목을 재시도 대기열에 넣었습니다.';
+      return '항목을 수정했습니다.';
     }
 
     async function openHitomiListingModal(jobId) {
@@ -3835,7 +4025,18 @@
     function isMediaArchiveJob(job) {
       if (!libraryJobPath(job)) return false;
       if (job.has_media || Number(job.media_count || 0) > 0) return true;
+      if (isCivitaiImagePageJob(job)) return true;
       return false;
+    }
+
+    function isCivitaiImagePageJob(job) {
+      const values = [
+        job.kind,
+        job.model_category,
+        job.model_type,
+        job.file_format,
+      ].filter(Boolean).map(value => String(value).toLowerCase());
+      return values.some(value => value === 'civitai_image_page' || value === 'civitai image page');
     }
 
     function renderProperties(data) {

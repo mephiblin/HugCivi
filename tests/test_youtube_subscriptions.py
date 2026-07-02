@@ -150,11 +150,28 @@ def test_subscription_helpers_create_list_and_preserve_item_state(app_modules: t
     )
 
     assert same_item_id == item_id
+    done_item_id = db.upsert_subscription_item(
+        subscription_id=subscription_id,
+        provider_item_id="done123",
+        url="https://www.youtube.com/watch?v=done123",
+        title="Done title",
+        status="done",
+    )
+    db.update_subscription_item(done_item_id, total_bytes=4096, progress_bytes=4096)
+    downloading_item_id = db.upsert_subscription_item(
+        subscription_id=subscription_id,
+        provider_item_id="downloading123",
+        url="https://www.youtube.com/watch?v=downloading123",
+        title="Downloading title",
+        status="downloading",
+    )
+    db.update_subscription_item(downloading_item_id, progress_bytes=512)
     items = db.list_subscription_items(subscription_id)
-    assert len(items) == 1
-    assert items[0]["status"] == "known"
-    assert items[0]["title"] == "Updated title"
-    assert json.loads(items[0]["metadata_json"]) == {"duration": 11}
+    assert len(items) == 3
+    updated_item = next(item for item in items if item["provider_item_id"] == "abc123")
+    assert updated_item["status"] == "known"
+    assert updated_item["title"] == "Updated title"
+    assert json.loads(updated_item["metadata_json"]) == {"duration": 11}
 
     payload = subscriptions.get_subscription_payload(subscription_id)
     assert payload is not None
@@ -162,6 +179,10 @@ def test_subscription_helpers_create_list_and_preserve_item_state(app_modules: t
     assert payload["metadata"] == {"channel": "Example Channel"}
     assert payload["item_counts"]["known"] == 1
     assert payload["item_counts"]["queued"] == 0
+    assert payload["item_counts"]["done"] == 1
+    assert payload["item_counts"]["downloading"] == 1
+    assert payload["storage_bytes"] == 4608
+    assert payload["storage_human"] == "4.5 KB"
 
 
 def test_subscription_api_returns_disabled_empty_state(app_modules: tuple) -> None:
@@ -420,11 +441,53 @@ def test_subscription_download_worker_records_retry_backoff_on_failure(
 
     item = db.get_subscription_item(item_id)
     assert item is not None
-    assert item["status"] == "failed"
+    assert item["status"] == "queued"
     assert item["attempt_count"] == 1
     assert item["next_attempt_at"] is not None
     assert "secret-value" not in item["error"]
     assert "secret-value" not in item["log"]
+
+
+def test_subscription_item_action_apis_queue_skip_and_retry(app_modules: tuple) -> None:
+    db, _subscriptions, main, _config_root = app_modules
+    subscription_id = db.create_subscription(
+        kind="channel",
+        source_url="https://www.youtube.com/@actions",
+        canonical_id="@actions",
+        title="Actions",
+    )
+    item_id = db.upsert_subscription_item(
+        subscription_id=subscription_id,
+        provider_item_id="action123",
+        url="https://www.youtube.com/watch?v=action123",
+        title="Action",
+        status="known",
+    )
+
+    queued = json.loads(main.api_queue_subscription_item(item_id).body.decode("utf-8"))
+    assert queued["item"]["status"] == "queued"
+    assert queued["subscription"]["item_counts"]["queued"] == 1
+
+    skipped = json.loads(main.api_skip_subscription_item(item_id).body.decode("utf-8"))
+    assert skipped["item"]["status"] == "skipped"
+    assert skipped["item"]["policy_reason"] == "manual"
+
+    failed_id = db.upsert_subscription_item(
+        subscription_id=subscription_id,
+        provider_item_id="failed123",
+        url="https://www.youtube.com/watch?v=failed123",
+        title="Failed",
+        status="failed",
+    )
+    db.update_subscription_item(failed_id, attempt_count=3, error="boom")
+    retried = json.loads(main.api_retry_subscription_item(failed_id).body.decode("utf-8"))
+    assert retried["item"]["status"] == "queued"
+    assert retried["item"]["attempt_count"] == 0
+    assert retried["item"]["error"] is None
+
+    with pytest.raises(HTTPException) as missing:
+        main.api_queue_subscription_item(failed_id + 999)
+    assert missing.value.status_code == 404
 
 
 def test_subscription_manual_check_records_backoff_on_failure(

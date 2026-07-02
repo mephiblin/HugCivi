@@ -698,6 +698,51 @@ def api_subscription(
     return JSONResponse({"ok": True, "subscription": subscription})
 
 
+def subscription_item_action_response(item: dict[str, Any]) -> JSONResponse:
+    subscription_id = int(item["subscription_id"])
+    return JSONResponse(
+        {
+            "ok": True,
+            "item": item,
+            "subscription": subscriptions.get_subscription_payload(subscription_id),
+            "items": subscriptions.list_item_payloads(subscription_id),
+        }
+    )
+
+
+@app.post("/api/subscriptions/items/{item_id}/queue")
+def api_queue_subscription_item(item_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    if not db.get_subscription_item(item_id):
+        raise HTTPException(status_code=404, detail="subscription item not found")
+    try:
+        item = subscriptions.queue_subscription_item(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return subscription_item_action_response(item)
+
+
+@app.post("/api/subscriptions/items/{item_id}/skip")
+def api_skip_subscription_item(item_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    if not db.get_subscription_item(item_id):
+        raise HTTPException(status_code=404, detail="subscription item not found")
+    try:
+        item = subscriptions.skip_subscription_item(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return subscription_item_action_response(item)
+
+
+@app.post("/api/subscriptions/items/{item_id}/retry")
+def api_retry_subscription_item(item_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    if not db.get_subscription_item(item_id):
+        raise HTTPException(status_code=404, detail="subscription item not found")
+    try:
+        item = subscriptions.retry_subscription_item(item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return subscription_item_action_response(item)
+
+
 @app.patch("/api/subscriptions/{subscription_id}")
 async def api_update_subscription(
     subscription_id: int,

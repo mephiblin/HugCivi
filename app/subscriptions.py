@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, urlparse
 
 from . import db, downloader
 from .downloader import ytdlp_direct_cmdline_args
-from .utils import env_bool, redact_sensitive_text, safe_join
+from .utils import env_bool, human_bytes, redact_sensitive_text, safe_join
 
 PROVIDER_YOUTUBE = "youtube"
 KIND_CHANNEL = "channel"
@@ -290,8 +290,13 @@ def startup_jitter_seconds() -> int:
 
 def list_subscription_payloads(limit: int = 100) -> list[dict[str, Any]]:
     rows = db.list_subscriptions(limit=limit)
-    counts = db.subscription_item_counts([int(row["id"]) for row in rows])
-    return [subscription_payload(row, counts.get(int(row["id"]), {})) for row in rows]
+    subscription_ids = [int(row["id"]) for row in rows]
+    counts = db.subscription_item_counts(subscription_ids)
+    storage = db.subscription_item_storage(subscription_ids)
+    return [
+        subscription_payload(row, counts.get(int(row["id"]), {}), storage.get(int(row["id"]), 0))
+        for row in rows
+    ]
 
 
 def get_subscription_payload(subscription_id: int) -> dict[str, Any] | None:
@@ -299,11 +304,17 @@ def get_subscription_payload(subscription_id: int) -> dict[str, Any] | None:
     if not row:
         return None
     counts = db.subscription_item_counts([subscription_id])
-    return subscription_payload(row, counts.get(subscription_id, {}))
+    storage = db.subscription_item_storage([subscription_id])
+    return subscription_payload(row, counts.get(subscription_id, {}), storage.get(subscription_id, 0))
 
 
 def list_item_payloads(subscription_id: int, limit: int = 500) -> list[dict[str, Any]]:
     return [item_payload(row) for row in db.list_subscription_items(subscription_id, limit=limit)]
+
+
+def get_item_payload(item_id: int) -> dict[str, Any] | None:
+    row = db.get_subscription_item(item_id)
+    return item_payload(row) if row else None
 
 
 def create_subscription(payload: dict[str, Any]) -> int:
@@ -359,6 +370,63 @@ def delete_subscription(subscription_id: int) -> bool:
     if deleted:
         notify_scheduler_changed()
     return deleted
+
+
+def queue_subscription_item(item_id: int, *, reset_attempts: bool = False) -> dict[str, Any]:
+    item = db.get_subscription_item(item_id)
+    if not item:
+        raise ValueError("subscription item not found")
+    status = str(item.get("status") or "")
+    if status in {ITEM_STATUS_DONE, ITEM_STATUS_DOWNLOADING, ITEM_STATUS_UNAVAILABLE}:
+        raise ValueError(f"subscription item cannot be queued from status {status}")
+    now = utc_now()
+    fields: dict[str, Any] = {
+        "status": ITEM_STATUS_QUEUED,
+        "queued_at": now,
+        "next_attempt_at": now,
+        "error": None,
+    }
+    if reset_attempts:
+        fields["attempt_count"] = 0
+    db.update_subscription_item(item_id, **fields)
+    db.append_subscription_item_log(item_id, "queued by user")
+    notify_download_scheduler_changed()
+    queued = db.get_subscription_item(item_id)
+    if not queued:
+        raise ValueError("subscription item not found")
+    return item_payload(queued)
+
+
+def skip_subscription_item(item_id: int) -> dict[str, Any]:
+    item = db.get_subscription_item(item_id)
+    if not item:
+        raise ValueError("subscription item not found")
+    status = str(item.get("status") or "")
+    if status == ITEM_STATUS_DOWNLOADING:
+        raise ValueError("downloading subscription item cannot be skipped")
+    if status == ITEM_STATUS_DONE:
+        raise ValueError("done subscription item cannot be skipped")
+    db.update_subscription_item(
+        item_id,
+        status=ITEM_STATUS_SKIPPED,
+        policy_reason="manual",
+        next_attempt_at=None,
+        error=None,
+    )
+    db.append_subscription_item_log(item_id, "skipped by user")
+    skipped = db.get_subscription_item(item_id)
+    if not skipped:
+        raise ValueError("subscription item not found")
+    return item_payload(skipped)
+
+
+def retry_subscription_item(item_id: int) -> dict[str, Any]:
+    item = db.get_subscription_item(item_id)
+    if not item:
+        raise ValueError("subscription item not found")
+    if str(item.get("status") or "") not in {ITEM_STATUS_FAILED, ITEM_STATUS_SKIPPED}:
+        raise ValueError("only failed or skipped subscription items can be retried")
+    return queue_subscription_item(item_id, reset_attempts=True)
 
 
 def check_subscription_now(subscription_id: int, *, scheduled: bool = False) -> dict[str, Any]:
@@ -574,12 +642,11 @@ def _download_subscription_item(item: dict[str, Any]) -> None:
         db.append_subscription_item_log(item_id, f"saved subscription item: {selected} ({downloader.human_bytes(size)})")
     except Exception as exc:
         failed_at = utc_now()
-        next_attempt = None
-        if attempt_count < subscription_download_max_attempts():
-            next_attempt = next_download_retry_at(attempt_count, failed_at)
+        retryable = attempt_count < subscription_download_max_attempts()
+        next_attempt = next_download_retry_at(attempt_count, failed_at) if retryable else None
         db.update_subscription_item(
             item_id,
-            status=ITEM_STATUS_FAILED,
+            status=ITEM_STATUS_QUEUED if retryable else ITEM_STATUS_FAILED,
             download_finished_at=failed_at,
             next_attempt_at=next_attempt,
             error=str(exc),
@@ -940,8 +1007,13 @@ def meaningful_text(value: Any) -> str:
     return "" if not text or text.upper() == "NA" else text
 
 
-def subscription_payload(row: dict[str, Any], counts: dict[str, int] | None = None) -> dict[str, Any]:
+def subscription_payload(
+    row: dict[str, Any],
+    counts: dict[str, int] | None = None,
+    storage_bytes: int = 0,
+) -> dict[str, Any]:
     item_counts = {status: int((counts or {}).get(status, 0)) for status in ITEM_STATUSES}
+    stored_bytes = max(0, int(storage_bytes or 0))
     return {
         "id": int(row["id"]),
         "provider": str(row.get("provider") or PROVIDER_YOUTUBE),
@@ -968,6 +1040,8 @@ def subscription_payload(row: dict[str, Any], counts: dict[str, int] | None = No
         "last_seen_published_at": row.get("last_seen_published_at"),
         "metadata": parse_json_object(row.get("metadata_json")),
         "item_counts": item_counts,
+        "storage_bytes": stored_bytes,
+        "storage_human": human_bytes(stored_bytes),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }

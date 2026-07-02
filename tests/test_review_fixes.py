@@ -750,7 +750,10 @@ def test_home_template_declares_subscription_sidebar_ui(app_modules: tuple) -> N
     assert 'name="initial_policy" value="full_backfill"' in template
     assert "fetch('/api/subscriptions'" in template
     assert "`/api/subscriptions/${encodeURIComponent(subscriptionId)}/check`" in template
+    assert 'data-subscription-item-action="${escapeHtml(action)}"' in template
+    assert "`/api/subscriptions/items/${encodeURIComponent(itemId)}/${action}`" in template
     assert ".subscription-list" in stylesheet
+    assert ".subscription-items" in stylesheet
     assert ".subscription-modal-panel" in stylesheet
 
 
