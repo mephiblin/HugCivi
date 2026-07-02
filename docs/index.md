@@ -29,6 +29,7 @@ The dated documents below are useful context, but code and current reference doc
 | Document | Status |
 | --- | --- |
 | [Transfer Design 2026-07-02](transfer-design-2026-07-02.md) | future design, not implemented unless code later proves otherwise. |
+| [Storage Folder Search Design 2026-07-02](storage-folder-search-design-2026-07-02.md) | implemented reference for turning the sidebar `새 폴더` area into a storage folder search box, moving folder creation to the tree context menu, and replacing text-based move prompts with a tree picker. |
 | [YouTube Subscription Design 2026-07-02](youtube-subscriptions-design-2026-07-02.md) | implemented MVP reference. Current code has tables, helpers, CRUD APIs, manual/scheduled discovery, sidebar UI, independent subscription downloads, item queue/skip/retry controls, and storage readouts. |
 | [Civitai Image Page Implementation Plan 2026-07-01](civitai-image-page-implementation-plan-2026-07-01.md) | implementation planning record. Current code/tests should be checked before using details. |
 | [Civitai Image Merge Technical Report 2026-07-01](civitai-image-merge-technical-report-2026-07-01.md) | technical report/history. |

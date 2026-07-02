@@ -1006,6 +1006,22 @@ def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(build_folder_tree(DATA_ROOT))
 
 
+@app.post("/api/folders")
+async def api_create_folder(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    parent = existing_data_path(str(payload.get("parent_path") or ""))
+    if not parent.is_dir():
+        raise HTTPException(status_code=400, detail="부모 경로는 폴더여야 합니다.")
+    ensure_real_directory_destination(parent)
+
+    folder_name = clean_item_name(str(payload.get("folder_name") or ""))
+    target = safe_join(DATA_ROOT, relative_data_path(parent), folder_name)
+    if target.exists():
+        raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
+    target.mkdir()
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+
+
 @app.get("/api/library")
 def api_library(mode: str = "index", _: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(library_items(mode=mode))

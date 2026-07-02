@@ -757,6 +757,52 @@ def test_home_template_declares_subscription_sidebar_ui(app_modules: tuple) -> N
     assert ".subscription-modal-panel" in stylesheet
 
 
+def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    stylesheet = (main.BASE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'id="folder-search-form"' in template
+    assert 'id="folder_search"' in template
+    assert 'id="folder-search-results"' in template
+    assert 'data-action="create-folder"' in template
+    assert 'id="folder-create-modal"' in template
+    assert 'id="folder-move-modal"' in template
+    assert "이동할 대상 폴더를 /data 기준 경로로 입력하세요." not in template
+    assert "fetch('/api/folders'" in template
+    assert ".folder-search-form" in stylesheet
+    assert ".folder-search-result" in stylesheet
+    assert ".folder-modal-tree" in stylesheet
+    assert ".folder-modal-row.selected" in stylesheet
+
+
+def test_api_create_folder_creates_child_and_rejects_nested_name(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    parent = data_root / "stable-diffusion"
+    parent.mkdir()
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/folders",
+        json={"parent_path": "stable-diffusion", "folder_name": "checkpoints"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["path"] == "stable-diffusion/checkpoints"
+    assert (parent / "checkpoints").is_dir()
+    assert payload["folders"]["children"]
+
+    bad_response = client.post(
+        "/api/folders",
+        json={"parent_path": "stable-diffusion", "folder_name": "bad/name"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert bad_response.status_code == 400
+
+
 def png_top_left_alpha(path: Path) -> int:
     data = path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")

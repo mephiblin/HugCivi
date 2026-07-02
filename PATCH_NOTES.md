@@ -36,6 +36,12 @@
 - 웹 UI 우측 상단 용량 표시 옆에 `애드온` 버튼을 추가하고, `/api/addon/chrome-extension`에서 설치용 zip을 받을 수 있게 했습니다.
 - Docker 이미지가 `chrome-extension/` 폴더를 포함하도록 빌드 구성을 갱신했습니다.
 
+### 저장 폴더 UI
+
+- 왼쪽 저장 폴더 하단 입력을 폴더 검색창으로 바꿨습니다.
+- 폴더 생성은 폴더 트리 우클릭 메뉴의 `새 폴더` 팝업으로 옮겼습니다.
+- 우클릭 `이동`은 텍스트 경로 입력 대신 폴더 트리에서 이동 대상을 선택하는 팝업을 사용합니다.
+
 ### YouTube/yt-dlp
 
 - YouTube playlist URL은 `/data/gallery-dl/youtube.com/playlist/<playlist-id>`에 저장하도록 정리했습니다.

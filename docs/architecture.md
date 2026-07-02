@@ -225,7 +225,7 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `/api/folders`, `/api/library`, `/api/library/reindex` |
+| Folders/library | `GET/POST /api/folders`, `/api/library`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |

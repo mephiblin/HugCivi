@@ -66,10 +66,14 @@
           </div>
         </section>
 
-        <form class="new-folder-form" method="post" action="/folders">
-          <label for="folder_path">새 폴더</label>
-          <input id="folder_path" name="folder_path" placeholder="stable-diffusion/checkpoints" required>
-          <button type="submit">폴더 생성</button>
+        <form class="folder-search-form" id="folder-search-form" role="search">
+          <div class="folder-search-heading">
+            <label for="folder_search">폴더 검색</label>
+          </div>
+          <input id="folder_search" autocomplete="off" placeholder="stable-diffusion/checkpoints"
+                 aria-describedby="folder-search-status" aria-controls="folder-search-results">
+          <div class="folder-search-status" id="folder-search-status" role="status" aria-live="polite"></div>
+          <div class="folder-search-results" id="folder-search-results" hidden></div>
         </form>
       </div>
 
@@ -642,6 +646,7 @@
 
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
+    <button type="button" data-action="create-folder" data-folder-only role="menuitem" hidden>새 폴더</button>
     <button type="button" data-action="media" data-media-only role="menuitem" hidden>미디어 보기</button>
     <button type="button" data-action="workflow" data-workflow-only role="menuitem" hidden>워크플로 보기</button>
     <button type="button" data-action="properties" role="menuitem">속성</button>
@@ -650,6 +655,46 @@
     <button type="button" data-action="move" role="menuitem">이동</button>
     <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
   </div>
+
+  <section class="bulk-add-modal folder-modal" id="folder-create-modal" role="dialog" aria-modal="true"
+           aria-labelledby="folder-create-title" hidden>
+    <form class="bulk-add-panel folder-modal-panel" id="folder-create-form">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="folder-create-title">새 폴더</h2>
+          <p class="folder-modal-path" id="folder-create-parent">위치: /data</p>
+        </div>
+      </header>
+      <div class="subscription-form-body">
+        <label class="setting-field" for="folder_create_name">
+          <span>폴더 이름</span>
+          <input id="folder_create_name" autocomplete="off" required>
+        </label>
+      </div>
+      <footer class="bulk-add-footer folder-modal-actions">
+        <button type="button" class="settings-cancel" id="folder-create-cancel">취소</button>
+        <button type="submit" class="settings-save" id="folder-create-confirm">확인</button>
+      </footer>
+    </form>
+  </section>
+
+  <section class="bulk-add-modal folder-modal" id="folder-move-modal" role="dialog" aria-modal="true"
+           aria-labelledby="folder-move-title" hidden>
+    <div class="bulk-add-panel folder-modal-panel">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="folder-move-title">이동 대상 선택</h2>
+          <p class="folder-modal-path" id="folder-move-source">원본: /data</p>
+        </div>
+      </header>
+      <div class="folder-modal-tree" id="folder-move-tree"></div>
+      <div class="bulk-add-status folder-modal-path" id="folder-move-destination" role="status" aria-live="polite">대상: 선택 안 됨</div>
+      <footer class="bulk-add-footer folder-modal-actions">
+        <button type="button" class="settings-cancel" id="folder-move-cancel">취소</button>
+        <button type="button" class="settings-save" id="folder-move-confirm" disabled>확인</button>
+      </footer>
+    </div>
+  </section>
 
   <section class="download-queue" id="download-queue" aria-live="polite" hidden>
     <div class="download-queue-head">
@@ -826,8 +871,25 @@
     const workflowDropOverlay = document.getElementById('workflow-drop-overlay');
     const workflowDropMessage = document.getElementById('workflow-drop-message');
     const workflowDropDetail = document.getElementById('workflow-drop-detail');
+    const folderTree = document.querySelector('.folder-tree');
+    const folderSearchForm = document.getElementById('folder-search-form');
+    const folderSearchInput = document.getElementById('folder_search');
+    const folderSearchStatus = document.getElementById('folder-search-status');
+    const folderSearchResultsBox = document.getElementById('folder-search-results');
     const contextMenu = document.getElementById('context-menu');
     const contextMenuTitle = document.getElementById('context-menu-title');
+    const folderCreateModal = document.getElementById('folder-create-modal');
+    const folderCreateForm = document.getElementById('folder-create-form');
+    const folderCreateParent = document.getElementById('folder-create-parent');
+    const folderCreateName = document.getElementById('folder_create_name');
+    const folderCreateConfirm = document.getElementById('folder-create-confirm');
+    const folderCreateCancel = document.getElementById('folder-create-cancel');
+    const folderMoveModal = document.getElementById('folder-move-modal');
+    const folderMoveTree = document.getElementById('folder-move-tree');
+    const folderMoveSource = document.getElementById('folder-move-source');
+    const folderMoveDestination = document.getElementById('folder-move-destination');
+    const folderMoveConfirm = document.getElementById('folder-move-confirm');
+    const folderMoveCancel = document.getElementById('folder-move-cancel');
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
@@ -862,6 +924,11 @@
     const workflowJson = document.getElementById('workflow-json');
     const mediaMobileQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 760px)') : null;
     let contextTarget = null;
+    let folderSearchTimer = null;
+    let folderSearchResults = [];
+    let activeFolderCreateParent = '';
+    let activeFolderMoveTarget = null;
+    let activeFolderMoveDestination = null;
     let downloadQueue = [];
     let downloadQueueActive = false;
     let downloadQueueId = 1;
@@ -909,30 +976,51 @@
       switchToHome();
     });
 
-    document.querySelectorAll('.folder-picker').forEach(button => {
-      button.addEventListener('click', () => {
-        const path = button.dataset.path || '';
-        targetInput.value = path;
-        selectedFolder.textContent = path ? `/data/${path}` : '/data';
-        document.querySelectorAll('.folder-picker').forEach(item => item.classList.remove('selected'));
-        button.classList.add('selected');
-        switchToLibrary(path);
-      });
-      button.addEventListener('contextmenu', event => {
-        event.preventDefault();
+    folderTree?.addEventListener('click', event => {
+      const toggle = event.target.closest('.folder-toggle');
+      if (toggle) {
         event.stopPropagation();
-        showContextMenu(event.clientX, event.clientY, {
-          path: button.dataset.path || '',
-          name: button.dataset.name || 'data',
-        });
+        toggle.closest('.folder-node')?.classList.toggle('expanded');
+        return;
+      }
+      const picker = event.target.closest('.folder-picker');
+      if (!picker) return;
+      selectFolderPath(picker.dataset.path || '');
+    });
+
+    folderTree?.addEventListener('contextmenu', event => {
+      const picker = event.target.closest('.folder-picker');
+      if (!picker) return;
+      event.preventDefault();
+      event.stopPropagation();
+      showContextMenu(event.clientX, event.clientY, {
+        path: picker.dataset.path || '',
+        name: picker.dataset.name || 'data',
+        isFolder: true,
       });
     });
 
-    document.querySelectorAll('.folder-toggle').forEach(button => {
-      button.addEventListener('click', event => {
-        event.stopPropagation();
-        button.closest('.folder-node').classList.toggle('expanded');
-      });
+    folderSearchForm?.addEventListener('submit', event => {
+      event.preventDefault();
+      selectFolderSearchResult();
+    });
+    folderSearchInput?.addEventListener('input', scheduleFolderSearch);
+    folderSearchInput?.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearFolderSearch();
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        selectFolderSearchResult();
+      }
+    });
+    folderSearchResultsBox?.addEventListener('click', event => {
+      const button = event.target.closest('[data-folder-search-path]');
+      if (!button) return;
+      event.preventDefault();
+      selectFolderPath(button.dataset.folderSearchPath || '', {expandTree: true, scrollIntoView: true});
     });
 
     sidebarTabs.forEach(button => {
@@ -1010,6 +1098,8 @@
       closeBulkAddModal();
       closeSubscriptionModal();
       closeHitomiListingModal();
+      closeFolderCreateModal();
+      closeFolderMoveModal();
       closePropertiesModal();
       closeMediaViewer();
       closeWorkflowViewer();
@@ -1025,6 +1115,8 @@
         closeBulkAddModal();
         closeSubscriptionModal();
         closeHitomiListingModal();
+        closeFolderCreateModal();
+        closeFolderMoveModal();
         closePropertiesModal();
         closeMediaViewer();
         closeWorkflowViewer();
@@ -1060,6 +1152,28 @@
     });
     hitomiListingQueueSelected.addEventListener('click', () => queueHitomiListing(false));
     hitomiListingQueueAll.addEventListener('click', () => queueHitomiListing(true));
+    folderCreateModal.addEventListener('click', event => {
+      if (event.target === folderCreateModal) {
+        closeFolderCreateModal();
+      }
+      event.stopPropagation();
+    });
+    folderCreateForm.addEventListener('submit', submitCreateFolder);
+    folderCreateCancel.addEventListener('click', closeFolderCreateModal);
+    folderMoveModal.addEventListener('click', event => {
+      if (event.target === folderMoveModal) {
+        closeFolderMoveModal();
+      }
+      event.stopPropagation();
+    });
+    folderMoveTree.addEventListener('click', event => {
+      const button = event.target.closest('[data-move-destination]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      selectMoveDestination(button.dataset.moveDestination || '');
+    });
+    folderMoveConfirm.addEventListener('click', submitMoveToDestination);
+    folderMoveCancel.addEventListener('click', closeFolderMoveModal);
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -1195,6 +1309,268 @@
     downloadQueueClose.addEventListener('click', () => {
       downloadQueuePanel.hidden = true;
     });
+
+    function selectFolderPath(path, options = {}) {
+      const normalized = normalizePath(path);
+      targetInput.value = normalized;
+      selectedFolder.textContent = normalized ? `/data/${normalized}` : '/data';
+      let selectedButton = null;
+      document.querySelectorAll('.folder-tree .folder-picker').forEach(item => {
+        const selected = normalizePath(item.dataset.path || '') === normalized;
+        item.classList.toggle('selected', selected);
+        if (selected && !selectedButton) selectedButton = item;
+      });
+      if (selectedButton && options.expandTree) expandFolderAncestors(selectedButton);
+      if (selectedButton && options.scrollIntoView) selectedButton.scrollIntoView({block: 'nearest'});
+      if (options.switchView !== false) switchToLibrary(normalized);
+    }
+
+    function expandFolderAncestors(button) {
+      let node = button.closest('.folder-node');
+      while (node) {
+        node.classList.add('expanded');
+        node = node.parentElement?.closest('.folder-node') || null;
+      }
+    }
+
+    function collectFolderRows() {
+      const seen = new Set();
+      return Array.from(document.querySelectorAll('.folder-tree .folder-picker[data-path]')).map(button => {
+        const path = normalizePath(button.dataset.path || '');
+        if (seen.has(path)) return null;
+        seen.add(path);
+        const name = button.dataset.name || button.querySelector('.folder-name')?.textContent.trim() || (path ? path.split('/').pop() : 'data');
+        const displayPath = path ? `/data/${path}` : '/data';
+        return {button, path, name, displayPath, searchText: `${displayPath} ${path} ${name}`.toLowerCase()};
+      }).filter(Boolean);
+    }
+
+    function scheduleFolderSearch() {
+      window.clearTimeout(folderSearchTimer);
+      folderSearchTimer = window.setTimeout(updateFolderSearch, 150);
+    }
+
+    function updateFolderSearch() {
+      if (!folderSearchInput || !folderSearchStatus || !folderSearchResultsBox) return;
+      const rawQuery = folderSearchInput.value.trim();
+      if (!rawQuery) {
+        clearFolderSearch(false);
+        return;
+      }
+      const query = rawQuery.toLowerCase();
+      const normalizedQuery = normalizePath(rawQuery).toLowerCase();
+      folderSearchResults = collectFolderRows().filter(item => (
+        item.searchText.includes(query) || Boolean(normalizedQuery && item.path.toLowerCase().includes(normalizedQuery))
+      ));
+      renderFolderSearchResults(folderSearchResults);
+    }
+
+    function renderFolderSearchResults(items) {
+      if (!folderSearchStatus || !folderSearchResultsBox) return;
+      folderSearchStatus.textContent = items.length ? `${items.length}개 결과` : '표시된 폴더에서 결과가 없습니다.';
+      folderSearchResultsBox.hidden = false;
+      if (!items.length) {
+        folderSearchResultsBox.innerHTML = '<div class="folder-search-empty">표시된 폴더에서 결과가 없습니다.</div>';
+        markFolderSearchMatches(items);
+        return;
+      }
+      folderSearchResultsBox.innerHTML = items.map(item => `
+        <button type="button" class="folder-search-result" data-folder-search-path="${escapeHtml(item.path)}">
+          <span class="folder-icon" aria-hidden="true"></span>
+          <span>${escapeHtml(item.displayPath)}</span>
+        </button>
+      `).join('');
+      markFolderSearchMatches(items);
+      items.forEach(item => expandFolderAncestors(item.button));
+    }
+
+    function markFolderSearchMatches(items) {
+      const paths = new Set(items.map(item => item.path));
+      collectFolderRows().forEach(item => {
+        item.button.classList.toggle('folder-search-match', paths.has(item.path));
+      });
+    }
+
+    function clearFolderSearch(resetInput = true) {
+      window.clearTimeout(folderSearchTimer);
+      folderSearchResults = [];
+      if (resetInput && folderSearchInput) folderSearchInput.value = '';
+      if (folderSearchStatus) folderSearchStatus.textContent = '';
+      if (folderSearchResultsBox) {
+        folderSearchResultsBox.innerHTML = '';
+        folderSearchResultsBox.hidden = true;
+      }
+      markFolderSearchMatches([]);
+    }
+
+    function selectFolderSearchResult() {
+      if (!folderSearchInput) return;
+      window.clearTimeout(folderSearchTimer);
+      updateFolderSearch();
+      if (!folderSearchResults.length) return;
+      const rawQuery = folderSearchInput.value.trim().toLowerCase();
+      const normalizedQuery = normalizePath(folderSearchInput.value).toLowerCase();
+      const exact = folderSearchResults.find(item => (
+        item.path.toLowerCase() === normalizedQuery
+        || item.displayPath.toLowerCase() === rawQuery
+        || item.name.toLowerCase() === rawQuery
+      ));
+      selectFolderPath((exact || folderSearchResults[0]).path, {expandTree: true, scrollIntoView: true});
+    }
+
+    function openCreateFolderModal(parentPath) {
+      activeFolderCreateParent = normalizePath(parentPath);
+      folderCreateParent.textContent = `위치: ${activeFolderCreateParent ? `/data/${activeFolderCreateParent}` : '/data'}`;
+      folderCreateName.value = '';
+      folderCreateConfirm.disabled = false;
+      folderCreateModal.hidden = false;
+      document.body.classList.add('modal-open');
+      window.setTimeout(() => folderCreateName.focus(), 0);
+    }
+
+    function closeFolderCreateModal() {
+      if (folderCreateModal.hidden) return;
+      folderCreateModal.hidden = true;
+      activeFolderCreateParent = '';
+      folderCreateConfirm.disabled = false;
+      document.body.classList.remove('modal-open');
+    }
+
+    async function submitCreateFolder(event) {
+      event.preventDefault();
+      const folderName = folderCreateName.value.trim();
+      if (!folderName) {
+        folderCreateName.focus();
+        return;
+      }
+      if (/[\\/]/.test(folderName)) {
+        window.alert('폴더 이름에는 / 또는 \\를 사용할 수 없습니다.');
+        folderCreateName.focus();
+        return;
+      }
+      folderCreateConfirm.disabled = true;
+      try {
+        const response = await fetch('/api/folders', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({parent_path: activeFolderCreateParent, folder_name: folderName}),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          window.alert(data.detail || '폴더를 만들지 못했습니다.');
+          folderCreateConfirm.disabled = false;
+          return;
+        }
+        if (data.folders) replaceFolderTree(data.folders);
+        closeFolderCreateModal();
+        selectFolderPath(data.path || normalizePath([activeFolderCreateParent, folderName].filter(Boolean).join('/')), {
+          expandTree: true,
+          scrollIntoView: true,
+        });
+        clearFolderSearch();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+        folderCreateConfirm.disabled = false;
+      }
+    }
+
+    function openMoveDestinationModal(target) {
+      const path = normalizePath(target?.path || '');
+      if (!path) return;
+      activeFolderMoveTarget = {...target, path};
+      activeFolderMoveDestination = null;
+      folderMoveSource.textContent = `원본: /data/${path}`;
+      folderMoveDestination.textContent = '대상: 선택 안 됨';
+      folderMoveConfirm.disabled = true;
+      renderFolderMoveTree();
+      folderMoveModal.hidden = false;
+      document.body.classList.add('modal-open');
+      window.setTimeout(() => {
+        const firstOption = folderMoveTree.querySelector('[data-move-destination]:not(:disabled)');
+        (firstOption || folderMoveCancel).focus();
+      }, 0);
+    }
+
+    function closeFolderMoveModal() {
+      if (folderMoveModal.hidden) return;
+      folderMoveModal.hidden = true;
+      activeFolderMoveTarget = null;
+      activeFolderMoveDestination = null;
+      folderMoveConfirm.disabled = true;
+      document.body.classList.remove('modal-open');
+    }
+
+    function renderFolderMoveTree() {
+      const sourcePath = activeFolderMoveTarget?.path || '';
+      const rows = collectFolderRows();
+      if (!rows.length) {
+        folderMoveTree.innerHTML = '<div class="folder-search-empty">표시된 폴더가 없습니다.</div>';
+        return;
+      }
+      folderMoveTree.innerHTML = rows.map(item => {
+        const disabled = isInvalidMoveDestination(item.path, sourcePath);
+        const selected = activeFolderMoveDestination !== null && activeFolderMoveDestination === item.path;
+        return `
+          <button type="button" class="folder-modal-row${selected ? ' selected' : ''}"
+                  data-move-destination="${escapeHtml(item.path)}" aria-selected="${selected ? 'true' : 'false'}"
+                  ${disabled ? 'disabled aria-disabled="true"' : ''}>
+            <span class="folder-icon" aria-hidden="true"></span>
+            <span>${escapeHtml(item.displayPath)}${disabled ? ' - 선택 불가' : ''}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    function isInvalidMoveDestination(path, sourcePath) {
+      const destination = normalizePath(path);
+      const source = normalizePath(sourcePath);
+      if (!source) return true;
+      return destination === source || destination.startsWith(`${source}/`);
+    }
+
+    function selectMoveDestination(path) {
+      const destination = normalizePath(path);
+      if (isInvalidMoveDestination(destination, activeFolderMoveTarget?.path || '')) return;
+      activeFolderMoveDestination = destination;
+      folderMoveDestination.textContent = `대상: ${destination ? `/data/${destination}` : '/data'}`;
+      folderMoveConfirm.disabled = false;
+      renderFolderMoveTree();
+    }
+
+    async function submitMoveToDestination() {
+      if (!activeFolderMoveTarget || activeFolderMoveDestination === null) return;
+      folderMoveConfirm.disabled = true;
+      const ok = await postFileAction('/api/fs/move', {
+        path: activeFolderMoveTarget.path,
+        destination: activeFolderMoveDestination,
+      });
+      if (!ok) folderMoveConfirm.disabled = false;
+    }
+
+    function replaceFolderTree(tree) {
+      const root = folderTree?.querySelector(':scope > ul');
+      if (!root || !tree) return;
+      root.innerHTML = renderFolderTreeNode(tree);
+    }
+
+    function renderFolderTreeNode(node) {
+      const children = Array.isArray(node.children) ? node.children : [];
+      const hasChildren = children.length > 0;
+      const path = normalizePath(node.path || '');
+      const name = node.name || (path ? path.split('/').pop() : 'data');
+      return `<li class="folder-node ${hasChildren ? 'has-children expanded' : ''}">
+        <div class="folder-row">
+          ${hasChildren
+            ? '<button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>'
+            : '<span class="folder-toggle-spacer"></span>'}
+          <button type="button" class="folder-picker" data-path="${escapeHtml(path)}" data-name="${escapeHtml(name)}">
+            <span class="folder-icon" aria-hidden="true"></span>
+            <span class="folder-name">${escapeHtml(name)}</span>
+          </button>
+        </div>
+        ${hasChildren ? `<ul class="folder-children">${children.map(renderFolderTreeNode).join('')}</ul>` : ''}
+      </li>`;
+    }
 
     function switchToHome() {
       activeLibraryPath = null;
@@ -2571,6 +2947,11 @@
       contextMenu.querySelectorAll('button[data-action]').forEach(button => {
         button.disabled = disabled;
       });
+      contextMenu.querySelectorAll('[data-folder-only]').forEach(button => {
+        const visible = Boolean(target.isFolder);
+        button.hidden = !visible;
+        button.disabled = !visible;
+      });
       contextMenu.querySelectorAll('[data-media-only]').forEach(button => {
         const visible = Boolean(target.isMediaArchive);
         button.hidden = !visible;
@@ -2594,9 +2975,17 @@
     }
 
     async function handleContextAction(action) {
-      if (!contextTarget || !contextTarget.path) return;
+      if (!contextTarget) return;
       const target = contextTarget;
       hideContextMenu();
+
+      if (action === 'create-folder') {
+        if (!target.isFolder) return;
+        openCreateFolderModal(target.path || '');
+        return;
+      }
+
+      if (!target.path) return;
 
       if (action === 'properties') {
         await showProperties(target);
@@ -2627,9 +3016,7 @@
       }
 
       if (action === 'move') {
-        const destination = window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요.', '');
-        if (destination === null) return;
-        await postFileAction('/api/fs/move', {path: target.path, destination});
+        openMoveDestinationModal(target);
         return;
       }
 
@@ -4334,11 +4721,13 @@
             // Keep the generic message.
           }
           window.alert(message);
-          return;
+          return false;
         }
         window.location.reload();
+        return true;
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
+        return false;
       }
     }
 
