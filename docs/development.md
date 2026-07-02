@@ -97,7 +97,7 @@ Avoid hidden destructive behavior:
 
 - Do not delete archive content except through explicit user actions or scoped cache cleanup.
 - Do not rewrite unrelated files or revert existing dirty work.
-- Do not expose saved secret values in API responses or templates.
+- Keep credential values limited to the authenticated settings editor. Do not expose them in job payloads, logs, public APIs, or unauthenticated templates.
 - Do not add automatic network-heavy behavior at startup.
 
 ## Adding a New Download Source

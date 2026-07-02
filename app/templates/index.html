@@ -342,7 +342,7 @@
         <header class="settings-header">
           <div>
             <h2 id="settings-title">API 토큰/인증</h2>
-            <p id="settings-description">비워 두면 기존에 저장된 인증값을 유지합니다.</p>
+            <p id="settings-description">저장된 인증값은 평문으로 표시되며, 저장하면 새 작업부터 적용됩니다.</p>
           </div>
           <button type="submit" class="settings-save top-save">저장</button>
         </header>
@@ -350,23 +350,23 @@
         <div class="settings-content">
         <section class="settings-block settings-pane active" id="settings-tokens"
                  data-settings-title="API 토큰/인증"
-                 data-settings-description="비워 두면 기존에 저장된 인증값을 유지합니다.">
+                 data-settings-description="저장된 인증값은 평문으로 표시되며, 저장하면 새 작업부터 적용됩니다.">
           <div class="settings-block-copy">
             <h3>API 토큰/인증</h3>
-            <p>비워 두면 기존에 저장된 인증값을 유지합니다.</p>
+            <p>저장된 인증값은 평문으로 표시되며, 저장하면 새 작업부터 적용됩니다.</p>
           </div>
           <div class="settings-grid two-cols">
             <label class="setting-field" for="hf_token">
               <span>Hugging Face Token</span>
               <input id="hf_token" name="hf_token" type="text" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.HF_TOKEN.configured %}설정됨 · {{ settings.HF_TOKEN.source }}{% else %}hf_...{% endif %}">
+                     value="{{ settings.HF_TOKEN.value }}"
+                     placeholder="hf_...">
             </label>
             <label class="setting-field" for="civitai_token">
               <span>Civitai Token</span>
               <input id="civitai_token" name="civitai_token" type="text" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.CIVITAI_TOKEN.configured %}설정됨 · {{ settings.CIVITAI_TOKEN.source }}{% else %}Civitai API token{% endif %}">
+                     value="{{ settings.CIVITAI_TOKEN.value }}"
+                     placeholder="Civitai API token">
             </label>
             <label class="setting-field" for="gallery_dl_username">
               <span>gallery-dl Username</span>
@@ -376,9 +376,9 @@
             </label>
             <label class="setting-field" for="gallery_dl_password">
               <span>gallery-dl Password</span>
-              <input id="gallery_dl_password" name="gallery_dl_password" type="password" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.GALLERY_DL_PASSWORD.configured %}설정됨 · {{ settings.GALLERY_DL_PASSWORD.source }}{% else %}site login password{% endif %}">
+              <input id="gallery_dl_password" name="gallery_dl_password" type="text" autocomplete="off"
+                     value="{{ settings.GALLERY_DL_PASSWORD.value }}"
+                     placeholder="site login password">
             </label>
             <label class="setting-field" for="gallery_dl_cookies_file">
               <span>gallery-dl Cookies File</span>
@@ -397,21 +397,21 @@
             <label class="setting-field wide" for="gallery_dl_extra_options">
               <span>gallery-dl Extra Options</span>
               <textarea id="gallery_dl_extra_options" name="gallery_dl_extra_options" rows="5" autocomplete="off"
-                        placeholder="{% if settings.GALLERY_DL_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.GALLERY_DL_EXTRA_OPTIONS.source }}{% else %}extractor.wallhaven.api-key=...\nextractor.deviantart.client-id=...\nextractor.deviantart.client-secret=...{% endif %}"></textarea>
+                        placeholder="extractor.wallhaven.api-key=...\nextractor.deviantart.client-id=...\nextractor.deviantart.client-secret=...">{{ settings.GALLERY_DL_EXTRA_OPTIONS.value }}</textarea>
               <small>한 줄에 하나씩 gallery-dl `-o key=value` 옵션을 입력합니다. API Key, OAuth, 사이트별 토큰은 여기에 넣습니다.</small>
             </label>
             <label class="setting-field" for="yt_dlp_cookies_file">
               <span>YouTube/yt-dlp Cookies File</span>
               <input id="yt_dlp_cookies_file" name="yt_dlp_cookies_file" type="text" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.YT_DLP_COOKIES_FILE.configured %}설정됨 · {{ settings.YT_DLP_COOKIES_FILE.source }}{% else %}/config/yt-dlp/cookies.txt{% endif %}">
+                     value="{{ settings.YT_DLP_COOKIES_FILE.value }}"
+                     placeholder="/config/yt-dlp/cookies.txt">
               <small>Netscape cookies.txt 파일 경로입니다. 컨테이너 안에서 읽을 수 있어야 합니다.</small>
             </label>
             <label class="setting-field" for="yt_dlp_cookies_from_browser">
               <span>YouTube/yt-dlp Browser Cookies</span>
               <input id="yt_dlp_cookies_from_browser" name="yt_dlp_cookies_from_browser" type="text" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.YT_DLP_COOKIES_FROM_BROWSER.configured %}설정됨 · {{ settings.YT_DLP_COOKIES_FROM_BROWSER.source }}{% else %}firefox, chrome, chromium{% endif %}">
+                     value="{{ settings.YT_DLP_COOKIES_FROM_BROWSER.value }}"
+                     placeholder="firefox, chrome, chromium">
               <small>브라우저 프로필을 컨테이너에 마운트한 경우에만 사용합니다.</small>
             </label>
             <label class="setting-field" for="yt_dlp_format">
@@ -424,14 +424,14 @@
             <label class="setting-field" for="yt_dlp_proxy">
               <span>YouTube/yt-dlp Proxy</span>
               <input id="yt_dlp_proxy" name="yt_dlp_proxy" type="text" autocomplete="off"
-                     value=""
-                     placeholder="{% if settings.YT_DLP_PROXY.configured %}설정됨 · {{ settings.YT_DLP_PROXY.source }}{% else %}socks5://192.168.200.100:1080{% endif %}">
+                     value="{{ settings.YT_DLP_PROXY.value }}"
+                     placeholder="socks5://192.168.200.100:1080">
               <small>yt-dlp 계열 사이트에만 적용합니다. SOCKS/HTTP 프록시 URL을 입력합니다.</small>
             </label>
             <label class="setting-field wide" for="yt_dlp_extra_options">
               <span>YouTube/yt-dlp Extra Options</span>
               <textarea id="yt_dlp_extra_options" name="yt_dlp_extra_options" rows="4" autocomplete="off"
-                        placeholder="{% if settings.YT_DLP_EXTRA_OPTIONS.configured %}설정됨 · {{ settings.YT_DLP_EXTRA_OPTIONS.source }}{% else %}cmdline-args=--max-filesize 500M\ncmdline-args=--playlist-items 1\nraw-options.writesubtitles=true{% endif %}"></textarea>
+                        placeholder="cmdline-args=--max-filesize 500M\ncmdline-args=--playlist-items 1\nraw-options.writesubtitles=true">{{ settings.YT_DLP_EXTRA_OPTIONS.value }}</textarea>
               <small>`cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식으로 입력합니다.</small>
             </label>
           </div>

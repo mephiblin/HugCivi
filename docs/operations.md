@@ -233,7 +233,7 @@ Minimum requirements:
 - Back up `/config` carefully because it may contain credentials.
 - Review site licenses and terms before archiving content.
 
-The app refuses insecure placeholder passwords and does not echo saved secret values back to the UI.
+The app refuses insecure placeholder passwords. The authenticated settings modal shows saved tokens, passwords, cookie paths, proxy URLs, and extra options in plaintext so they can be edited at runtime; keep the UI behind a trusted LAN, VPN, or reverse proxy.
 
 ## Recovery Notes
 

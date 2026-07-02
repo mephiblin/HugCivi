@@ -532,7 +532,7 @@ YT_DLP_EXTRA_OPTIONS
 
 `Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Proxy`는 yt-dlp에 `--proxy`로 전달되는 HTTP/HTTPS/SOCKS URL입니다. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다. 프록시는 `Extra Options` 대신 `YT_DLP_PROXY`를 사용하세요.
 
-토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장됩니다.
+토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장되며, 설정창을 다시 열면 평문으로 표시됩니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용됩니다.
 
 ## 다운로드 안전 설정
 
@@ -589,6 +589,7 @@ YT_DLP_EXTRA_OPTIONS=
 - `APP_PASSWORD`는 반드시 긴 비밀번호로 바꾸세요.
 - `/config` 폴더에는 작업 DB와 UI 저장 토큰이 들어갈 수 있습니다.
 - `/config/jobs.sqlite3` 백업은 credential 백업입니다. 백업 파일도 토큰/비밀번호/cookie path를 포함할 수 있습니다.
+- 설정창은 토큰, 비밀번호, cookie path, 프록시 URL을 평문으로 표시합니다. 신뢰하는 LAN/VPN 또는 reverse proxy 뒤에서만 사용하세요.
 - `/config` 폴더 권한을 NAS에서 제한하세요.
 - 모델 파일은 각 사이트의 라이선스와 이용약관을 확인한 뒤 보관하세요.
 - YouTube/yt-dlp는 공개 영상 또는 본인에게 명시적으로 다운로드 권한이 있는 영상에만 사용하세요.

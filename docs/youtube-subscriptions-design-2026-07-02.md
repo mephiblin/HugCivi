@@ -598,7 +598,7 @@ UI tests:
 - Switching to `구독` tab changes the main work-list area to `구독 작업 목록` while keeping normal `jobs` separate.
 - Add modal enforces explicit confirmation for full backfill.
 - Subscription rows expose item controls in the sidebar.
-- Saved secret values are never returned to the browser.
+- Subscription APIs do not return credential values. Runtime credential editing is limited to the authenticated settings modal.
 
 ## Resolved Decisions And Future Work
 

@@ -14,7 +14,7 @@ Use this before changing `app/db.py`, job status flow, settings, scheduler behav
 - Treat `/config/jobs.sqlite3` backups as credential backups.
 - Keep `_DB_LOCK` assumptions in mind; this app is one process with in-process threads.
 - Keep `settings` compatible with environment variable fallback.
-- Never return saved secret values to templates or JSON APIs.
+- The authenticated settings editor intentionally receives saved credential values in plaintext for runtime editing. Do not expose those values in job payloads, logs, public APIs, or unauthenticated templates.
 
 ## Job Rules
 
@@ -41,4 +41,4 @@ Run:
 python3 -m pytest -q -p no:cacheprovider tests/test_review_fixes.py tests/test_downloader_runtime.py
 ```
 
-For settings/secrets changes, include direct redaction tests. For migrations, include tests that initialize old or partial schemas when practical.
+For settings/credential changes, include direct visibility tests for the settings editor and redaction tests for job/log/non-settings surfaces. For migrations, include tests that initialize old or partial schemas when practical.

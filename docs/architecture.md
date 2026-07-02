@@ -250,7 +250,7 @@ Important invariants for future changes:
 - External download jobs must keep `job_kind='download'`.
 - YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.
-- Secrets should not be returned to the UI; settings status returns configured/source metadata and blank secret values.
+- Credential settings are returned to the authenticated settings editor in plaintext for runtime editing. Job payloads, logs, and non-settings APIs should still redact or avoid credentials.
 - Do not run frequent `PRAGMA optimize` from hot DB paths. Keep it in maintenance or migration flows.
 
 ## Scaling Position

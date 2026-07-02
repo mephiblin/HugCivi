@@ -21,7 +21,7 @@ HugCivi is a single-container personal NAS archive app:
 - Do not store large archive binaries in SQLite.
 - Do not add Redis, Celery, Elasticsearch, or a second service unless the user explicitly accepts that architecture change.
 - Keep user path operations inside `/data` and mediated by safety helpers.
-- Keep secrets out of API/template responses. Show configured/source metadata, not secret values.
+- Keep credential values limited to the authenticated settings editor. Do not expose them in job payloads, logs, public APIs, or unauthenticated templates.
 - Keep API shape changes additive unless frontend and tests are updated in the same change.
 - Keep old dated docs historical; current references are `docs/index.md`, `docs/feature-code-map.md`, `docs/architecture.md`, `docs/configuration.md`, `docs/development.md`, and `docs/operations.md`.
 

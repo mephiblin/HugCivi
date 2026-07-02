@@ -1622,7 +1622,7 @@ def settings_status() -> dict[str, Any]:
         }
         for row in rows
     }
-    secret_keys = (
+    credential_keys = (
         "HF_TOKEN",
         "CIVITAI_TOKEN",
         "GALLERY_DL_USERNAME",
@@ -1635,14 +1635,14 @@ def settings_status() -> dict[str, Any]:
         "YT_DLP_PROXY",
         "YT_DLP_EXTRA_OPTIONS",
     )
-    for key in secret_keys:
+    for key in credential_keys:
         env_value = os.getenv(key)
         db_value = db_settings.get(key)
         status[key] = {
             "configured": bool(env_value or db_value),
             "source": "ui" if db_value else ("environment" if env_value else None),
             "updated_at": db_value["updated_at"] if db_value else None,
-            "value": "",
+            "value": db_value["value"] if db_value else (env_value or ""),
         }
     status["routes"] = library_route_settings()
     legacy_cooldown_default = legacy_queue_provider_cooldown_default(db_settings)

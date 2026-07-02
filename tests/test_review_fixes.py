@@ -47,7 +47,7 @@ def app_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return utils, db, downloader, main, data_root, config_root
 
 
-def test_settings_status_never_returns_secret_values(
+def test_settings_status_returns_credential_values_for_settings_form(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -55,6 +55,7 @@ def test_settings_status_never_returns_secret_values(
     monkeypatch.setenv("CIVITAI_TOKEN", "env-secret")
     db.set_setting("HF_TOKEN", "db-secret")
     db.set_setting("GALLERY_DL_USERNAME", "login-name")
+    db.set_setting("GALLERY_DL_PASSWORD", "site-password")
     db.set_setting("GALLERY_DL_EXTRA_OPTIONS", "extractor.example.api-key=secret")
     db.set_setting("YT_DLP_COOKIES_FILE", "/config/yt-dlp/cookies.txt")
     db.set_setting("YT_DLP_PROXY", "socks5://user:secret@proxy.local:1080")
@@ -62,22 +63,19 @@ def test_settings_status_never_returns_secret_values(
 
     status = db.settings_status()
 
-    for key in (
-        "HF_TOKEN",
-        "CIVITAI_TOKEN",
-        "GALLERY_DL_USERNAME",
-        "GALLERY_DL_PASSWORD",
-        "GALLERY_DL_COOKIES_FILE",
-        "GALLERY_DL_COOKIES_FROM_BROWSER",
-        "GALLERY_DL_EXTRA_OPTIONS",
-        "YT_DLP_COOKIES_FILE",
-        "YT_DLP_COOKIES_FROM_BROWSER",
-        "YT_DLP_PROXY",
-        "YT_DLP_EXTRA_OPTIONS",
-    ):
-        assert status[key]["value"] == ""
+    assert status["HF_TOKEN"]["value"] == "db-secret"
+    assert status["CIVITAI_TOKEN"]["value"] == "env-secret"
+    assert status["GALLERY_DL_USERNAME"]["value"] == "login-name"
+    assert status["GALLERY_DL_PASSWORD"]["value"] == "site-password"
+    assert status["GALLERY_DL_EXTRA_OPTIONS"]["value"] == "extractor.example.api-key=secret"
+    assert status["YT_DLP_COOKIES_FILE"]["value"] == "/config/yt-dlp/cookies.txt"
+    assert status["YT_DLP_PROXY"]["value"] == "socks5://user:secret@proxy.local:1080"
+    assert status["YT_DLP_EXTRA_OPTIONS"]["value"] == "cmdline-args=--cookies /tmp/private.txt"
+    assert status["YT_DLP_COOKIES_FROM_BROWSER"]["value"] == ""
     assert status["HF_TOKEN"]["configured"] is True
     assert status["CIVITAI_TOKEN"]["configured"] is True
+    assert status["HF_TOKEN"]["source"] == "ui"
+    assert status["CIVITAI_TOKEN"]["source"] == "environment"
     assert status["youtube"]["YT_DLP_FORMAT"]["value"] == YT_DLP_DEFAULT_FORMAT
     assert status["queue"]["QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS"]["value"] == str(
         QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS
@@ -101,6 +99,33 @@ def test_startup_config_writer_persists_gallery_dl_update_toggle(app_modules: tu
     main.write_startup_config({"GALLERY_DL_AUTO_UPDATE": "on"})
 
     assert (config_root / "startup.env").read_text(encoding="utf-8") == "GALLERY_DL_AUTO_UPDATE=1\n"
+
+
+def test_settings_post_updates_runtime_auth_values(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/settings",
+        data={
+            "hf_token": "hf-runtime-token",
+            "civitai_token": "civitai-runtime-token",
+            "gallery_dl_password": "gallery-runtime-password",
+            "yt_dlp_cookies_file": "/config/yt-dlp/cookies.txt",
+            "yt_dlp_proxy": "socks5://192.168.200.100:1080",
+            "yt_dlp_format": "best[ext=mp4]/best",
+        },
+        auth=("admin", "test-password-that-is-long"),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert db.get_secret("HF_TOKEN") == "hf-runtime-token"
+    assert db.get_secret("CIVITAI_TOKEN") == "civitai-runtime-token"
+    assert db.get_secret("GALLERY_DL_PASSWORD") == "gallery-runtime-password"
+    assert db.get_secret("YT_DLP_COOKIES_FILE") == "/config/yt-dlp/cookies.txt"
+    assert db.get_secret("YT_DLP_PROXY") == "socks5://192.168.200.100:1080"
+    assert db.get_setting("YT_DLP_FORMAT") == "best[ext=mp4]/best"
 
 
 def test_safe_join_and_relative_path_preserve_internal_symlink_itself(app_modules: tuple) -> None:
@@ -777,7 +802,43 @@ def test_home_template_declares_ytdlp_proxy_setting(app_modules: tuple) -> None:
     assert 'id="yt_dlp_proxy"' in template
     assert 'name="yt_dlp_proxy"' in template
     assert "YouTube/yt-dlp Proxy" in template
-    assert "settings.YT_DLP_PROXY.configured" in template
+    assert 'value="{{ settings.YT_DLP_PROXY.value }}"' in template
+
+
+def test_home_template_renders_credentials_as_plain_text_values(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'value="{{ settings.HF_TOKEN.value }}"' in template
+    assert 'value="{{ settings.CIVITAI_TOKEN.value }}"' in template
+    assert 'id="gallery_dl_password" name="gallery_dl_password" type="text"' in template
+    assert 'value="{{ settings.GALLERY_DL_PASSWORD.value }}"' in template
+    assert "{{ settings.GALLERY_DL_EXTRA_OPTIONS.value }}</textarea>" in template
+    assert 'value="{{ settings.YT_DLP_COOKIES_FILE.value }}"' in template
+    assert 'value="{{ settings.YT_DLP_COOKIES_FROM_BROWSER.value }}"' in template
+    assert "{{ settings.YT_DLP_EXTRA_OPTIONS.value }}</textarea>" in template
+
+
+def test_home_page_displays_saved_credentials_plaintext(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    db.set_setting("HF_TOKEN", "hf-visible-token")
+    db.set_setting("GALLERY_DL_PASSWORD", "gallery-visible-password")
+    db.set_setting("GALLERY_DL_EXTRA_OPTIONS", "extractor.example.api-key=visible")
+    db.set_setting("YT_DLP_COOKIES_FILE", "/config/yt-dlp/cookies.txt")
+    db.set_setting("YT_DLP_PROXY", "socks5://192.168.200.100:1080")
+    client = TestClient(main.app)
+
+    response = client.get("/", auth=("admin", "test-password-that-is-long"))
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'value="hf-visible-token"' in html
+    assert 'value="gallery-visible-password"' in html
+    assert "extractor.example.api-key=visible</textarea>" in html
+    assert 'value="/config/yt-dlp/cookies.txt"' in html
+    assert 'value="socks5://192.168.200.100:1080"' in html
+    assert 'id="gallery_dl_password" name="gallery_dl_password" type="text"' in html
+    assert 'id="gallery_dl_password" name="gallery_dl_password" type="password"' not in html
 
 
 def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> None:
