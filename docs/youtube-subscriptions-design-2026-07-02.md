@@ -1,8 +1,8 @@
 # YouTube Subscription Design 2026-07-02
 
-Status: future design, not implemented.
+Status: future design with Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 partially implemented.
 
-This document captures the planned shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing, but it does not yet implement long-lived subscriptions, periodic checks, or a separate subscription queue.
+This document captures the planned shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing. Phase 1 has added subscription tables, DB helpers, default payload helpers, and subscription read APIs. Phase 2 has added backend create/update/delete APIs and manual yt-dlp discovery that stores `subscription_items`. Phase 3 has added the left-sidebar `구독` tab, add-subscription modal, subscription list, and manual check controls. Phase 4 has added the independent subscription check scheduler with startup jitter, due checks, backoff scheduling, and restart recovery. Phase 5 has added the independent subscription download worker with item progress, logs, retry backoff, and no normal `jobs` rows.
 
 ## Goal
 
@@ -23,6 +23,60 @@ The feature should let a user:
 - Do not create hundreds of normal download jobs immediately for a large channel backfill.
 - Do not add Redis, Celery, or another service unless the project architecture is explicitly changed later.
 - Do not automatically move existing YouTube archives into subscription ownership.
+
+## Pinchflat-Inspired Reference Points
+
+Pinchflat's useful ideas for HugCivi are:
+
+- A channel or playlist is a long-lived Source.
+- Indexing discovers media first; download decisions are applied after discovery.
+- Filters and policy changes should not require a full re-index every time.
+- Channels should not be fully indexed on every scheduled check.
+- Overly aggressive indexing can make freshness worse by increasing throttling or rate-limit risk.
+
+HugCivi should intentionally differ in these ways:
+
+- One-shot downloads remain first-class and visually separate.
+- Subscription downloads use HugCivi's existing archive layout instead of media-center-specific naming by default.
+- The first implementation should avoid global media profile complexity. Keep per-subscription policy small: initial range, interval, auto-queue, and enabled/paused.
+- Discovery and subscription downloads should be conservative enough for a personal NAS running a single container.
+
+## First Implementation Decision
+
+Use a dedicated subscription module and tables:
+
+```text
+app/subscriptions.py
+  -> subscription check scheduler
+  -> subscription download scheduler
+  -> yt-dlp discovery helpers
+  -> subscription item state transitions
+```
+
+Do not call `download_gallerydl(job_id, parsed)` from subscription workers. That handler assumes the visible `jobs` table and writes job logs/progress. Instead, first extract reusable downloader helpers from `app/downloader.py`:
+
+- YouTube target path resolution.
+- yt-dlp command construction.
+- yt-dlp auth/format/extra option parsing.
+- safe external process execution with progress callbacks.
+
+Then `app/subscriptions.py` can call those helpers while writing progress to `subscription_items`, not to `jobs`.
+
+This preserves the user's desired independence:
+
+```text
+Normal downloads
+  -> jobs table
+  -> app/downloader.py scheduler
+  -> main job list
+
+YouTube subscriptions
+  -> subscriptions + subscription_items tables
+  -> app/subscriptions.py schedulers
+  -> subscription tab
+```
+
+A compatibility bridge may be added later to create a normal job from a subscription item manually, but it should not be the default execution path.
 
 ## Product Shape
 
@@ -111,9 +165,33 @@ Per-subscription active downloads: 1
 Manual one-shot downloads take priority over subscription downloads
 Max new items promoted per check: 5
 Failure backoff: 15 minutes -> 1 hour -> 6 hours -> 24 hours
+Startup jitter: 30 to 300 seconds
+Per-source check jitter: +/- 10 percent of interval
 ```
 
 The scheduler should add jitter to checks so multiple subscriptions do not hammer YouTube at the same instant after app startup.
+
+Interval semantics:
+
+- `next_check_at` is calculated from the end of the previous check, not the start.
+- If a check is still running when the next interval would arrive, skip the overlapping run and schedule after the current run completes.
+- "Check now" should enqueue a single immediate check if no check is already active for that subscription.
+- Failed checks should schedule by backoff unless the user manually clicks "check now".
+- The UI should show both `last_checked_at` and `next_check_at` so users understand why nothing is happening.
+
+Recommended user-facing interval presets:
+
+```text
+1 hour
+3 hours
+6 hours
+12 hours
+daily
+weekly
+custom hours
+```
+
+Default to 6 hours. Use 1 hour and 3 hours as explicit "fast" choices, not as the default.
 
 ## Storage Layout
 
@@ -143,12 +221,19 @@ enabled INTEGER NOT NULL DEFAULT 1
 auto_queue INTEGER NOT NULL DEFAULT 1
 initial_policy TEXT NOT NULL    -- from_now | latest_n | full_backfill
 initial_limit INTEGER
+cutoff_published_at TEXT
+first_check_completed INTEGER NOT NULL DEFAULT 0
 check_interval_seconds INTEGER NOT NULL
 next_check_at TEXT
 last_checked_at TEXT
 last_success_at TEXT
 last_error TEXT
 failure_count INTEGER NOT NULL DEFAULT 0
+check_status TEXT NOT NULL DEFAULT 'idle'  -- idle | due | checking | backoff | paused | error
+last_check_started_at TEXT
+last_check_finished_at TEXT
+last_seen_provider_item_id TEXT
+last_seen_published_at TEXT
 metadata_json TEXT
 created_at TEXT NOT NULL
 updated_at TEXT NOT NULL
@@ -164,9 +249,18 @@ url TEXT NOT NULL
 title TEXT
 published_at TEXT
 discovered_at TEXT NOT NULL
-status TEXT NOT NULL            -- discovered | queued | downloading | done | skipped | failed
-job_id INTEGER
+status TEXT NOT NULL            -- known | eligible | queued | downloading | done | skipped | failed | unavailable
+policy_reason TEXT              -- from_now | latest_n | full_backfill | manual | older_than_cutoff | duplicate
+queued_at TEXT
+download_started_at TEXT
+download_finished_at TEXT
 target_dir TEXT
+filename TEXT
+progress_bytes INTEGER DEFAULT 0
+total_bytes INTEGER
+attempt_count INTEGER NOT NULL DEFAULT 0
+last_attempt_at TEXT
+next_attempt_at TEXT
 error TEXT
 metadata_json TEXT
 created_at TEXT NOT NULL
@@ -175,6 +269,70 @@ UNIQUE(subscription_id, provider_item_id)
 ```
 
 The first implementation can use these tables directly. A later version can add history tables for per-check audit logs if needed.
+
+Recommended indexes:
+
+```text
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_provider_canonical
+  ON subscriptions(provider, kind, canonical_id)
+  WHERE canonical_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_due
+  ON subscriptions(enabled, next_check_at, check_status);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_items_ready
+  ON subscription_items(status, next_attempt_at, subscription_id);
+
+CREATE INDEX IF NOT EXISTS idx_subscription_items_provider_item
+  ON subscription_items(provider_item_id);
+```
+
+Use helper functions in `app/db.py` or a small `app/subscription_db.py`; either is acceptable, but keep all SQLite writes behind the existing `_DB_LOCK` pattern.
+
+DB backup note: subscription URLs, metadata, and possibly private/unlisted video titles become part of `/config/jobs.sqlite3`, so backups remain privacy-sensitive.
+
+## State Machines
+
+Subscription check state:
+
+```text
+idle
+  -> due
+  -> checking
+  -> idle       on success
+  -> backoff    on retryable failure
+  -> error      on repeated failure
+paused          when enabled = 0
+```
+
+Subscription item state:
+
+```text
+known
+  -> eligible
+  -> queued
+  -> downloading
+  -> done
+
+known/eligible/queued
+  -> skipped
+
+downloading
+  -> failed
+  -> queued     retryable failure with next_attempt_at
+  -> done
+```
+
+Meaning:
+
+- `known`: discovered but not currently selected for download.
+- `eligible`: selected by policy and ready to be queued.
+- `queued`: waiting for the subscription download worker.
+- `downloading`: a subscription worker owns this item.
+- `done`: media is present or successfully downloaded.
+- `skipped`: user or policy skipped it.
+- `failed`: no retry is currently scheduled, or retry cap was hit.
+- `unavailable`: yt-dlp reports the video is deleted, private, region-blocked, or otherwise inaccessible.
 
 ## Proposed API Surface
 
@@ -221,6 +379,23 @@ Reuse existing YouTube/yt-dlp settings:
 
 Discovery should not download media. It should store item metadata and decide whether each item is eligible based on the initial policy and existing item rows.
 
+Discovery depth should follow policy:
+
+- `from_now`: on create, record `cutoff_published_at` and do not full-backfill. Scheduled checks only need a recent window large enough to catch newly published items and date corrections.
+- `latest_n`: first check may use a bounded playlist/channel listing and mark only the newest `N` as eligible.
+- `full_backfill`: allow a full listing scan, but show a warning and avoid auto-promoting everything at once.
+
+For channel sources, prefer incremental checks after the first successful check:
+
+- Keep `last_seen_provider_item_id` and `last_seen_published_at`.
+- Stop scanning once already-known recent items are encountered, unless the user forces a full check.
+- A forced full check from the UI should be explicit because it can be expensive.
+
+Duplicate handling:
+
+- If an item already exists for the subscription, update metadata but preserve `done`, `skipped`, and in-progress states.
+- If a one-shot YouTube download already produced an info JSON or filename containing the same YouTube ID, the subscription worker may mark the item `done` with `policy_reason='duplicate'` instead of downloading again. This can be added after the MVP if scanning existing files is too expensive.
+
 ## Initial Policy Semantics
 
 `from_now`:
@@ -241,21 +416,43 @@ Discovery should not download media. It should store item metadata and decide wh
 
 ## Execution Options
 
-There are two viable implementation paths.
-
-Preferred first implementation:
+Use the direct subscription execution path first:
 
 - Keep `subscription_items` as the visible subscription queue.
-- When an item is ready to download, call shared downloader helper code directly from a subscription worker.
-- Do not create a normal `jobs` row unless a single visible job history entry is still desired for compatibility.
+- When an item is ready to download, call shared downloader helper code from the subscription worker.
+- Write logs and progress into `subscription_items.metadata_json`, `progress_bytes`, `total_bytes`, and `error`.
+- Do not create a normal `jobs` row by default.
 
-Compatibility-first alternative:
+Refactor target in `app/downloader.py` before implementing downloads:
 
-- Subscription download worker promotes one item at a time into `db.create_job()`.
-- Mark the job metadata as subscription-owned.
-- Hide subscription-owned jobs from the normal job list by default, or show them only in the subscription tab.
+```text
+build_ytdlp_command(source_url, target, extra_args=None)
+resolve_gallerydl_target_path(source_url, info=None)
+run_external_process(command, callbacks)
+gallery_downloaded_files(target)
+```
 
-The preferred approach gives the cleanest UI separation. The compatibility-first approach is less code but risks mixing subscription history back into the existing job list.
+The existing `download_gallerydl()` can keep the old visible-job behavior by wrapping these helpers with job-specific callbacks.
+
+If this refactor feels too large, implement Phase 2 discovery and UI first. It is better to ship a correct independent subscription list without auto-download than to leak subscription activity into the normal job list.
+
+## Configuration Defaults
+
+Add these settings only when the corresponding runtime code lands:
+
+```text
+SUBSCRIPTION_CHECK_MAX_CONCURRENT=1
+SUBSCRIPTION_DOWNLOAD_MAX_CONCURRENT=1
+SUBSCRIPTION_PER_SOURCE_DOWNLOAD_LIMIT=1
+SUBSCRIPTION_DEFAULT_CHECK_INTERVAL_SECONDS=21600
+SUBSCRIPTION_PROMOTE_BATCH_SIZE=5
+SUBSCRIPTION_STARTUP_JITTER_MIN_SECONDS=30
+SUBSCRIPTION_STARTUP_JITTER_MAX_SECONDS=300
+SUBSCRIPTION_RETRY_BACKOFF_SECONDS=900,3600,21600,86400
+SUBSCRIPTION_DISCOVERY_RECENT_WINDOW=50
+```
+
+Expose the default interval and auto-queue behavior in the UI only after the backend defaults are covered by tests.
 
 ## UI Notes
 
@@ -274,51 +471,124 @@ Expected controls:
 
 Avoid making subscription management a marketing-style dashboard. It should feel like a compact operational panel in the left-side management area.
 
+Initial UI cut:
+
+- Left-sidebar segmented tabs: `저장 폴더`, `구독`.
+- `구독` tab content lives inside the existing sidebar width.
+- Add button opens the subscription modal.
+- Subscription list rows show title, state, interval, next check, and a compact count line.
+- Selecting a subscription can show item rows in the main panel in a later phase.
+
+Modal copy should be direct:
+
+```text
+오늘 이후 새 영상부터
+최근 N개만
+첫 영상부터 전체 다운로드
+```
+
+For `첫 영상부터 전체 다운로드`, require an explicit confirmation checkbox before enabling save.
+
 ## Safety And Restart Rules
 
 - Persist all subscription state in `/config/jobs.sqlite3`.
+- Register subscription schedulers in FastAPI lifespan after `db.init_db()` and before the library indexer starts.
+- Stop subscription schedulers on shutdown the same way external and internal workers are stopped.
 - On app startup, resume due checks conservatively.
 - Do not auto-start a full backfill unless the subscription was already enabled and the user explicitly chose full backfill.
+- Reset `checking` subscriptions to `due` or `backoff` after restart.
 - Requeue `downloading` subscription items to `queued` or `failed` after restart depending on whether partial files are safe to continue.
+- Track partial files under `/data` and clean only files known to belong to the subscription item.
 - Keep deletion scoped: deleting a subscription should not delete archived media by default.
 - Add a separate "delete downloaded files" flow only with explicit confirmation.
+- Keep saved cookies and credentials out of subscription API responses.
+- Avoid following symlinks when scanning for duplicate existing YouTube files.
 
 ## Implementation Phases
 
-Phase 1: documentation and data model
+Phase 1: data model and disabled backend
 
-- Add this design document.
-- Add migrations for `subscriptions` and `subscription_items`.
-- Add DB helper tests.
+- Done: add migrations for `subscriptions` and `subscription_items`.
+- Done: add DB helper tests.
+- Done: add default settings constants but do not start schedulers yet.
+- Done: add API read/list endpoints returning data-model state.
 
-Phase 2: backend discovery
+Phase 2: manual discovery
 
-- Add create/list/update/delete subscription APIs.
-- Add manual `check now`.
-- Store discovered items without downloading them.
+- Done: add create/list/update/delete subscription APIs.
+- Done: add manual `check now`.
+- Done: store discovered items without downloading them.
+- Done: mock yt-dlp discovery in tests.
 
-Phase 3: independent subscription queue
+Phase 3: sidebar UI
 
-- Add subscription scheduler thread.
-- Add subscription download worker with conservative defaults.
-- Add retry/backoff and restart handling.
+- Done: add left-sidebar `Subscriptions` tab.
+- Done: add add-subscription modal with initial policy and interval.
+- Done: add subscription list and manual check button.
 
-Phase 4: UI
+Phase 4: independent subscription check scheduler
 
-- Add left-sidebar `Subscriptions` tab.
-- Add add-subscription modal with initial policy and interval.
-- Add subscription list and item controls.
+- Done: add subscription scheduler thread.
+- Done: add jitter, backoff, and restart handling.
+- Done: keep auto-download disabled until item discovery is stable.
 
-Phase 5: polish
+Phase 5: independent subscription download worker
+
+- Done: reuse shared yt-dlp downloader helpers for command construction and YouTube archive target routing.
+- Done: add subscription download worker with conservative defaults.
+- Done: add progress/log persistence on `subscription_items`.
+- Done: add retry/backoff for failed subscription item downloads.
+- Pending polish: add richer item-level pause/resume controls beyond subscription enable/auto-queue controls.
+
+Phase 6: polish
 
 - Add storage readouts per subscription.
 - Add optional per-subscription format/profile overrides only if needed.
 - Add import/export or backup notes if subscription state becomes operationally important.
 
+## Test Plan
+
+DB tests:
+
+- `db.init_db()` creates both tables on a fresh DB.
+- Migration from an older DB without subscription tables is additive.
+- Unique constraints prevent duplicate subscription item rows.
+- Settings/status APIs do not leak secrets.
+
+Discovery tests:
+
+- Channel URL canonicalization stores `kind='channel'`.
+- Playlist URL canonicalization stores `kind='playlist'`.
+- `from_now` does not mark older items eligible.
+- `latest_n` marks only N newest items eligible.
+- Existing item rows preserve `done` and `skipped` states when rediscovered.
+- yt-dlp failures schedule backoff and record redacted errors.
+
+Scheduler tests:
+
+- Two checks for the same subscription cannot run concurrently.
+- Startup resets stale `checking` state conservatively.
+- Due subscriptions are checked with concurrency 1 by default.
+- Manual one-shot downloads are not blocked by subscription schedulers.
+
+Download tests:
+
+- Subscription downloads write under the current YouTube archive layout.
+- Per-subscription active download limit is 1.
+- Failed downloads increment `attempt_count` and set `next_attempt_at`.
+- Deleting a subscription does not delete files.
+
+UI tests:
+
+- Existing storage folder tree still renders as default.
+- Switching to `구독` tab does not mutate folder state.
+- Add modal enforces explicit confirmation for full backfill.
+- Saved secret values are never returned to the browser.
+
 ## Open Questions
 
-- Should subscription downloads create hidden `jobs` rows for compatibility, or should they stay entirely in `subscription_items`?
-- Should normal one-shot jobs always preempt subscription downloads, or should this be a user setting?
+- How aggressively should subscription downloads yield to normal one-shot downloads? Default should be one-shot priority, but the exact implementation can wait until Phase 5.
 - Should `from_now` record skipped older videos, or ignore them to keep the DB small?
 - Should `latest_n` default to 5, 10, or be hidden behind an advanced option?
 - Should playlist subscriptions always store under `playlist/<id>` even when the playlist belongs to a channel that also has a channel subscription?
+- Should duplicate detection scan existing `/data/gallery-dl/youtube.com` info JSON files in Phase 5, or be a later library-index enhancement?

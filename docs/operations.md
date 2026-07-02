@@ -88,6 +88,33 @@ Internal server-local jobs use a separate limit:
 
 Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
 
+## YouTube Subscriptions
+
+The `구독` sidebar tab manages YouTube channel and playlist subscriptions separately from the normal job list.
+
+Operational behavior:
+
+- Scheduled subscription checks use yt-dlp flat metadata discovery.
+- Discovered videos are stored in SQLite `subscription_items`.
+- Scheduled checks do not create normal download jobs.
+- If `auto_queue` is enabled, the independent subscription download worker downloads eligible items without adding them to the normal job list.
+- Manual one-shot YouTube downloads still use the regular external download queue.
+
+Useful controls:
+
+```text
+SUBSCRIPTION_CHECK_SCHEDULER_ENABLED=1
+SUBSCRIPTION_CHECK_POLL_SECONDS=60
+SUBSCRIPTION_STARTUP_JITTER_MIN_SECONDS=30
+SUBSCRIPTION_STARTUP_JITTER_MAX_SECONDS=300
+SUBSCRIPTION_DISCOVERY_TIMEOUT_SECONDS=90
+SUBSCRIPTION_DOWNLOAD_SCHEDULER_ENABLED=1
+SUBSCRIPTION_DOWNLOAD_POLL_SECONDS=30
+SUBSCRIPTION_DOWNLOAD_MAX_ATTEMPTS=3
+```
+
+Set `SUBSCRIPTION_CHECK_SCHEDULER_ENABLED=0` if you want to keep subscriptions in manual-check mode only.
+
 ## Expensive Local Work
 
 Folder downloads:

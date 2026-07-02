@@ -115,6 +115,41 @@ a:hover {
   line-height: 24px;
 }
 
+.sidebar-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 0 4px 8px;
+}
+
+.sidebar-tabs button {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid #d7dde8;
+  border-radius: 7px;
+  color: #475569;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sidebar-tabs button.active {
+  border-color: #111827;
+  color: #111827;
+  background: #eef2f7;
+}
+
+.sidebar-panel {
+  display: none;
+  min-height: 0;
+}
+
+.sidebar-panel.active {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .folder-section {
   display: flex;
   flex: 1 1 auto;
@@ -148,6 +183,125 @@ a:hover {
   background: #f6f8fb;
   font-size: 12px;
   line-height: 18px;
+}
+
+.subscription-panel {
+  padding: 0 4px 8px;
+}
+
+.subscription-heading {
+  flex: 0 0 auto;
+}
+
+.subscription-add-button {
+  min-height: 28px;
+  border: 1px solid #d7dde8;
+  border-radius: 6px;
+  padding: 4px 9px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.subscription-add-button:hover {
+  background: #f8fafc;
+}
+
+.subscription-status {
+  min-height: 22px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.subscription-list {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--soft-line);
+  border-radius: 6px;
+  padding: 7px;
+  background: #ffffff;
+}
+
+.subscription-empty {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.subscription-row {
+  display: grid;
+  gap: 7px;
+  border-bottom: 1px solid #edf0f4;
+  padding: 0 0 9px;
+}
+
+.subscription-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.subscription-row-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.subscription-title {
+  min-width: 0;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.subscription-meta,
+.subscription-counts {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+
+.subscription-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.subscription-row-actions button {
+  min-height: 27px;
+  border: 1px solid #d8dee8;
+  border-radius: 5px;
+  padding: 4px 7px;
+  color: #34435a;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.subscription-row-actions button:hover {
+  background: #f8fafc;
+}
+
+.subscription-row-actions button:disabled {
+  color: #8a94a3;
+  background: #f3f6fa;
+  cursor: default;
+  opacity: 0.72;
+}
+
+.subscription-row-actions button.danger {
+  color: #b42318;
 }
 
 .folder-tree {
@@ -377,6 +531,11 @@ a:hover {
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
 }
 
+.subscription-modal-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  width: min(560px, calc(100vw - 48px));
+}
+
 .bulk-add-head {
   display: flex;
   min-height: 76px;
@@ -452,6 +611,99 @@ a:hover {
   gap: 10px;
   border-top: 1px solid #edf1f7;
   padding: 16px 22px;
+}
+
+.subscription-form-body {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 0;
+}
+
+.subscription-form-body input,
+.subscription-form-body select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 9px 11px;
+  color: #1f2937;
+  background: #fbfdff;
+  outline: 0;
+}
+
+.subscription-form-body input:focus,
+.subscription-form-body select:focus {
+  border-color: #5b7df0;
+  box-shadow: 0 0 0 3px rgba(61, 102, 232, 0.12);
+}
+
+.subscription-policy-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.subscription-policy-field legend {
+  margin: 0 0 2px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.subscription-choice {
+  display: flex;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.subscription-choice input[type="radio"],
+.subscription-choice input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+}
+
+.subscription-choice.with-inline-input input[type="number"] {
+  width: 72px;
+  min-height: 34px;
+  flex: 0 0 72px;
+  padding: 6px 8px;
+}
+
+.subscription-backfill-confirm {
+  margin-left: 25px;
+  color: #b42318;
+}
+
+.subscription-form-grid,
+.subscription-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.subscription-toggle-grid .setting-toggle {
+  min-height: 46px;
+}
+
+.subscription-toggle-grid .setting-toggle input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  opacity: 0;
 }
 
 .hitomi-listing-results {
@@ -1319,6 +1571,23 @@ a:hover {
 .status.canceled {
   color: #64748b;
   background: #f1f5f9;
+}
+
+.status.idle {
+  color: #166534;
+  background: #e7f7ed;
+}
+
+.status.checking,
+.status.due {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.status.backoff,
+.status.error {
+  color: #b42318;
+  background: #fdecea;
 }
 
 .job-action-buttons {
@@ -3277,6 +3546,19 @@ a:hover {
     line-height: 17px;
   }
 
+  .sidebar-tabs {
+    padding: 0 12px 10px;
+  }
+
+  .sidebar-tabs button {
+    min-height: 36px;
+    font-size: 13px;
+  }
+
+  .sidebar-panel.active {
+    flex: 1 1 auto;
+  }
+
   .folder-section {
     min-height: 0;
     padding: 0 12px 12px;
@@ -3321,6 +3603,19 @@ a:hover {
     border-radius: 8px;
     padding: 10px;
     background: #ffffff;
+  }
+
+  .subscription-panel {
+    padding: 0 12px 12px;
+  }
+
+  .subscription-list {
+    min-height: clamp(320px, calc(100dvh - 250px), 620px);
+    margin: 0 -12px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    padding: 10px 12px;
   }
 
   .account-button {
@@ -3390,9 +3685,23 @@ a:hover {
     max-height: calc(100dvh - 20px);
   }
 
+  .subscription-modal-panel {
+    max-height: calc(100dvh - 20px);
+  }
+
   .bulk-add-input {
     margin-right: 14px;
     margin-left: 14px;
+  }
+
+  .subscription-form-body {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .subscription-form-grid,
+  .subscription-toggle-grid {
+    grid-template-columns: 1fr;
   }
 
   .bulk-add-head,

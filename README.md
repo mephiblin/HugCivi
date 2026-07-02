@@ -351,6 +351,8 @@ YouTube URL은 yt-dlp 백엔드로 처리합니다. 공개 영상 또는 본인 
 
 YouTube 저장 경로는 `/data/gallery-dl/youtube.com/` 아래에서 플레이리스트와 채널 두 갈래로 나뉩니다. `list=`가 있는 URL은 `playlist/<플레이리스트ID>`에 저장하고, 일반 영상/채널 URL은 yt-dlp 메타데이터의 채널명을 사용해 `channel/<채널명>`에 저장합니다. 채널명을 확인할 수 없으면 기존처럼 URL 기반 폴더명으로 저장합니다.
 
+왼쪽 사이드바의 `구독` 탭에서 YouTube 채널/플레이리스트를 구독으로 등록할 수 있습니다. 추가할 때 `오늘 영상부터 다운로드`, `최근 N개만`, `첫 영상부터 다운로드` 정책과 확인 간격을 고릅니다. 구독은 일반 작업 목록과 분리된 `subscription_items` 상태로 관리되며, `자동 대기열`이 켜진 항목은 독립 구독 다운로드 worker가 한 번에 하나씩 받습니다.
+
 로그인이 필요한 영상은 설정창의 YouTube/yt-dlp 인증 입력을 사용합니다.
 
 - `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.

@@ -49,6 +49,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
 | `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
+| `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
 | `app/parsers.py` | Input parsing and source routing. |
 | `app/models.py` | `ParsedDownload` model and source type definition. |
@@ -73,12 +74,14 @@ Startup performs:
 - internal job handler registration
 - external download scheduler start
 - internal job scheduler start
+- subscription check scheduler start
 - library indexer start
 
 Shutdown stops:
 
 - library indexer
 - internal job scheduler
+- subscription check scheduler
 - external download scheduler
 
 Running download subprocesses are not force-killed during ordinary app shutdown. The shutdown path prevents new scheduling and lets existing job control paths handle pause, cancel, and delete semantics.
@@ -98,6 +101,8 @@ SQLite tables created by `db.init_db()`:
 | `library_items` | DB-backed library index rows. Each row stores a serialized UI payload in `payload_json`. |
 | `library_scan_state` | Cursor/status values for incremental indexing and cached storage-usage scan state. |
 | `maintenance_runs` | WAL, checkpoint, optimize, compact, and backup run history. |
+| `subscriptions` | YouTube subscription sources and scheduling metadata. Manual `check now` and the subscription check scheduler update these rows. |
+| `subscription_items` | Discovered/queued/download state model for YouTube subscription media. Manual/scheduled discovery and the subscription download worker update these rows. |
 
 The `jobs` table is migrated additively. Current structural columns include:
 
@@ -218,6 +223,7 @@ Main API groups:
 | Group | Examples |
 | --- | --- |
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
+| YouTube subscriptions | `/api/subscriptions`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check` |
 | Settings | `/settings` |
 | Folders/library | `/api/folders`, `/api/library`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
@@ -242,6 +248,7 @@ Important invariants for future changes:
 - Symlink folders are not accepted as archive roots. ZIP preflight rejects symlinks that leave `/data`.
 - Internal jobs must not be enqueued into the external download scheduler.
 - External download jobs must keep `job_kind='download'`.
+- YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.
 - Secrets should not be returned to the UI; settings status returns configured/source metadata and blank secret values.
 - Do not run frequent `PRAGMA optimize` from hot DB paths. Keep it in maintenance or migration flows.

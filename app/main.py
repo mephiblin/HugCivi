@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -25,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 
-from . import db, internal_jobs
+from . import db, internal_jobs, subscriptions
 from .defaults import (
     DOWNLOAD_ARCHIVE_MAX_CONCURRENT_DEFAULT,
     DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS,
@@ -58,7 +59,7 @@ from .downloader import (
 )
 from .models import ParsedDownload
 from .parsers import InputParseError, parse_input
-from .utils import human_bytes, safe_join, sanitize_segment
+from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
 from .workflows import WorkflowParseError, find_workflow_png, load_workflow_view, save_workflow_bundle, workflow_max_bytes
 
 
@@ -70,6 +71,7 @@ def startup_tasks() -> None:
     register_internal_job_handlers()
     start_workers()
     internal_jobs.start_workers()
+    subscriptions.start_workers()
     start_library_indexer()
 
 
@@ -78,6 +80,8 @@ def shutdown_tasks() -> None:
         print("library indexer did not stop before shutdown timeout", flush=True)
     if not internal_jobs.stop_workers():
         print("internal job scheduler did not stop before shutdown timeout", flush=True)
+    if not subscriptions.stop_workers():
+        print("subscription check scheduler did not stop before shutdown timeout", flush=True)
     if not stop_workers():
         print("download scheduler did not stop before shutdown timeout", flush=True)
 
@@ -633,6 +637,110 @@ def api_jobs(
         return JSONResponse(jobs)
     next_cursor = jobs[-1]["id"] if len(jobs) >= max(1, min(500, limit)) else None
     return JSONResponse({"ok": True, "jobs": jobs, "next_cursor": next_cursor})
+
+
+@app.get("/api/subscriptions")
+def api_subscriptions(
+    limit: int = 100,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": True,
+            "subscriptions": subscriptions.list_subscription_payloads(limit=limit),
+            "scheduler": subscriptions.scheduler_status(),
+            "settings": subscriptions.default_settings(),
+        }
+    )
+
+
+@app.post("/api/subscriptions")
+async def api_create_subscription(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    try:
+        subscription_id = subscriptions.create_subscription(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="subscription already exists") from exc
+    subscription = subscriptions.get_subscription_payload(subscription_id)
+    return JSONResponse({"ok": True, "subscription": subscription})
+
+
+@app.get("/api/subscriptions/{subscription_id}/items")
+def api_subscription_items(
+    subscription_id: int,
+    limit: int = 500,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    subscription = subscriptions.get_subscription_payload(subscription_id)
+    if not subscription:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    return JSONResponse(
+        {
+            "ok": True,
+            "subscription": subscription,
+            "items": subscriptions.list_item_payloads(subscription_id, limit=limit),
+        }
+    )
+
+
+@app.get("/api/subscriptions/{subscription_id}")
+def api_subscription(
+    subscription_id: int,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    subscription = subscriptions.get_subscription_payload(subscription_id)
+    if not subscription:
+        raise HTTPException(status_code=404, detail="subscription not found")
+    return JSONResponse({"ok": True, "subscription": subscription})
+
+
+@app.patch("/api/subscriptions/{subscription_id}")
+async def api_update_subscription(
+    subscription_id: int,
+    request: Request,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    if not db.get_subscription(subscription_id):
+        raise HTTPException(status_code=404, detail="subscription not found")
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    try:
+        subscriptions.update_subscription(subscription_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "subscription": subscriptions.get_subscription_payload(subscription_id)})
+
+
+@app.delete("/api/subscriptions/{subscription_id}")
+def api_delete_subscription(subscription_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    if not subscriptions.delete_subscription(subscription_id):
+        raise HTTPException(status_code=404, detail="subscription not found")
+    return JSONResponse({"ok": True, "deleted": True})
+
+
+@app.post("/api/subscriptions/{subscription_id}/check")
+def api_check_subscription_now(subscription_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    try:
+        result = subscriptions.check_subscription_now(subscription_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except subscriptions.SubscriptionCheckAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=redact_sensitive_text(str(exc))) from exc
+    return JSONResponse(
+        {
+            "ok": True,
+            "result": result,
+            "subscription": subscriptions.get_subscription_payload(subscription_id),
+            "items": subscriptions.list_item_payloads(subscription_id),
+        }
+    )
 
 
 @app.get("/api/storage")

@@ -179,6 +179,7 @@ def init_db() -> None:
             )
             """
         )
+        ensure_subscription_tables(conn)
         conn.commit()
 
 
@@ -201,6 +202,100 @@ def ensure_job_columns(conn: sqlite3.Connection) -> None:
     for name, sql_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {sql_type}")
+
+
+def ensure_subscription_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL DEFAULT 'youtube',
+            kind TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            canonical_id TEXT,
+            title TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            auto_queue INTEGER NOT NULL DEFAULT 1,
+            initial_policy TEXT NOT NULL,
+            initial_limit INTEGER,
+            cutoff_published_at TEXT,
+            first_check_completed INTEGER NOT NULL DEFAULT 0,
+            check_interval_seconds INTEGER NOT NULL,
+            next_check_at TEXT,
+            last_checked_at TEXT,
+            last_success_at TEXT,
+            last_error TEXT,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            check_status TEXT NOT NULL DEFAULT 'idle',
+            last_check_started_at TEXT,
+            last_check_finished_at TEXT,
+            last_seen_provider_item_id TEXT,
+            last_seen_published_at TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscription_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subscription_id INTEGER NOT NULL,
+            provider_item_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT,
+            published_at TEXT,
+            discovered_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            policy_reason TEXT,
+            queued_at TEXT,
+            download_started_at TEXT,
+            download_finished_at TEXT,
+            target_dir TEXT,
+            filename TEXT,
+            progress_bytes INTEGER DEFAULT 0,
+            total_bytes INTEGER,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            next_attempt_at TEXT,
+            error TEXT,
+            log TEXT DEFAULT '',
+            metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(subscription_id, provider_item_id)
+        )
+        """
+    )
+    subscription_item_columns = {row["name"] for row in conn.execute("PRAGMA table_info(subscription_items)").fetchall()}
+    if "log" not in subscription_item_columns:
+        conn.execute("ALTER TABLE subscription_items ADD COLUMN log TEXT DEFAULT ''")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_provider_canonical
+        ON subscriptions(provider, kind, canonical_id)
+        WHERE canonical_id IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_due
+        ON subscriptions(enabled, next_check_at, check_status)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_subscription_items_ready
+        ON subscription_items(status, next_attempt_at, subscription_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_subscription_items_provider_item
+        ON subscription_items(provider_item_id)
+        """
+    )
 
 
 def create_job(parsed: ParsedDownload) -> int:
@@ -296,6 +391,369 @@ def is_download_job(job: dict[str, Any]) -> bool:
 
 def is_internal_job(job: dict[str, Any]) -> bool:
     return not is_download_job(job)
+
+
+def create_subscription(
+    *,
+    provider: str = "youtube",
+    kind: str,
+    source_url: str,
+    canonical_id: str | None = None,
+    title: str | None = None,
+    enabled: bool = True,
+    auto_queue: bool = True,
+    initial_policy: str = "from_now",
+    initial_limit: int | None = None,
+    cutoff_published_at: str | None = None,
+    first_check_completed: bool = False,
+    check_interval_seconds: int = 21600,
+    next_check_at: str | None = None,
+    check_status: str = "idle",
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO subscriptions (
+                provider, kind, source_url, canonical_id, title, enabled, auto_queue,
+                initial_policy, initial_limit, cutoff_published_at, first_check_completed,
+                check_interval_seconds, next_check_at, failure_count, check_status,
+                metadata_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            """,
+            (
+                provider,
+                kind,
+                redact_sensitive_text(source_url),
+                canonical_id,
+                title,
+                1 if enabled else 0,
+                1 if auto_queue else 0,
+                initial_policy,
+                initial_limit,
+                cutoff_published_at,
+                1 if first_check_completed else 0,
+                check_interval_seconds,
+                next_check_at,
+                check_status,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to create subscription")
+        return int(cur.lastrowid)
+
+
+def get_subscription(subscription_id: int) -> dict[str, Any] | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT * FROM subscriptions WHERE id = ?", (subscription_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_subscription(subscription_id: int, **fields: Any) -> None:
+    allowed = {
+        "source_url",
+        "canonical_id",
+        "title",
+        "enabled",
+        "auto_queue",
+        "initial_policy",
+        "initial_limit",
+        "cutoff_published_at",
+        "first_check_completed",
+        "check_interval_seconds",
+        "next_check_at",
+        "last_checked_at",
+        "last_success_at",
+        "last_error",
+        "failure_count",
+        "check_status",
+        "last_check_started_at",
+        "last_check_finished_at",
+        "last_seen_provider_item_id",
+        "last_seen_published_at",
+        "metadata_json",
+    }
+    clean_fields = {key: value for key, value in fields.items() if key in allowed}
+    if not clean_fields:
+        return
+    clean_fields["updated_at"] = utc_now()
+    if clean_fields.get("source_url") is not None:
+        clean_fields["source_url"] = redact_sensitive_text(str(clean_fields["source_url"]))
+    if clean_fields.get("last_error") is not None:
+        clean_fields["last_error"] = redact_sensitive_text(str(clean_fields["last_error"]))
+    keys = list(clean_fields.keys())
+    values = [clean_fields[key] for key in keys]
+    set_clause = ", ".join(f"{key} = ?" for key in keys)
+    with _DB_LOCK, connect() as conn:
+        conn.execute(f"UPDATE subscriptions SET {set_clause} WHERE id = ?", values + [subscription_id])
+        conn.commit()
+
+
+def delete_subscription(subscription_id: int) -> bool:
+    with _DB_LOCK, connect() as conn:
+        conn.execute("DELETE FROM subscription_items WHERE subscription_id = ?", (subscription_id,))
+        cur = conn.execute("DELETE FROM subscriptions WHERE id = ?", (subscription_id,))
+        conn.commit()
+        return bool(cur.rowcount)
+
+
+def list_subscriptions(limit: int = 100) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(500, int(limit)))
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM subscriptions ORDER BY id DESC LIMIT ?",
+            (safe_limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_due_subscriptions(now: str, limit: int = 1) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(50, int(limit)))
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM subscriptions
+            WHERE enabled = 1
+              AND check_status IN ('idle', 'due', 'backoff')
+              AND (next_check_at IS NULL OR next_check_at <= ?)
+            ORDER BY
+              CASE WHEN next_check_at IS NULL THEN 0 ELSE 1 END,
+              next_check_at ASC,
+              id ASC
+            LIMIT ?
+            """,
+            (now, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def recover_interrupted_subscription_checks(now: str) -> int:
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE subscriptions
+            SET check_status = 'due',
+                next_check_at = ?,
+                last_check_finished_at = ?,
+                updated_at = ?
+            WHERE check_status = 'checking'
+            """,
+            (now, now, now),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def recover_interrupted_subscription_downloads(now: str) -> int:
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE subscription_items
+            SET status = 'queued',
+                next_attempt_at = ?,
+                download_finished_at = ?,
+                error = ?,
+                updated_at = ?
+            WHERE status = 'downloading'
+            """,
+            (now, now, "Recovered interrupted subscription download.", now),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def subscription_item_counts(subscription_ids: list[int]) -> dict[int, dict[str, int]]:
+    if not subscription_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in subscription_ids)
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT subscription_id, status, COUNT(*) AS count
+            FROM subscription_items
+            WHERE subscription_id IN ({placeholders})
+            GROUP BY subscription_id, status
+            """,
+            subscription_ids,
+        ).fetchall()
+    counts: dict[int, dict[str, int]] = {}
+    for row in rows:
+        subscription_id = int(row["subscription_id"])
+        counts.setdefault(subscription_id, {})[str(row["status"])] = int(row["count"] or 0)
+    return counts
+
+
+def upsert_subscription_item(
+    *,
+    subscription_id: int,
+    provider_item_id: str,
+    url: str,
+    title: str | None = None,
+    published_at: str | None = None,
+    discovered_at: str | None = None,
+    status: str = "known",
+    policy_reason: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    now = utc_now()
+    discovered = discovered_at or now
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO subscription_items (
+                subscription_id, provider_item_id, url, title, published_at,
+                discovered_at, status, policy_reason, progress_bytes, attempt_count,
+                metadata_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+            ON CONFLICT(subscription_id, provider_item_id) DO UPDATE SET
+                url = excluded.url,
+                title = excluded.title,
+                published_at = excluded.published_at,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                subscription_id,
+                provider_item_id,
+                redact_sensitive_text(url),
+                title,
+                published_at,
+                discovered,
+                status,
+                policy_reason,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT id FROM subscription_items
+            WHERE subscription_id = ? AND provider_item_id = ?
+            """,
+            (subscription_id, provider_item_id),
+        ).fetchone()
+        conn.commit()
+    if not row:
+        raise RuntimeError("Failed to upsert subscription item")
+    return int(row["id"])
+
+
+def update_subscription_item(item_id: int, **fields: Any) -> None:
+    allowed = {
+        "url",
+        "title",
+        "published_at",
+        "status",
+        "policy_reason",
+        "queued_at",
+        "download_started_at",
+        "download_finished_at",
+        "target_dir",
+        "filename",
+        "progress_bytes",
+        "total_bytes",
+        "attempt_count",
+        "last_attempt_at",
+        "next_attempt_at",
+        "error",
+        "log",
+        "metadata_json",
+    }
+    clean_fields = {key: value for key, value in fields.items() if key in allowed}
+    if not clean_fields:
+        return
+    clean_fields["updated_at"] = utc_now()
+    if clean_fields.get("url") is not None:
+        clean_fields["url"] = redact_sensitive_text(str(clean_fields["url"]))
+    if clean_fields.get("error") is not None:
+        clean_fields["error"] = redact_sensitive_text(str(clean_fields["error"]))
+    if clean_fields.get("log") is not None:
+        clean_fields["log"] = redact_sensitive_text(str(clean_fields["log"]))
+    keys = list(clean_fields.keys())
+    values = [clean_fields[key] for key in keys]
+    set_clause = ", ".join(f"{key} = ?" for key in keys)
+    with _DB_LOCK, connect() as conn:
+        conn.execute(f"UPDATE subscription_items SET {set_clause} WHERE id = ?", values + [item_id])
+        conn.commit()
+
+
+def get_subscription_item(item_id: int) -> dict[str, Any] | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT * FROM subscription_items WHERE id = ?", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def append_subscription_item_log(item_id: int, message: str) -> None:
+    stamp = utc_now()
+    line = f"[{stamp}] {redact_sensitive_text(message)}\n"
+    max_chars = job_log_max_chars()
+    with _DB_LOCK, connect() as conn:
+        if max_chars > 0:
+            conn.execute(
+                "UPDATE subscription_items SET log = substr(COALESCE(log, '') || ?, ?), updated_at = ? WHERE id = ?",
+                (line, -max_chars, stamp, item_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE subscription_items SET log = COALESCE(log, '') || ?, updated_at = ? WHERE id = ?",
+                (line, stamp, item_id),
+            )
+        conn.commit()
+
+
+def list_ready_subscription_items(now: str, limit: int = 1, max_attempts: int = 3) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(50, int(limit)))
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                i.*,
+                s.provider AS subscription_provider,
+                s.kind AS subscription_kind,
+                s.source_url AS subscription_source_url,
+                s.canonical_id AS subscription_canonical_id,
+                s.title AS subscription_title,
+                s.enabled AS subscription_enabled,
+                s.auto_queue AS subscription_auto_queue
+            FROM subscription_items i
+            JOIN subscriptions s ON s.id = i.subscription_id
+            WHERE s.enabled = 1
+              AND s.auto_queue = 1
+              AND i.status IN ('eligible', 'queued', 'failed')
+              AND COALESCE(i.attempt_count, 0) < ?
+              AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= ?)
+            ORDER BY
+              CASE i.status WHEN 'queued' THEN 0 WHEN 'eligible' THEN 1 ELSE 2 END,
+              COALESCE(i.published_at, i.discovered_at) ASC,
+              i.id ASC
+            LIMIT ?
+            """,
+            (max_attempts, now, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_subscription_items(subscription_id: int, limit: int = 500) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(1000, int(limit)))
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM subscription_items
+            WHERE subscription_id = ?
+            ORDER BY COALESCE(published_at, discovered_at) DESC, id DESC
+            LIMIT ?
+            """,
+            (subscription_id, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_jobs(limit: int = 100) -> list[dict[str, Any]]:

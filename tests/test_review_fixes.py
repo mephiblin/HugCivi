@@ -389,7 +389,9 @@ def test_lifespan_runs_startup_tasks_and_stops_workers(
     monkeypatch.setattr(main, "cleanup_stale_media_cache", lambda: calls.append("cleanup_media"))
     monkeypatch.setattr(main, "start_workers", lambda: calls.append("start_workers"))
     monkeypatch.setattr(main.internal_jobs, "start_workers", lambda: calls.append("start_internal_workers"))
+    monkeypatch.setattr(main.subscriptions, "start_workers", lambda: calls.append("start_subscription_workers"))
     monkeypatch.setattr(main.internal_jobs, "stop_workers", lambda: calls.append("stop_internal_workers") or True)
+    monkeypatch.setattr(main.subscriptions, "stop_workers", lambda: calls.append("stop_subscription_workers") or True)
     monkeypatch.setattr(main, "start_library_indexer", lambda: calls.append("start_library_indexer"))
     monkeypatch.setattr(main, "stop_library_indexer", lambda: calls.append("stop_library_indexer") or True)
     monkeypatch.setattr(main, "stop_workers", lambda: calls.append("stop_workers") or True)
@@ -402,10 +404,16 @@ def test_lifespan_runs_startup_tasks_and_stops_workers(
             "cleanup_media",
             "start_workers",
             "start_internal_workers",
+            "start_subscription_workers",
             "start_library_indexer",
         ]
 
-    assert calls[-3:] == ["stop_library_indexer", "stop_internal_workers", "stop_workers"]
+    assert calls[-4:] == [
+        "stop_library_indexer",
+        "stop_internal_workers",
+        "stop_subscription_workers",
+        "stop_workers",
+    ]
 
 
 def test_job_list_payload_omits_log_but_detail_and_log_endpoint_keep_it(
@@ -729,6 +737,21 @@ def test_pwa_manifest_and_service_worker_are_declared(app_modules: tuple) -> Non
     assert service_worker_response.media_type == "application/javascript"
     assert service_worker_response.headers["service-worker-allowed"] == "/"
     assert service_worker_response.headers["cache-control"] == "no-cache"
+
+
+def test_home_template_declares_subscription_sidebar_ui(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    stylesheet = (main.BASE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert 'data-sidebar-tab="subscriptions"' in template
+    assert 'id="subscription-modal"' in template
+    assert 'name="initial_policy" value="from_now"' in template
+    assert 'name="initial_policy" value="full_backfill"' in template
+    assert "fetch('/api/subscriptions'" in template
+    assert "`/api/subscriptions/${encodeURIComponent(subscriptionId)}/check`" in template
+    assert ".subscription-list" in stylesheet
+    assert ".subscription-modal-panel" in stylesheet
 
 
 def png_top_left_alpha(path: Path) -> int:

@@ -41,7 +41,8 @@
 - YouTube playlist URL은 `/data/gallery-dl/youtube.com/playlist/<playlist-id>`에 저장하도록 정리했습니다.
 - 일반 YouTube 영상과 채널 URL은 yt-dlp metadata의 채널명을 사용해 `/data/gallery-dl/youtube.com/channel/<channel-name>`에 저장합니다.
 - 채널명을 확인할 수 없는 경우에는 기존 URL 기반 폴더명으로 fallback합니다.
-- [YouTube 구독 설계](docs/youtube-subscriptions-design-2026-07-02.md)를 추가해 향후 독립 구독 탭, 구독 scheduler, 구독 queue, 초기 다운로드 정책을 문서화했습니다. 이 구독 기능은 아직 구현되지 않았습니다.
+- [YouTube 구독 설계](docs/youtube-subscriptions-design-2026-07-02.md)를 추가해 향후 독립 구독 탭, 구독 scheduler, 구독 queue, 초기 다운로드 정책을 문서화했습니다.
+- YouTube 구독 Phase 1/2/3/4/5로 `subscriptions`, `subscription_items` SQLite 테이블, subscription CRUD API, 수동/예약 discovery, 왼쪽 `구독` 탭, 추가 모달, 독립 구독 다운로드 worker를 추가했습니다.
 
 ## 2026-06-30
 

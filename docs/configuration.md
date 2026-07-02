@@ -125,6 +125,27 @@ These keys can be saved in the UI and are also read from env fallback.
 | `YT_DLP_METADATA_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for yt-dlp metadata probing used to choose YouTube channel folders. |
 | `YT_DLP_SUBTITLE_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for subtitle probing. |
 
+## YouTube Subscriptions
+
+These settings affect the independent YouTube subscription discovery layer. They do not change the normal one-shot download queue.
+
+| Key | Default | Source | Notes |
+| --- | --- | --- | --- |
+| `SUBSCRIPTION_CHECK_SCHEDULER_ENABLED` | `1` | env | If false, subscriptions can still be managed and checked manually, but scheduled discovery does not run. |
+| `SUBSCRIPTION_CHECK_POLL_SECONDS` | `60` | env | Scheduler wake interval while no subscription is immediately due. |
+| `SUBSCRIPTION_STARTUP_JITTER_MIN_SECONDS` | `30` | env | Minimum startup delay before the check scheduler starts due work. |
+| `SUBSCRIPTION_STARTUP_JITTER_MAX_SECONDS` | `300` | env | Maximum startup delay before the check scheduler starts due work. |
+| `SUBSCRIPTION_DISCOVERY_TIMEOUT_SECONDS` | `90` | env | Timeout for yt-dlp flat metadata discovery used by manual and scheduled checks. |
+| `SUBSCRIPTION_DOWNLOAD_SCHEDULER_ENABLED` | `1` | env | If false, discovery still runs but eligible items are not downloaded automatically. |
+| `SUBSCRIPTION_DOWNLOAD_POLL_SECONDS` | `30` | env | Subscription download worker wake interval while no item is immediately ready. |
+| `SUBSCRIPTION_DOWNLOAD_MAX_ATTEMPTS` | `3` | env | Max automatic attempts per subscription item before it stays failed. |
+
+Current implementation status:
+
+- Scheduled checks discover videos into `subscription_items`.
+- Subscription checks do not create normal `jobs` rows.
+- If `auto_queue` is enabled, the independent subscription download worker downloads eligible items without creating normal `jobs` rows.
+
 ## Internal Jobs, Archive, Media, Index
 
 | Key | Default | Source | Notes |
