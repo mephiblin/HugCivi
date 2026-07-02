@@ -532,7 +532,7 @@ YT_DLP_EXTRA_OPTIONS
 
 `Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Proxy`는 yt-dlp에 `--proxy`로 전달되는 HTTP/HTTPS/SOCKS URL입니다. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다. 프록시는 `Extra Options` 대신 `YT_DLP_PROXY`를 사용하세요.
 
-토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장되며, 설정창을 다시 열면 평문으로 표시됩니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용됩니다.
+토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장되며, 설정창을 다시 열면 평문으로 표시됩니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용됩니다. 값을 비워 저장하면 UI 저장값은 삭제되며, 같은 이름의 환경변수가 있으면 환경변수 값으로 fallback됩니다.
 
 ## 다운로드 안전 설정
 

@@ -66,7 +66,7 @@ These keys can be saved in the UI and are also read from env fallback.
 
 ## Provider Credentials And Options
 
-The authenticated settings modal renders these credential and option values in plaintext so they can be edited during runtime. Saving the form writes UI values to SQLite, and new downloads read them without a process restart. Restrict access to the HugCivi UI and treat `/config/jobs.sqlite3` as a credential-bearing file.
+The authenticated settings modal renders these credential and option values in plaintext so they can be edited during runtime. Saving the form writes UI values to SQLite, and new downloads read them without a process restart. Submitting an empty credential field clears the UI-saved value; if an environment variable exists for the same key, the environment value remains the fallback. Restrict access to the HugCivi UI and treat `/config/jobs.sqlite3` as a credential-bearing file.
 
 | Key | Default | Source | Notes |
 | --- | --- | --- | --- |

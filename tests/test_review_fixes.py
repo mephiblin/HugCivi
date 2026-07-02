@@ -128,6 +128,30 @@ def test_settings_post_updates_runtime_auth_values(app_modules: tuple) -> None:
     assert db.get_setting("YT_DLP_FORMAT") == "best[ext=mp4]/best"
 
 
+def test_settings_post_can_clear_submitted_runtime_auth_values(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    db.set_setting("HF_TOKEN", "old-hf-token")
+    db.set_setting("YT_DLP_PROXY", "socks5://old-proxy:1080")
+    db.set_setting("GALLERY_DL_PASSWORD", "old-gallery-password")
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/settings",
+        data={
+            "hf_token": "",
+            "yt_dlp_proxy": "",
+            "yt_dlp_format": "best[ext=mp4]/best",
+        },
+        auth=("admin", "test-password-that-is-long"),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert db.get_setting("HF_TOKEN") is None
+    assert db.get_setting("YT_DLP_PROXY") is None
+    assert db.get_setting("GALLERY_DL_PASSWORD") == "old-gallery-password"
+
+
 def test_safe_join_and_relative_path_preserve_internal_symlink_itself(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     link_parent = data_root / "a"

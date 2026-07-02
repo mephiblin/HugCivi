@@ -69,7 +69,7 @@
 - 설정 모달의 API 토큰 패널을 Hugging Face/Civitai 전용에서 gallery-dl 인증까지 확장했습니다.
 - gallery-dl Username/Password, Cookies File, Browser Cookies, Extra Options 입력을 추가했습니다.
 - gallery-dl의 `Cookies`, `OAuth`, `API Key`, `Supported`, `Required` 인증 유형을 앱 설정 방식과 연결했습니다.
-- 설정 모달은 저장된 토큰, 비밀번호, cookie path, 프록시 URL, Extra Options 값을 평문으로 다시 표시합니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용됩니다.
+- 설정 모달은 저장된 토큰, 비밀번호, cookie path, 프록시 URL, Extra Options 값을 평문으로 다시 표시합니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용되며, 값을 비워 저장하면 UI 저장값을 삭제합니다.
 
 ### 대기열 관리
 

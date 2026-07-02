@@ -483,18 +483,18 @@ def bulk_input_lines(input_text: str) -> list[tuple[int, str]]:
 
 @app.post("/settings")
 def save_settings(
-    hf_token: str = Form(""),
-    civitai_token: str = Form(""),
-    gallery_dl_username: str = Form(""),
-    gallery_dl_password: str = Form(""),
-    gallery_dl_cookies_file: str = Form(""),
-    gallery_dl_cookies_from_browser: str = Form(""),
-    gallery_dl_extra_options: str = Form(""),
-    yt_dlp_cookies_file: str = Form(""),
-    yt_dlp_cookies_from_browser: str = Form(""),
-    yt_dlp_proxy: str = Form(""),
+    hf_token: str | None = Form(None),
+    civitai_token: str | None = Form(None),
+    gallery_dl_username: str | None = Form(None),
+    gallery_dl_password: str | None = Form(None),
+    gallery_dl_cookies_file: str | None = Form(None),
+    gallery_dl_cookies_from_browser: str | None = Form(None),
+    gallery_dl_extra_options: str | None = Form(None),
+    yt_dlp_cookies_file: str | None = Form(None),
+    yt_dlp_cookies_from_browser: str | None = Form(None),
+    yt_dlp_proxy: str | None = Form(None),
     yt_dlp_format: str = Form(""),
-    yt_dlp_extra_options: str = Form(""),
+    yt_dlp_extra_options: str | None = Form(None),
     library_active: str = Form("ComfyUI"),
     route_llm_root: str = Form(""),
     route_lora_root: str = Form(""),
@@ -513,11 +513,8 @@ def save_settings(
     gallery_dl_auto_update: str = Form("0"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
-    if hf_token.strip():
-        db.set_setting("HF_TOKEN", hf_token.strip())
-
-    if civitai_token.strip():
-        db.set_setting("CIVITAI_TOKEN", civitai_token.strip())
+    save_optional_setting("HF_TOKEN", hf_token)
+    save_optional_setting("CIVITAI_TOKEN", civitai_token)
 
     gallery_dl_fields = {
         "GALLERY_DL_USERNAME": gallery_dl_username,
@@ -527,8 +524,7 @@ def save_settings(
         "GALLERY_DL_EXTRA_OPTIONS": gallery_dl_extra_options,
     }
     for key, value in gallery_dl_fields.items():
-        if value.strip():
-            db.set_setting(key, value.strip())
+        save_optional_setting(key, value)
 
     yt_dlp_fields = {
         "YT_DLP_COOKIES_FILE": yt_dlp_cookies_file,
@@ -537,8 +533,7 @@ def save_settings(
         "YT_DLP_EXTRA_OPTIONS": yt_dlp_extra_options,
     }
     for key, value in yt_dlp_fields.items():
-        if value.strip():
-            db.set_setting(key, value.strip())
+        save_optional_setting(key, value)
     db.set_setting("YT_DLP_FORMAT", yt_dlp_format.strip() or YT_DLP_DEFAULT_FORMAT)
 
     db.set_setting("LIBRARY_ACTIVE", library_active.strip() or db.ROUTE_DEFAULTS["LIBRARY_ACTIVE"])
@@ -619,6 +614,16 @@ def save_settings(
     notify_queue_settings_changed()
 
     return RedirectResponse(url="/", status_code=303)
+
+
+def save_optional_setting(key: str, value: str | None) -> None:
+    if value is None:
+        return
+    stripped = value.strip()
+    if stripped:
+        db.set_setting(key, stripped)
+    else:
+        db.delete_setting(key)
 
 
 @app.post("/folders")

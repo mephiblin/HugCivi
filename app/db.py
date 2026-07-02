@@ -1584,6 +1584,12 @@ def set_setting(key: str, value: str) -> None:
         conn.commit()
 
 
+def delete_setting(key: str) -> None:
+    with _DB_LOCK, connect() as conn:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        conn.commit()
+
+
 def get_setting(key: str) -> str | None:
     with _DB_LOCK, connect() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
