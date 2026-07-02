@@ -888,6 +888,13 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'id="folder-move-modal"' in template
     assert "이동할 대상 폴더를 /data 기준 경로로 입력하세요." not in template
     assert "fetch('/api/folders'" in template
+    assert "function folderSearchScopePath()" in template
+    assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template
+    assert "return normalized ? `/data/${normalized} 내부` : '/data 전체';" in template
+    assert "path === normalizedScope || path.startsWith(`${normalizedScope}/`)" in template
+    assert "collectFolderRows().filter(item => isFolderRowInSearchScope(item, scopePath)).filter(item => (" in template
+    assert template.count("if (folderSearchInput?.value.trim()) updateFolderSearch();") == 2
+    assert "const rows = collectFolderRows();" in template
     assert ".folder-search-form" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet

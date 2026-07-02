@@ -1,6 +1,6 @@
 # HugCivi Documentation Index
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 Use this page to decide which document is authoritative for current development.
 
