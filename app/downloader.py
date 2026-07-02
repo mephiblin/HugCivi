@@ -151,6 +151,7 @@ YOUTUBE_HOSTS = {
 YOUTUBE_MANUAL_SUBTITLE_LANGS = ("ko", "en")
 YOUTUBE_AUTO_SUBTITLE_LANGS = ("en",)
 YOUTUBE_SUBTITLE_FORMAT = "vtt/srt/best"
+YOUTUBE_METADATA_PROBE_TIMEOUT_SECONDS = 45
 YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_OUTPUT_RE = re.compile(
@@ -3243,9 +3244,19 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
         raise RuntimeError("yt-dlp is not available in this container.")
 
     source_url = parsed.gallerydl_url
-    host, slug = gallery_dl_target_parts(source_url)
+    ytdlp_extra_args: list[str] | None = None
+    ytdlp_info: dict[str, Any] | None = None
+    if uses_ytdlp:
+        ytdlp_extra_args = ytdlp_direct_cmdline_args()
+        if gallery_dl_uses_youtube(source_url):
+            ytdlp_url = ytdl_inner_url(source_url) or source_url
+            if not youtube_playlist_id_from_url(urlparse(ytdlp_url)):
+                ytdlp_info = yt_dlp_metadata_info(ytdlp_url, ytdlp_extra_args)
+    target_parts = gallery_dl_target_path_parts(source_url, ytdlp_info)
+    host = target_parts[0]
+    slug = target_parts[-1]
     target_root = base_target(parsed, "gallery-dl")
-    target = safe_join(target_root, host, slug)
+    target = safe_join(target_root, *target_parts)
     target.mkdir(parents=True, exist_ok=True)
 
     db.update_job(
@@ -3265,6 +3276,8 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
             "source_url": source_url,
             "raw_input": parsed.raw_input,
             "host": host,
+            "archive_kind": target_parts[1] if len(target_parts) > 2 else None,
+            "archive_name": slug,
             "gallery_dl_version": None if uses_ytdlp else gallery_dl_version(),
             "yt_dlp_version": yt_dlp_version() if uses_ytdlp else None,
         },
@@ -3272,7 +3285,7 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
 
     try:
         if uses_ytdlp:
-            command = yt_dlp_command(source_url, target)
+            command = yt_dlp_command(source_url, target, extra_args=ytdlp_extra_args)
             log_ytdlp_start(job_id, source_url, target)
             run_ytdlp_process(job_id, command, target)
         else:
@@ -3472,7 +3485,7 @@ def gallery_dl_command(source_url: str, target: Path, filename_format: str | Non
     return command
 
 
-def yt_dlp_command(source_url: str, target: Path) -> list[str]:
+def yt_dlp_command(source_url: str, target: Path, extra_args: list[str] | None = None) -> list[str]:
     url = ytdl_inner_url(source_url) or source_url
     command = [
         sys.executable,
@@ -3498,11 +3511,11 @@ def yt_dlp_command(source_url: str, target: Path) -> list[str]:
     ytdlp_format = ytdlp_setting("YT_DLP_FORMAT") or YT_DLP_DEFAULT_FORMAT
     if ytdlp_format:
         command.extend(["--format", ytdlp_format])
-    extra_args = ytdlp_direct_cmdline_args()
-    subtitle_args = default_youtube_subtitle_cmdline_args(url, extra_args)
-    command.extend(default_ytdlp_site_cmdline_args(url, extra_args + subtitle_args))
+    configured_extra_args = list(extra_args) if extra_args is not None else ytdlp_direct_cmdline_args()
+    subtitle_args = default_youtube_subtitle_cmdline_args(url, configured_extra_args)
+    command.extend(default_ytdlp_site_cmdline_args(url, configured_extra_args + subtitle_args))
     command.extend(subtitle_args)
-    command.extend(extra_args)
+    command.extend(configured_extra_args)
     command.append(url)
     return command
 
@@ -3622,6 +3635,39 @@ def yt_dlp_subtitle_info(url: str, existing_args: list[str]) -> dict[str, Any]:
         "--no-config",
         "--skip-download",
         "--dump-single-json",
+        "--no-warnings",
+        *existing_args,
+        url,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        parsed = json.loads(completed.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def yt_dlp_metadata_info(url: str, existing_args: list[str]) -> dict[str, Any]:
+    try:
+        timeout = int(os.getenv("YT_DLP_METADATA_PROBE_TIMEOUT_SECONDS", str(YOUTUBE_METADATA_PROBE_TIMEOUT_SECONDS)))
+    except ValueError:
+        timeout = YOUTUBE_METADATA_PROBE_TIMEOUT_SECONDS
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--no-config",
+        "--skip-download",
+        "--dump-single-json",
+        "--flat-playlist",
         "--no-warnings",
         *existing_args,
         url,
@@ -3926,17 +3972,92 @@ def normalized_url_host(url: str) -> str:
     return urlparse(url).netloc.lower().removeprefix("www.")
 
 
-def gallery_dl_target_parts(source_url: str) -> tuple[str, str]:
+def gallery_dl_target_path_parts(source_url: str, info: dict[str, Any] | None = None) -> tuple[str, ...]:
     display_url = ytdl_inner_url(source_url) or source_url
     parsed_url = urlparse(display_url)
     host = sanitize_segment(canonical_gallery_host(parsed_url), "site")
+    if host == "youtube.com":
+        youtube_parts = youtube_target_path_parts(parsed_url, info)
+        if youtube_parts:
+            return (host, *youtube_parts)
     slug = sanitize_segment(youtube_slug(parsed_url) or generic_gallery_slug(parsed_url, host), "archive")
-    return host, slug
+    return (host, slug)
+
+
+def gallery_dl_target_parts(source_url: str) -> tuple[str, str]:
+    parts = gallery_dl_target_path_parts(source_url)
+    return parts[0], parts[-1]
 
 
 def canonical_gallery_host(parsed_url: Any) -> str:
     host = parsed_url.netloc.lower().removeprefix("www.")
     return "youtube.com" if host in YOUTUBE_HOSTS else host
+
+
+def gallery_dl_uses_youtube(url: str) -> bool:
+    return normalized_url_host(ytdl_inner_url(url) or url) in YOUTUBE_HOSTS
+
+
+def youtube_target_path_parts(parsed_url: Any, info: dict[str, Any] | None = None) -> tuple[str, str] | None:
+    playlist_id = youtube_playlist_id(parsed_url, info)
+    if playlist_id:
+        return "playlist", sanitize_segment(playlist_id, "playlist")
+    channel_name = youtube_channel_name(info) or youtube_channel_name_from_url(parsed_url)
+    if channel_name:
+        return "channel", sanitize_segment(channel_name, "channel")
+    return None
+
+
+def youtube_playlist_id(parsed_url: Any, info: dict[str, Any] | None = None) -> str:
+    playlist_id = youtube_playlist_id_from_url(parsed_url)
+    if playlist_id:
+        return playlist_id
+    if isinstance(info, dict):
+        for key in ("webpage_url", "original_url"):
+            value = meaningful_ytdlp_text(info.get(key))
+            if value:
+                playlist_id = youtube_playlist_id_from_url(urlparse(value))
+                if playlist_id:
+                    return playlist_id
+    return ""
+
+
+def youtube_playlist_id_from_url(parsed_url: Any) -> str:
+    if parsed_url.netloc.lower().removeprefix("www.") not in YOUTUBE_HOSTS:
+        return ""
+    for key, value in parse_qsl(parsed_url.query, keep_blank_values=False):
+        if key == "list" and value:
+            return value
+    return ""
+
+
+def youtube_channel_name(info: dict[str, Any] | None) -> str:
+    if not isinstance(info, dict):
+        return ""
+    for key in ("channel", "uploader", "creator", "playlist_uploader", "playlist_channel"):
+        value = meaningful_ytdlp_text(info.get(key))
+        if value:
+            return value
+    return ""
+
+
+def youtube_channel_name_from_url(parsed_url: Any) -> str:
+    host = parsed_url.netloc.lower().removeprefix("www.")
+    if host not in {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"}:
+        return ""
+    parts = [part for part in parsed_url.path.strip("/").split("/") if part]
+    if not parts:
+        return ""
+    if parts[0].startswith("@"):
+        return parts[0].lstrip("@")
+    if parts[0] in {"channel", "c", "user"} and len(parts) >= 2:
+        return parts[1]
+    return ""
+
+
+def meaningful_ytdlp_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if not text or text.upper() == "NA" else text
 
 
 def youtube_slug(parsed_url: Any) -> str:

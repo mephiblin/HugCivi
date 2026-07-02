@@ -29,6 +29,7 @@ The dated documents below are useful context, but code and current reference doc
 | Document | Status |
 | --- | --- |
 | [Transfer Design 2026-07-02](transfer-design-2026-07-02.md) | future design, not implemented unless code later proves otherwise. |
+| [YouTube Subscription Design 2026-07-02](youtube-subscriptions-design-2026-07-02.md) | future design, not implemented. Captures the planned independent subscription tab, scheduler, queue, and policy model. |
 | [Civitai Image Page Implementation Plan 2026-07-01](civitai-image-page-implementation-plan-2026-07-01.md) | implementation planning record. Current code/tests should be checked before using details. |
 | [Civitai Image Merge Technical Report 2026-07-01](civitai-image-merge-technical-report-2026-07-01.md) | technical report/history. |
 | [Hitomi Listing Queue Development Plan 2026-07-01](hitomi-listing-queue-development-plan-2026-07-01.md) | historical plan. Current code now supports listing URLs. |

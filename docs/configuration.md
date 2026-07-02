@@ -122,6 +122,7 @@ These keys can be saved in the UI and are also read from env fallback.
 | `HITOMI_LISTING_QUEUE_MODE` | `auto` | env/UI | `auto` or `confirm`. |
 | `HITOMI_LISTING_MAX_GALLERIES` | `500` | env | Child cap for listing discovery. |
 | `GALLERY_DL_SLEEP_REQUEST_SECONDS` | `1.5` | env | Passed into gallery-dl config. |
+| `YT_DLP_METADATA_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for yt-dlp metadata probing used to choose YouTube channel folders. |
 | `YT_DLP_SUBTITLE_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for subtitle probing. |
 
 ## Internal Jobs, Archive, Media, Index

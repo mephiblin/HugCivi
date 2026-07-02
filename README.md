@@ -349,6 +349,8 @@ yt-dlp https://www.youtube.com/playlist?list=PL...
 
 YouTube URL은 yt-dlp 백엔드로 처리합니다. 공개 영상 또는 본인 계정에 다운로드 권한이 있는 영상만 받으세요. 저작권, 서비스 약관, 지역 제한, 접근 제한을 우회하기 위한 용도로 사용하면 안 됩니다.
 
+YouTube 저장 경로는 `/data/gallery-dl/youtube.com/` 아래에서 플레이리스트와 채널 두 갈래로 나뉩니다. `list=`가 있는 URL은 `playlist/<플레이리스트ID>`에 저장하고, 일반 영상/채널 URL은 yt-dlp 메타데이터의 채널명을 사용해 `channel/<채널명>`에 저장합니다. 채널명을 확인할 수 없으면 기존처럼 URL 기반 폴더명으로 저장합니다.
+
 로그인이 필요한 영상은 설정창의 YouTube/yt-dlp 인증 입력을 사용합니다.
 
 - `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.

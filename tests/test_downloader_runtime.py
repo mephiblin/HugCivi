@@ -832,6 +832,69 @@ class DownloaderRuntimeTests(unittest.TestCase):
         gallery_run.assert_not_called()
         self.assertEqual(fake_db.job["filename"], "1 files")
 
+    def test_youtube_video_download_groups_by_channel_name(self) -> None:
+        parsed = ParsedDownload(
+            source="gallerydl",
+            raw_input="https://www.youtube.com/watch?v=abc123",
+            gallerydl_url="ytdl:https://www.youtube.com/watch?v=abc123",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            target = root / "gallery-dl" / "youtube.com" / "channel" / "테스트_채널"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_run_ytdlp_process(_job_id: int, _command: list[str], target_dir: Path) -> None:
+                self.assertEqual(target_dir, target)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "sample [abc123].mp4").write_bytes(b"video")
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "yt_dlp_available", return_value=True),
+                mock.patch.object(downloader, "yt_dlp_version", return_value="test-yt-dlp"),
+                mock.patch.object(downloader, "yt_dlp_metadata_info", return_value={"channel": "테스트 채널"}),
+                mock.patch.object(downloader, "yt_dlp_subtitle_info", return_value={}),
+                mock.patch.object(downloader, "run_ytdlp_process", side_effect=fake_run_ytdlp_process),
+            ):
+                downloader.download_gallerydl(156, parsed)
+            self.assertEqual(json.loads((target / "_archive_metadata.json").read_text())["archive_kind"], "channel")
+
+        self.assertEqual(fake_db.job["target_dir"], str(target))
+
+    def test_youtube_playlist_download_groups_by_playlist_id(self) -> None:
+        parsed = ParsedDownload(
+            source="gallerydl",
+            raw_input="https://www.youtube.com/playlist?list=PLabc123",
+            gallerydl_url="ytdl:https://www.youtube.com/playlist?list=PLabc123",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            target = root / "gallery-dl" / "youtube.com" / "playlist" / "PLabc123"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_run_ytdlp_process(_job_id: int, _command: list[str], target_dir: Path) -> None:
+                self.assertEqual(target_dir, target)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "sample [abc123].mp4").write_bytes(b"video")
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "yt_dlp_available", return_value=True),
+                mock.patch.object(downloader, "yt_dlp_version", return_value="test-yt-dlp"),
+                mock.patch.object(downloader, "yt_dlp_metadata_info") as metadata_probe,
+                mock.patch.object(downloader, "yt_dlp_subtitle_info", return_value={}),
+                mock.patch.object(downloader, "run_ytdlp_process", side_effect=fake_run_ytdlp_process),
+            ):
+                downloader.download_gallerydl(157, parsed)
+            self.assertEqual(json.loads((target / "_archive_metadata.json").read_text())["archive_kind"], "playlist")
+
+        metadata_probe.assert_not_called()
+        self.assertEqual(fake_db.job["target_dir"], str(target))
+
     def test_ytdl_download_fails_when_no_media_files_are_created(self) -> None:
         parsed = ParsedDownload(
             source="gallerydl",
