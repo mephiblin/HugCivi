@@ -21,6 +21,7 @@
 
 - Hitomi listing URL은 기존 자동 queue 외에 확인 후 선택 queue하는 `confirm` 모드를 지원합니다.
 - 미디어 viewer는 cache miss 시 transcode/poster job을 만들고 polling 후 재생/표시합니다.
+- 영상, 이미지, Civitai 이미지 페이지처럼 미디어 뷰어가 있는 라이브러리 카드는 우클릭 메뉴 없이 카드 본문 클릭으로 바로 미디어 뷰어를 엽니다.
 - 폴더 다운로드는 ZIP 준비 job을 만들고 완료 후 artifact를 다운로드합니다.
 
 ### 문서

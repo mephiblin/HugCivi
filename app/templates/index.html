@@ -1379,6 +1379,7 @@
       const card = event.target.closest('.asset-card');
       if (!isMediaArchiveCard(card) || event.target.closest('button, a, input, select, textarea')) return;
       event.preventDefault();
+      event.stopPropagation();
       openMediaViewerForCard(card);
     });
     libraryGrid.addEventListener('keydown', event => {

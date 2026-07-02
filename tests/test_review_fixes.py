@@ -829,6 +829,16 @@ def test_home_template_declares_ytdlp_proxy_setting(app_modules: tuple) -> None:
     assert 'value="{{ settings.YT_DLP_PROXY.value }}"' in template
 
 
+def test_media_archive_card_click_stays_in_viewer_flow(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'data-media-archive="${mediaArchive ? \'true\' : \'false\'}"' in template
+    assert "openMediaViewerForCard(card);" in template
+    assert "if (!isMediaArchiveCard(card) || event.target.closest('button, a, input, select, textarea')) return;" in template
+    assert "event.stopPropagation();\n      openMediaViewerForCard(card);" in template
+
+
 def test_home_template_renders_credentials_as_plain_text_values(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, _data_root, _config_root = app_modules
     template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
