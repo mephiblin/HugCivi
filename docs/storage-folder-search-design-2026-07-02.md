@@ -1,8 +1,8 @@
 # 저장 폴더 검색창 설계 2026-07-02
 
-상태: 구현됨. 현재 코드는 하단 `새 폴더` 입력 영역을 폴더 검색창으로 바꾸고, 새 폴더 생성과 이동 대상 선택을 폴더 트리 기반 팝업으로 처리한다.
+상태: 구현됨. `1cd733d`에서 하단 `새 폴더` 입력 영역을 폴더 검색창으로 바꾸고, 새 폴더 생성과 이동 대상 선택을 폴더 트리 기반 팝업으로 처리하도록 반영했다. `c4cefa6`의 구독 메인 작업 목록 UI와 함께 다시 확인했으며, 현재 코드 기준으로 두 UI는 충돌하지 않는다.
 
-이 문서는 왼쪽 `저장 폴더` 패널 하단의 현재 `새 폴더` 입력 영역을 폴더 검색창으로 바꾸는 제안이다. 사용자가 캡처에서 빨간색으로 표시한 영역은 현재 `new-folder-form`이며, `/folders` POST로 새 폴더를 생성한다.
+이 문서는 왼쪽 `저장 폴더` 패널 하단의 기존 `새 폴더` 입력 영역을 폴더 검색창으로 바꾼 구현 기준 기록이다. 사용자가 캡처에서 빨간색으로 표시한 영역은 구현 전에는 `new-folder-form`이었고, `/folders` POST로 새 폴더를 생성했다.
 
 ## 목표
 
@@ -36,7 +36,7 @@
 
 ## 이전 상태
 
-현재 UI 구조:
+구현 전 UI 구조:
 
 ```html
 <section class="folder-section" aria-label="저장 폴더">
@@ -71,9 +71,9 @@
   - `POST /api/fs/move`
   - `build_folder_tree(root, max_depth=4, max_entries=300)`
 
-현재 `build_folder_tree()`는 깊이와 개수를 제한한다. 따라서 첫 구현이 클라이언트 필터만 사용하면 "현재 로드된 폴더 트리 안에서 검색"이라는 한계가 있다.
+현재 `build_folder_tree()`는 깊이와 개수를 제한한다. 따라서 구현된 클라이언트 필터는 "현재 로드된 폴더 트리 안에서 검색"이라는 한계가 있다.
 
-현재 우클릭 메뉴의 `이동`은 다음처럼 텍스트 prompt를 사용한다.
+구현 전 우클릭 메뉴의 `이동`은 다음처럼 텍스트 prompt를 사용했다.
 
 ```text
 window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요.', '')
@@ -81,7 +81,7 @@ window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요
 
 이 방식은 경로 오타, 목적지 착각, 모바일 입력 불편이 생기기 쉬우므로 폴더 트리 선택 팝업으로 바꾼다.
 
-## 제안 UI
+## 구현 UI
 
 하단 영역을 검색 중심으로 바꾼다.
 
@@ -95,7 +95,7 @@ window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요
 [폴더] stable-diffusion/checkpoints/sd-1.5
 ```
 
-권장 배치:
+현재 배치:
 
 - 라벨은 `폴더 검색`.
 - 입력 placeholder는 현재 예시와 같은 `stable-diffusion/checkpoints`를 유지한다.
@@ -104,7 +104,7 @@ window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요
 - 검색어가 없을 때는 결과 목록을 숨기고 기존 폴더 트리만 보여준다.
 - 검색어가 있을 때는 일치하는 폴더를 트리에서 강조하거나, 하단 입력 바로 위에 작은 결과 목록을 보여준다.
 
-권장 첫 구현은 하단 검색 결과 목록이다. 기존 트리 DOM을 크게 재작성하지 않아도 되고, 검색 결과 클릭이 기존 `.folder-picker` 선택 동작과 같은 함수를 호출하면 된다.
+현재 구현은 하단 검색 결과 목록을 사용한다. 검색 결과 클릭은 `selectFolderPath(path)`를 호출해 기존 `.folder-picker` 선택 동작과 같은 상태 갱신을 공유한다.
 
 ## 상호작용
 
@@ -226,7 +226,7 @@ GET /api/folders/search?q=<query>&limit=50
 
 ## 구현 메모
 
-권장 프론트엔드 함수:
+현재 프론트엔드 함수:
 
 ```text
 selectFolderPath(path)
@@ -242,7 +242,7 @@ submitMoveToDestination(sourcePath, destinationPath)
 
 기존 `.folder-picker` click handler 안의 로직을 `selectFolderPath(path)`로 뽑으면 검색 결과 클릭과 트리 클릭이 같은 동작을 공유할 수 있다.
 
-권장 DOM:
+현재 DOM:
 
 ```html
 <form class="folder-search-form" role="search">
@@ -255,7 +255,7 @@ submitMoveToDestination(sourcePath, destinationPath)
 </form>
 ```
 
-기존 `#folder_path` id는 폴더 생성 전용 모달로 옮기거나 새 id로 바꾼다. 검색 입력을 `folder_path`로 계속 쓰면 폼 submit 의미가 혼동되기 쉽다.
+기존 `#folder_path` id는 검색 입력에서 사용하지 않는다. 검색 입력은 `folder_search`를 사용하고, 폴더 생성 모달은 `folder_create_name`으로 이름 입력 의미를 분리한다.
 
 폴더 생성 모달:
 
@@ -302,6 +302,14 @@ submitMoveToDestination(sourcePath, destinationPath)
 - `tests/test_review_fixes.py`
   - 홈 템플릿에 `folder_search`, 검색 결과 영역, `folder-create-modal`, `folder-move-modal`이 선언되는지 확인한다.
   - context menu에 `새 폴더` 액션이 선언되는지 확인한다.
+- 2026-07-02 재검토
+  - `python3 -m py_compile app/main.py app/db.py app/subscriptions.py`: 통과.
+  - Jinja JSON 상수를 대체한 인라인 `app/templates/index.html` 스크립트 `node --check`: 통과.
+  - `tests/test_review_fixes.py::test_home_template_declares_storage_folder_search_ui`, `tests/test_review_fixes.py::test_api_create_folder_creates_child_and_rejects_nested_name`, `tests/test_review_fixes.py::test_home_template_declares_subscription_sidebar_ui`: `3 passed`.
+  - `python3 -m pytest -q -p no:cacheprovider tests/test_review_fixes.py`: `41 passed`.
+  - `python3 -m pytest -q -p no:cacheprovider`: `148 passed`.
+  - `git diff --check`: 통과.
+  - `app/templates/index.html`, `app/static/style.css`, `tests/test_review_fixes.py` 기준 이전 이동 prompt 문자열 없음.
 - 브라우저 수동 확인
   - 검색어 입력 시 결과가 나온다.
   - Enter가 첫 결과를 선택한다.

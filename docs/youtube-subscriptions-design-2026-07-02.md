@@ -2,7 +2,7 @@
 
 Status: implemented MVP with Phase 1 through Phase 6 complete in current code.
 
-This document captures the implemented shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing, plus an independent subscription system. Phase 1 added subscription tables, DB helpers, default payload helpers, and subscription read APIs. Phase 2 added backend create/update/delete APIs and manual yt-dlp discovery that stores `subscription_items`. Phase 3 added the left-sidebar `구독` tab, add-subscription modal, subscription list, and manual check controls. Phase 4 added the independent subscription check scheduler with startup jitter, due checks, backoff scheduling, and restart recovery. Phase 5 added the independent subscription download worker with item progress, logs, retry backoff, and no normal `jobs` rows. Phase 6 added item-level queue/skip/retry controls and per-subscription storage readouts.
+This document captures the implemented shape for YouTube channel and playlist subscriptions in HugCivi. Current code supports one-shot YouTube and yt-dlp downloads, including channel/playlist archive folder routing, plus an independent subscription system. Phase 1 added subscription tables, DB helpers, default payload helpers, and subscription read APIs. Phase 2 added backend create/update/delete APIs and manual yt-dlp discovery that stores `subscription_items`. Phase 3 added the left-sidebar `구독` tab, add-subscription modal, subscription list, and manual check controls. Phase 4 added the independent subscription check scheduler with startup jitter, due checks, backoff scheduling, and restart recovery. Phase 5 added the independent subscription download worker with item progress, logs, retry backoff, and no normal `jobs` rows. Phase 6 added item-level queue/skip/retry controls, per-subscription storage readouts, and the main-panel `구독 작업 목록` backed by the aggregate subscription item API.
 
 ## Goal
 
@@ -343,6 +343,7 @@ Keep API shapes additive.
 ```text
 GET    /api/subscriptions
 POST   /api/subscriptions
+GET    /api/subscriptions/items
 GET    /api/subscriptions/{id}
 PATCH  /api/subscriptions/{id}
 DELETE /api/subscriptions/{id}
@@ -551,6 +552,7 @@ Phase 6: polish
 - Done: add storage readouts per subscription.
 - Done: add expandable item detail rows in the sidebar.
 - Done: add item-level queue, skip, and retry controls.
+- Done: add aggregate `GET /api/subscriptions/items` and main-panel `구독 작업 목록` with status filters.
 - Future optional: add per-subscription format/profile overrides only if needed.
 - Future optional: add import/export or backup notes if subscription state becomes operationally important.
 
@@ -593,6 +595,7 @@ UI tests:
 
 - Existing storage folder tree still renders as default.
 - Switching to `구독` tab does not mutate folder state.
+- Switching to `구독` tab changes the main work-list area to `구독 작업 목록` while keeping normal `jobs` separate.
 - Add modal enforces explicit confirmation for full backfill.
 - Subscription rows expose item controls in the sidebar.
 - Saved secret values are never returned to the browser.

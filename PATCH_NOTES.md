@@ -49,6 +49,7 @@
 - 채널명을 확인할 수 없는 경우에는 기존 URL 기반 폴더명으로 fallback합니다.
 - [YouTube 구독 설계](docs/youtube-subscriptions-design-2026-07-02.md)를 구현 기준 문서로 정리해 독립 구독 탭, 구독 scheduler, 구독 queue, 초기 다운로드 정책을 문서화했습니다.
 - YouTube 구독 Phase 1-6으로 `subscriptions`, `subscription_items` SQLite 테이블, subscription CRUD API, 수동/예약 discovery, 왼쪽 `구독` 탭, 추가 모달, 독립 구독 다운로드 worker, 항목별 queue/skip/retry 조작, 구독별 저장 용량 표시를 추가했습니다.
+- `구독` 탭이 활성화되면 메인 작업 영역이 일반 `작업 목록`에서 `구독 작업 목록`으로 전환되며, aggregate `/api/subscriptions/items` API와 상태 필터로 구독 항목을 일반 `jobs`와 분리해 확인할 수 있습니다.
 
 ## 2026-06-30
 
