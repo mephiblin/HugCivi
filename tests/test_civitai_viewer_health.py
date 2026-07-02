@@ -96,6 +96,18 @@ def test_media_list_includes_civitai_image_generation_metadata(app_modules: tupl
     assert rows[0]["has_media"] is True
 
 
+def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert "function isCivitaiImagePageJob(job)" in template
+    assert "if (isCivitaiImagePageJob(job)) return true;" in template
+    assert "value === 'civitai image page'" in template
+    assert "function openMediaViewerForCard(card)" in template
+    assert "if (!isMediaArchiveCard(card)" in template
+    assert ".asset-card[data-media-archive=\"true\"]" in template
+
+
 def test_media_list_omits_metadata_for_plain_media_folder(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "plain"

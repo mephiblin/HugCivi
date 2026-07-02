@@ -1803,11 +1803,11 @@ a:hover {
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12), 12px 12px 0 rgba(15, 23, 42, 0.06);
 }
 
-.asset-card.media-archive {
+.asset-card[data-media-archive="true"] {
   cursor: zoom-in;
 }
 
-.asset-card.media-archive:focus-visible {
+.asset-card[data-media-archive="true"]:focus-visible {
   outline: 3px solid rgba(61, 102, 232, 0.38);
   outline-offset: 3px;
 }

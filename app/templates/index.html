@@ -1173,23 +1173,17 @@
         return;
       }
 
-      const card = event.target.closest('.asset-card.media-archive');
-      if (!card || event.target.closest('button, a, input, select, textarea')) return;
+      const card = event.target.closest('.asset-card');
+      if (!isMediaArchiveCard(card) || event.target.closest('button, a, input, select, textarea')) return;
       event.preventDefault();
-      openMediaViewer({
-        path: card.dataset.path || '',
-        name: card.dataset.name || card.dataset.path || '미디어',
-      });
+      openMediaViewerForCard(card);
     });
     libraryGrid.addEventListener('keydown', event => {
       if (!['Enter', ' '].includes(event.key)) return;
-      const card = event.target.closest('.asset-card.media-archive');
-      if (!card || event.target !== card) return;
+      const card = event.target.closest('.asset-card');
+      if (!isMediaArchiveCard(card) || event.target !== card) return;
       event.preventDefault();
-      openMediaViewer({
-        path: card.dataset.path || '',
-        name: card.dataset.name || card.dataset.path || '미디어',
-      });
+      openMediaViewerForCard(card);
     });
 
     contextMenu.addEventListener('click', event => {
@@ -2556,6 +2550,18 @@
         .replace(/^\/+|\/+$/g, '');
     }
 
+    function isMediaArchiveCard(card) {
+      return card instanceof HTMLElement && card.dataset.mediaArchive === 'true';
+    }
+
+    function openMediaViewerForCard(card) {
+      if (!isMediaArchiveCard(card)) return;
+      openMediaViewer({
+        path: card.dataset.path || '',
+        name: card.dataset.name || card.dataset.path || '미디어',
+      });
+    }
+
     function showContextMenu(x, y, target) {
       contextTarget = target;
       const label = target.path ? `/data/${target.path}` : '/data';
@@ -2725,7 +2731,7 @@
         return mediaReturnFocus;
       }
       if (!mediaReturnPath) return null;
-      return Array.from(libraryGrid.querySelectorAll('.asset-card.media-archive'))
+      return Array.from(libraryGrid.querySelectorAll('.asset-card[data-media-archive="true"]'))
         .find(card => normalizePath(card.dataset.path || '') === mediaReturnPath) || null;
     }
 
