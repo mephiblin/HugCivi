@@ -203,6 +203,8 @@ Manual checks worth doing after UI or deployment changes:
 | Document | Use |
 | --- | --- |
 | `README.md` | User-facing overview, install, first use, source examples, settings, troubleshooting. |
+| `README_LLM.md` | LLM/developer entry point, reading order, handoff update timing. |
+| `AGENTS.md` | Short persistent Codex project guidance loaded before work. |
 | `docs/index.md` | Current versus historical documentation map. |
 | `docs/architecture.md` | System shape, data boundaries, schedulers, DB, API groups, invariants. |
 | `docs/configuration.md` | Environment variables, UI settings, and compose/Portainer default differences. |
@@ -210,4 +212,7 @@ Manual checks worth doing after UI or deployment changes:
 | `docs/operations.md` | NAS/Portainer operation, queue defaults, storage, backup, recovery, troubleshooting. |
 | `docs/feature-code-map.md` | Feature-to-code index for humans and LLMs. |
 | `docs/gallery-dl-auth.md` | gallery-dl support/auth reference. |
+| `docs/patch-notes/` | Date-based work history and handoff notes. |
+| `SKILL_Dev/` | Repo-local stable skills for build/release, project core, filesystem safety, DB/jobs, providers, frontend/addon, and docs handoff. |
+| `.agents/skills/hugcivi-dev-core/` | Codex auto-discovery pointer for the repo-local skill set. |
 | dated design/review docs | Historical plans and risk notes. Do not treat them as current behavior unless code confirms it. |

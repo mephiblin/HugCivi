@@ -9,11 +9,16 @@ Use this page to decide which document is authoritative for current development.
 | Document | Status | Purpose |
 | --- | --- | --- |
 | [README](../README.md) | current user entry | Product overview, install paths, first use, download input examples, troubleshooting links. |
+| [LLM README](../README_LLM.md) | current LLM/developer entry | Reading order, docs/skills routing, handoff policy, patch-note timing. |
+| [AGENTS](../AGENTS.md) | current Codex guidance | Short always-on repo instructions loaded by Codex. |
 | [Architecture](architecture.md) | current developer reference | Runtime shape, data boundaries, schedulers, DB, API groups, invariants. |
 | [Feature and Code Map](feature-code-map.md) | current developer reference | Feature-by-feature file/function/test map. Start here for code changes. |
 | [Configuration](configuration.md) | current operator/developer reference | Environment variables, UI-saved settings, compose differences. |
 | [Development](development.md) | current developer reference | Local setup, change patterns, verification commands. |
 | [Operations](operations.md) | current operator reference | NAS/Portainer behavior, backup, recovery, tuning, troubleshooting. |
+| [Developer Skill Set](../SKILL_Dev/SKILL.md) | current repo-local skill reference | Stable build, safety, DB/job, provider, frontend/addon, and docs handoff skills. |
+| [Codex Skill Pointer](../.agents/skills/hugcivi-dev-core/SKILL.md) | current Codex discovery entry | Thin auto-discovery pointer into `README_LLM.md` and `SKILL_Dev/`. |
+| [Patch Notes Guide](patch-notes/README.md) | current handoff record policy | Date-based work history format and timing. |
 | [Project Philosophy](philosophy.md) | current design reference | Project values and boundaries. |
 | [gallery-dl Authentication Notes](gallery-dl-auth.md) | snapshot reference | gallery-dl supported-site auth snapshot from 2026-06-30. |
 
@@ -32,6 +37,8 @@ The dated documents below are useful context, but code and current reference doc
 | [Remaining Structural Work Design 2026-07-01](remaining-structural-work-design-2026-07-01.md) | historical design. Some former current-state notes are superseded by async internal jobs. |
 | [Code Review Findings 2026-06-30](code-review-findings-2026-06-30.md) | historical findings, some already addressed. |
 
-## Changelog
+## Changelog And Work History
 
 [PATCH_NOTES](../PATCH_NOTES.md) is the canonical changelog. README may summarize major features, but detailed release history should live there.
+
+Date-based developer/LLM work history lives in [patch-notes](patch-notes/). Use [patch-notes/README.md](patch-notes/README.md) for the required entry format.

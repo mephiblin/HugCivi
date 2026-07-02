@@ -25,6 +25,8 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - [문서 인덱스](docs/index.md)
 - [기능별 코드 맵](docs/feature-code-map.md)
 - [구성 레퍼런스](docs/configuration.md)
+- [LLM/인수인계 README](README_LLM.md)
+- [개발 Skill 세트](SKILL_Dev/SKILL.md)
 - [프로젝트 철학](docs/philosophy.md)
 - [전송 기능 설계](docs/transfer-design-2026-07-02.md)
 
@@ -582,6 +584,8 @@ YT_DLP_EXTRA_OPTIONS=
 - [문서 인덱스](docs/index.md)
 - [기능별 코드 맵](docs/feature-code-map.md)
 - [구성 레퍼런스](docs/configuration.md)
+- [LLM/인수인계 README](README_LLM.md)
+- [개발 Skill 세트](SKILL_Dev/SKILL.md)
 - [프로젝트 철학](docs/philosophy.md)
 - [전송 기능 설계](docs/transfer-design-2026-07-02.md)
 - [gallery-dl 인증 분류](docs/gallery-dl-auth.md)

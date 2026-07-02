@@ -28,6 +28,7 @@
 - README에 현재 구조 요약과 최신 기능을 반영했습니다.
 - [아키텍처](docs/architecture.md), [운영 가이드](docs/operations.md), [개발 가이드](docs/development.md), [프로젝트 철학](docs/philosophy.md)을 추가했습니다.
 - [문서 인덱스](docs/index.md), [기능별 코드 맵](docs/feature-code-map.md), [구성 레퍼런스](docs/configuration.md)를 추가해 사람이든 LLM이든 바로 코드 위치와 설정을 찾을 수 있게 했습니다.
+- LLM/인수인계 시작점은 [README_LLM.md](README_LLM.md)에 두고, 날짜별 상세 작업 내역은 [docs/patch-notes](docs/patch-notes)에 기록하도록 정리했습니다.
 
 ### 크롬 확장
 
