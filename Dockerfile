@@ -55,6 +55,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+COPY chrome-extension ./chrome-extension
 COPY app ./app
 
 RUN mkdir -p /data /config

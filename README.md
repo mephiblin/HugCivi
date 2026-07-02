@@ -22,7 +22,11 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - [아키텍처](docs/architecture.md)
 - [운영 가이드](docs/operations.md)
 - [개발 가이드](docs/development.md)
+- [문서 인덱스](docs/index.md)
+- [기능별 코드 맵](docs/feature-code-map.md)
+- [구성 레퍼런스](docs/configuration.md)
 - [프로젝트 철학](docs/philosophy.md)
+- [전송 기능 설계](docs/transfer-design-2026-07-02.md)
 
 ## 이런 용도입니다
 
@@ -64,6 +68,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - SQLite WAL, checkpoint, optimize, compact, online backup maintenance API
 - 썸네일 블러 토글
 - 우측 하단 다운로드 대기열 표시
+- 크롬 확장으로 현재 탭 URL을 HugCivi 다운로드 큐에 전송
 - HF 토큰, Civitai 토큰, gallery-dl, YouTube/yt-dlp 인증 정보를 웹 UI에서 저장
 - 요청 간격, 재시도, 낮은 병렬도 기본값으로 rate limit 위험 완화
 - Basic Auth 로그인
@@ -256,6 +261,12 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 
 토큰과 인증 정보는 나중에 입력해도 됩니다. 공개 모델과 공개 갤러리는 인증 없이 받을 수 있는 경우도 있지만, Hugging Face 게이트 모델, Civitai 제한 모델, gallery-dl 사이트별 로그인/쿠키 요구사항, YouTube 연령/멤버십/비공개 권한 확인, 속도 제한 완화에는 인증 정보가 도움이 됩니다.
 
+## 크롬 확장
+
+편의용 크롬 확장은 [chrome-extension](chrome-extension) 폴더에 있습니다. 웹 UI 우측 상단의 `애드온` 버튼으로 zip 파일을 받을 수 있고, 로컬 개발 중에는 이 폴더를 직접 선택해도 됩니다. Chrome의 `chrome://extensions`에서 개발자 모드를 켜고 `압축해제된 확장 프로그램을 로드`로 압축을 푼 `hugcivi-chrome-extension` 폴더를 선택합니다.
+
+확장 설정에는 HugCivi 웹 UI 접속 주소, 같은 ID/PW, 선택 저장 폴더를 입력합니다. 직접 입력한 URL이나 현재 탭 URL을 기존 `/api/jobs/bulk` API로 보내며, 진행도는 `/api/jobs`에서 받아 표시합니다.
+
 ## 다운로드 입력 예시
 
 ### Hugging Face
@@ -273,20 +284,25 @@ hf download hf://datasets/bigcode/the-stack@v1.1
 ```text
 https://civitai.com/models/123456/model-name?modelVersionId=456789
 https://civitai.com/api/download/models/456789
+https://civitai.com/images/135240496
 456789
 ```
 
-숫자만 입력하면 Civitai model version ID로 처리합니다.
+숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai image URL은 이미지와 generation metadata를 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
 
 ### Hitomi
 
 ```text
 https://hitomi.la/galleries/123456.html
 https://hitomi.la/reader/123456.html
+https://hitomi.la/artist/example.html
+https://hitomi.la/search.html?...
 hitomi 123456
 ```
 
 갤러리는 `/data/hitomi/{gallery_id}-{title}` 폴더에 페이지 이미지로 저장됩니다. 저장된 폴더는 라이브러리에서 다운로드하면 ZIP으로 받을 수 있습니다.
+
+artist, tag, language, search, index 같은 listing URL은 갤러리 URL을 discovery한 뒤 설정에 따라 자동으로 child job을 추가하거나 확인 모달에서 선택 후 추가합니다.
 
 Hitomi 다운로드는 기본적으로 `gallery-dl`을 우선 백엔드로 사용합니다. 컨테이너 시작 시 `gallery-dl` 패키지만 최신 안정 버전 범위로 업그레이드할 수 있고, 실패하면 이미지에 포함된 버전으로 계속 실행합니다. `gallery-dl` 실행이 실패했을 때는 내장 Hitomi 다운로더로 한 번 더 시도합니다.
 
@@ -310,7 +326,7 @@ gdl https://example.com/gallery
 이 앱은 `gallery-dl`을 `--config-ignore`로 실행하므로 표준 gallery-dl config 파일은 자동으로 읽지 않습니다. UI 또는 환경변수의 Username/Password, Cookies File, Browser Cookies, Extra Options만 CLI 옵션으로 전달됩니다. Browser Cookies는 컨테이너에 브라우저 프로필을 별도로 마운트한 고급 구성에서만 동작하므로, 일반적인 Docker 배포에서는 Cookies File 사용을 권장합니다.
 
 2026-06-30 기준 공식 지원 목록은 358개 사이트이며, 인증 칼럼은 `none` 297개, `Supported` 32개, `Cookies` 11개, `OAuth` 10개, `API Key` 5개, `Required` 3개로 분류됩니다.
-전체 지원 사이트와 인증 분류별 목록은 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)에 정리되어 있습니다.
+전체 지원 사이트와 인증 분류별 목록은 [docs/gallery-dl-auth.md](docs/gallery-dl-auth.md)에 스냅샷 reference로 정리되어 있습니다.
 
 예:
 
@@ -563,7 +579,11 @@ YT_DLP_EXTRA_OPTIONS=
 - [아키텍처](docs/architecture.md)
 - [운영 가이드](docs/operations.md)
 - [개발 가이드](docs/development.md)
+- [문서 인덱스](docs/index.md)
+- [기능별 코드 맵](docs/feature-code-map.md)
+- [구성 레퍼런스](docs/configuration.md)
 - [프로젝트 철학](docs/philosophy.md)
+- [전송 기능 설계](docs/transfer-design-2026-07-02.md)
 - [gallery-dl 인증 분류](docs/gallery-dl-auth.md)
 - [2026-06-30 코드 검토 결과](docs/code-review-findings-2026-06-30.md)
 
@@ -597,6 +617,11 @@ Hugging Face는 Civitai처럼 모델 타입을 항상 명확히 주지 않습니
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+APP_PASSWORD=dev-password-that-is-long \
+DATA_ROOT="$PWD/data" \
+DB_PATH="$PWD/config/jobs.sqlite3" \
+DOWNLOAD_ARCHIVE_DIR="$PWD/config/downloads" \
+MEDIA_CACHE_DIR="$PWD/config/media-cache" \
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
 
@@ -606,6 +631,11 @@ Windows PowerShell에서는 가상환경 활성화 명령이 다릅니다.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+$env:APP_PASSWORD="dev-password-that-is-long"
+$env:DATA_ROOT="$PWD\data"
+$env:DB_PATH="$PWD\config\jobs.sqlite3"
+$env:DOWNLOAD_ARCHIVE_DIR="$PWD\config\downloads"
+$env:MEDIA_CACHE_DIR="$PWD\config\media-cache"
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
 
@@ -619,6 +649,15 @@ python -m pytest -q -p no:cacheprovider
 ## 패치내역
 
 자세한 변경 내용은 [PATCH_NOTES.md](PATCH_NOTES.md)에 정리되어 있습니다.
+
+### 2026-07-02
+
+- FastAPI lifespan, external download scheduler, internal ZIP/media job scheduler를 분리해 구조를 안정화했습니다.
+- 폴더 ZIP, 비디오 transcode, poster 생성을 internal job으로 처리하고 `/api/jobs` 호환 응답을 유지했습니다.
+- DB-backed 라이브러리 인덱스, storage usage 계산, DB maintenance/backup API를 추가했습니다.
+- Hitomi listing confirm UI, Civitai image resource health, media viewer polling 흐름을 반영했습니다.
+- 크롬 확장과 웹 UI `애드온` 다운로드 버튼을 추가했습니다.
+- 개발 인수인계용 문서 인덱스, 기능별 코드 맵, 구성 레퍼런스를 추가했습니다.
 
 ### 2026-06-30
 

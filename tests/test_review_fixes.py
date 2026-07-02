@@ -819,6 +819,31 @@ def test_storage_status_includes_cached_hugcivi_usage(app_modules: tuple) -> Non
     assert payload["archive_usage"]["file_count"] == 2
 
 
+def test_chrome_extension_archive_contains_loadable_folder(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    extension_dir = tmp_path / "extension"
+    extension_dir.mkdir()
+    (extension_dir / "manifest.json").write_text('{"manifest_version":3}', encoding="utf-8")
+    (extension_dir / "popup.html").write_text("<!doctype html>", encoding="utf-8")
+    (extension_dir / ".DS_Store").write_text("skip", encoding="utf-8")
+    monkeypatch.setattr(main, "CHROME_EXTENSION_DIR", extension_dir)
+
+    archive_path = main.create_chrome_extension_archive()
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+    finally:
+        main.cleanup_file(archive_path)
+
+    assert "hugcivi-chrome-extension/manifest.json" in names
+    assert "hugcivi-chrome-extension/popup.html" in names
+    assert "hugcivi-chrome-extension/.DS_Store" not in names
+
+
 def test_storage_usage_scan_counts_data_files_without_following_symlinks(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,

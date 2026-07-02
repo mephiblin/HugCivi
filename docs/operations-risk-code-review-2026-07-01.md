@@ -2,6 +2,8 @@
 
 검토일: 2026-07-01
 
+상태: historical review record. 2026-07-02 이후 구조 안정화와 internal job, DB-backed library index, maintenance API 변경이 반영되었으므로 현재 동작은 [Architecture](architecture.md), [Operations](operations.md), [Feature and Code Map](feature-code-map.md)를 우선 확인한다.
+
 요청 범위:
 
 - NAS 운용 서버에 무리를 줄 수 있는 CPU, RAM, thread, subprocess, 스토리지, SQLite 성장 리스크

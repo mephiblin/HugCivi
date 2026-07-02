@@ -27,6 +27,13 @@
 
 - README에 현재 구조 요약과 최신 기능을 반영했습니다.
 - [아키텍처](docs/architecture.md), [운영 가이드](docs/operations.md), [개발 가이드](docs/development.md), [프로젝트 철학](docs/philosophy.md)을 추가했습니다.
+- [문서 인덱스](docs/index.md), [기능별 코드 맵](docs/feature-code-map.md), [구성 레퍼런스](docs/configuration.md)를 추가해 사람이든 LLM이든 바로 코드 위치와 설정을 찾을 수 있게 했습니다.
+
+### 크롬 확장
+
+- 현재 탭 URL이나 직접 입력한 URL을 HugCivi 서버의 `/api/jobs/bulk`로 보내는 Manifest V3 편의 확장을 추가했습니다.
+- 웹 UI 우측 상단 용량 표시 옆에 `애드온` 버튼을 추가하고, `/api/addon/chrome-extension`에서 설치용 zip을 받을 수 있게 했습니다.
+- Docker 이미지가 `chrome-extension/` 폴더를 포함하도록 빌드 구성을 갱신했습니다.
 
 ## 2026-06-30
 

@@ -102,6 +102,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/config/media-cache"))
+CHROME_EXTENSION_DIR = Path(os.getenv("HUGCIVI_CHROME_EXTENSION_DIR", str(BASE_DIR.parent / "chrome-extension")))
 STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PATH.parent / "startup.env")))
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -643,6 +644,17 @@ def api_storage(_: str = Depends(require_auth)) -> JSONResponse:
 def api_start_storage_archive_usage(_: str = Depends(require_auth)) -> JSONResponse:
     start_storage_usage_scan()
     return JSONResponse({"ok": True, "storage": storage_status()})
+
+
+@app.get("/api/addon/chrome-extension")
+def api_chrome_extension_addon(_: str = Depends(require_auth)) -> FileResponse:
+    archive_path = create_chrome_extension_archive()
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename="hugcivi-chrome-extension.zip",
+        background=BackgroundTask(cleanup_file, archive_path),
+    )
 
 
 @app.post("/api/maintenance/db/wal")
@@ -3201,6 +3213,34 @@ def create_zip_archive(source: Path, *, job_id: int | None = None) -> Path:
         cleanup_file(archive_path)
         raise
     return archive_path
+
+
+def create_chrome_extension_archive() -> Path:
+    source = CHROME_EXTENSION_DIR
+    if not source.exists() or not source.is_dir():
+        raise HTTPException(status_code=404, detail="chrome extension not found")
+    if not (source / "manifest.json").is_file():
+        raise HTTPException(status_code=404, detail="chrome extension manifest not found")
+
+    fd, temp_name = tempfile.mkstemp(prefix="hugcivi-chrome-extension-", suffix=".zip")
+    os.close(fd)
+    archive_path = Path(temp_name)
+    try:
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in sorted(source.rglob("*")):
+                if not file.is_file() or should_skip_addon_file(file):
+                    continue
+                relative = file.relative_to(source).as_posix()
+                archive.write(file, f"hugcivi-chrome-extension/{relative}")
+    except Exception:
+        cleanup_file(archive_path)
+        raise
+    return archive_path
+
+
+def should_skip_addon_file(path: Path) -> bool:
+    ignored_parts = {"__pycache__", ".DS_Store", "Thumbs.db"}
+    return any(part in ignored_parts for part in path.parts)
 
 
 def cleanup_file(path: Path) -> None:

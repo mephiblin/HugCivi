@@ -17,9 +17,11 @@ pip install -r requirements-dev.txt
 Run the app locally:
 
 ```bash
-APP_PASSWORD=dev-password \
+APP_PASSWORD=dev-password-that-is-long \
 DATA_ROOT="$PWD/data" \
 DB_PATH="$PWD/config/jobs.sqlite3" \
+DOWNLOAD_ARCHIVE_DIR="$PWD/config/downloads" \
+MEDIA_CACHE_DIR="$PWD/config/media-cache" \
 uvicorn app.main:app --host 0.0.0.0 --port 8088 --reload
 ```
 
@@ -27,7 +29,7 @@ For Docker-based local development:
 
 ```bash
 mkdir -p data config
-APP_PASSWORD=dev-password docker compose up -d --build
+APP_PASSWORD=dev-password-that-is-long docker compose up -d --build
 ```
 
 Do not use the development DB for production data unless you intentionally bind the same `/data` and `/config` paths.
@@ -38,6 +40,7 @@ Do not use the development DB for production data unless you intentionally bind 
 app/
   main.py            FastAPI routes, lifespan, UI integration, local file/media/internal job handlers
   db.py              SQLite schema, job/settings/favorites/notes/index/maintenance persistence
+  defaults.py        Shared defaults for queues, archive, media, scan, and log limits
   downloader.py      External download scheduler and source handlers
   internal_jobs.py   Internal job scheduler for ZIP/transcode/poster work
   parsers.py         Input parsing and source routing
@@ -45,18 +48,26 @@ app/
   metadata.py        Hugging Face and Civitai classification helpers
   workflows.py       ComfyUI workflow extraction and viewer helpers
   utils.py           Shared safety helpers
+  ytdlp_sites.py     Host preference list for yt-dlp routing
   templates/         Jinja HTML shell with client-side app logic
   static/            CSS, PWA manifest, service worker, icons
+chrome-extension/    Manifest V3 extension and installable addon package
 tests/               Pytest coverage for parsers, queue/runtime, APIs, media, library, and safety fixes
 docs/                Design, operation, review, and reference documents
 ```
+
+When you do not know where to start, use [Feature and Code Map](feature-code-map.md). It maps product features to backend files, frontend functions, data tables/artifacts, and tests.
 
 ## Verification Commands
 
 Fast checks:
 
 ```bash
-python -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py
+python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py
+node --check chrome-extension/shared.js
+node --check chrome-extension/background.js
+node --check chrome-extension/popup.js
+node -e "JSON.parse(require('fs').readFileSync('chrome-extension/manifest.json','utf8'))"
 git diff --check
 ```
 
@@ -170,6 +181,19 @@ Keep these flows aligned:
 - library cards and favorites/notes
 
 The UI should reflect background work as pending/running/done rather than blocking on a long HTTP request.
+
+## Chrome Extension Notes
+
+The extension in `chrome-extension/` is a convenience remote, not a replacement for the web UI.
+
+Key files:
+
+- `manifest.json`: MV3 metadata, permissions, icons, and `Alt+Shift+H` command.
+- `shared.js`: settings normalization, Basic Auth, `/api/jobs/bulk`, `/api/jobs`, progress helpers.
+- `background.js`: command handling, active tab URL submission, notifications and badge state.
+- `popup.html`, `popup.css`, `popup.js`: settings, typed/current-tab submission, and recent job progress.
+
+The web UI exposes the package through `/api/addon/chrome-extension` and the top-right `애드온` button. The Docker image includes `chrome-extension/`; if the package disappears in production, check the Dockerfile copy step and `HUGCIVI_CHROME_EXTENSION_DIR`.
 
 ## Testing Focus
 

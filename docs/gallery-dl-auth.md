@@ -4,6 +4,8 @@ Source: https://github.com/mikf/gallery-dl/blob/master/docs/supportedsites.md
 
 Checked: 2026-06-30
 
+Status: snapshot reference. The container can auto-update `gallery-dl` at startup, so the live supported-site list may differ from this checked snapshot.
+
 The official `gallery-dl` supported-sites table says to consider all listed sites potentially NSFW.
 
 Total supported sites listed: 358

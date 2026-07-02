@@ -2,6 +2,8 @@
 
 작성일: 2026-07-01
 
+상태: historical remediation record. 2026-07-02 현재 주요 구현 결과는 코드와 [Architecture](architecture.md), [Operations](operations.md), [Feature and Code Map](feature-code-map.md)에 반영되어 있다.
+
 기준 문서:
 
 - `docs/operations-risk-code-review-2026-07-01.md`

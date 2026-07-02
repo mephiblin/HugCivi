@@ -875,8 +875,12 @@ a:hover {
   color: #991b1b;
 }
 
-.storage-calc-button {
+.storage-calc-button,
+.addon-button {
+  display: inline-flex;
   height: 32px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid #d8dee8;
   border-radius: 999px;
   padding: 0 10px;
@@ -886,13 +890,16 @@ a:hover {
   font-size: 12px;
   font-weight: 800;
   line-height: 1;
+  text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.storage-calc-button:hover {
+.storage-calc-button:hover,
+.addon-button:hover {
   border-color: #b8c2d2;
   background: #ffffff;
+  text-decoration: none;
 }
 
 .storage-calc-button:disabled {
@@ -3326,7 +3333,7 @@ a:hover {
   }
 
   .storage-readout {
-    max-width: calc(100vw - 166px);
+    max-width: calc(100vw - 226px);
     padding: 0 8px;
   }
 
@@ -3335,6 +3342,11 @@ a:hover {
     padding: 0;
     overflow: hidden;
     text-overflow: clip;
+  }
+
+  .addon-button {
+    width: 50px;
+    padding: 0;
   }
 
   .storage-readout span:last-child {

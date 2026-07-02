@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HugCivi Remote</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="icons/hugcivi.svg" alt="">
+        <div>
+          <h1>HugCivi</h1>
+          <span>Remote</span>
+        </div>
+      </div>
+      <button id="open-server" class="icon-button" type="button" title="서버 열기" aria-label="서버 열기">↗</button>
+    </header>
+
+    <section class="panel">
+      <div class="field">
+        <label for="server-url">서버 주소</label>
+        <input id="server-url" type="url" inputmode="url" placeholder="http://192.168.0.10:8088" autocomplete="url">
+      </div>
+
+      <div class="split">
+        <div class="field">
+          <label for="username">ID</label>
+          <input id="username" type="text" autocomplete="username">
+        </div>
+        <div class="field">
+          <label for="password">PW</label>
+          <input id="password" type="password" autocomplete="current-password">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="target-subdir">저장 폴더</label>
+        <input id="target-subdir" type="text" placeholder="비워두면 자동 분류">
+      </div>
+
+      <div class="button-row">
+        <button id="save-settings" type="button">저장</button>
+        <button id="test-connection" type="button">연결 확인</button>
+        <button id="open-shortcuts" type="button">단축키</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="field">
+        <label for="download-input">다운로드 입력</label>
+        <textarea id="download-input" rows="3" spellcheck="false" placeholder="https://civitai.com/models/..."></textarea>
+      </div>
+
+      <div class="button-row request-row">
+        <button id="use-current-tab" type="button">현재 탭</button>
+        <button id="send-current-tab" type="button">현재 탭 요청</button>
+        <button id="submit-input" class="primary" type="button">요청</button>
+      </div>
+    </section>
+
+    <section class="panel progress-panel">
+      <div class="section-head">
+        <h2>작업 진행도</h2>
+        <button id="refresh-jobs" class="icon-button" type="button" title="새로고침" aria-label="새로고침">↻</button>
+      </div>
+
+      <div class="overview">
+        <div class="overview-line">
+          <strong id="overall-label">-</strong>
+          <span id="overall-percent">-</span>
+        </div>
+        <div id="overall-bar" class="progress-bar">
+          <span></span>
+        </div>
+        <div id="job-counts" class="counts"></div>
+      </div>
+
+      <div id="activity" class="activity" hidden></div>
+      <div id="jobs-list" class="jobs-list"></div>
+    </section>
+
+    <div id="status" class="status-line" role="status" aria-live="polite"></div>
+  </main>
+
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

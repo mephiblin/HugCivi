@@ -2,6 +2,8 @@
 
 작성일: 2026-07-01
 
+상태: historical technical report. 현재 Civitai image 구현은 HugCivi 코드에 병합되어 있으므로 이 문서는 병합 판단과 배경 기록으로만 사용한다.
+
 검토 소스:
 
 - `/home/inri/문서/CivitaiOfflineSaver_restored`

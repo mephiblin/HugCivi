@@ -150,6 +150,8 @@ The top storage readout always includes `/data` volume usage from the filesystem
 
 The `계산` button starts a manual background scan of `/data` and caches the HugCivi archive usage in SQLite. The UI reads the cached value; it does not recursively scan `/data` on every refresh.
 
+The `애드온` button next to the storage readout downloads the Chrome extension package from `/api/addon/chrome-extension`. The package is generated from the bundled `chrome-extension/` directory and is Basic Auth protected like the rest of the UI.
+
 NAS-safe scan controls:
 
 ```text
@@ -248,3 +250,9 @@ Portainer pull failure:
 - confirm `HUGCIVI_IMAGE`
 - confirm GHCR package visibility or registry authentication
 - redeploy after Portainer registry credentials are fixed
+
+Addon button returns 404:
+
+- confirm the running image includes `chrome-extension/`
+- confirm `HUGCIVI_CHROME_EXTENSION_DIR` was not pointed at a missing path
+- rebuild/redeploy the image if the extension was added after the current image was built

@@ -2,6 +2,8 @@
 
 작성일: 2026-07-01
 
+상태: historical implementation plan. 현재 코드는 Civitai image URL 저장, generation metadata 표시, resource child job, resource health 흐름을 포함한다. 변경 전 [Feature and Code Map](feature-code-map.md)의 Civitai 항목을 먼저 확인한다.
+
 대상 프로젝트: HugCivi
 
 참고 프로젝트: `/home/inri/문서/CivitaiOfflineSaver_restored`

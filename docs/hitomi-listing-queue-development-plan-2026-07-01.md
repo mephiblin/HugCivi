@@ -2,6 +2,8 @@
 
 Date: 2026-07-01
 
+Status: historical implementation plan. Current code supports Hitomi listing discovery with `auto` and `confirm` queue modes; use [Feature and Code Map](feature-code-map.md) before changing the implementation.
+
 ## Goal
 
 Allow a user to paste a Hitomi artist/tag/search/index listing URL into the existing HugCivi frontend and have the backend enqueue every matching gallery as individual Hitomi gallery download jobs.
