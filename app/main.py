@@ -117,6 +117,7 @@ INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-passwor
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt"}
+YTDLP_INFO_SUFFIX = ".info.json"
 SUBTITLE_LANGUAGE_LABELS = {
     "ko": "한국어",
     "en": "English",
@@ -1615,6 +1616,7 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     favorite_paths = favorites if favorites is not None else db.favorite_paths()
     job["favorite"] = bool(target_path and target_path in favorite_paths)
     job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
+    job["model_title"] = display_model_title_for_job(job)
     return job
 
 
@@ -1903,11 +1905,24 @@ def is_subtitle_file(path: Path) -> bool:
     return path.suffix.lower() in SUBTITLE_EXTENSIONS
 
 
+def display_model_title_for_job(job: dict[str, Any]) -> str:
+    current_title = str(job.get("model_title") or "")
+    if str(job.get("source") or "") != "gallerydl" or str(job.get("status") or "") != "done":
+        return current_title
+    target_dir = str(job.get("target_dir") or "").strip()
+    if not target_dir:
+        return current_title
+    title = ytdlp_single_media_title(Path(target_dir))
+    return title or current_title
+
+
 def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
     metadata = archive_metadata(path)
     media_files = media_files_for_path(path, limit=1, max_scan_files=media_file_scan_max_files())
     first_media = media_files[0] if media_files else None
     media_count = media_file_count(path, max_scan_files=media_file_scan_max_files())
+    if first_media and media_count == 1:
+        metadata = metadata_with_ytdlp_media_info(metadata, first_media)
     relative_path = relative_data_path(path)
     stat = path.stat()
     size = path_size(path, max_items=library_item_size_scan_max_files())
@@ -1958,6 +1973,75 @@ def library_item_title(path: Path, metadata: dict[str, Any]) -> str:
         if value:
             return str(value)
     return path.stem if path.is_file() else path.name
+
+
+def metadata_with_ytdlp_media_info(metadata: dict[str, Any], media_path: Path) -> dict[str, Any]:
+    info = ytdlp_info_for_media(media_path)
+    if not info:
+        return metadata
+    enriched = dict(metadata)
+    if not enriched.get("title"):
+        title = meaningful_metadata_text(info.get("title") or info.get("fulltitle"))
+        if title:
+            enriched["title"] = title
+    if not is_http_url(str(enriched.get("source_url") or "")):
+        source_url = meaningful_metadata_text(info.get("webpage_url") or info.get("original_url"))
+        if is_http_url(source_url):
+            enriched["source_url"] = source_url
+    return enriched
+
+
+def ytdlp_single_media_title(path: Path) -> str:
+    media_file = single_media_file_for_title(path, max_scan_files=media_file_scan_max_files())
+    if media_file is None:
+        return ""
+    info = ytdlp_info_for_media(media_file)
+    return meaningful_metadata_text(info.get("title") or info.get("fulltitle"))
+
+
+def single_media_file_for_title(path: Path, *, max_scan_files: int) -> Path | None:
+    if path.is_file():
+        return path if is_media_file(path) else None
+    found: Path | None = None
+    scanned = 0
+    try:
+        for item in path.rglob("*"):
+            if max_scan_files > 0 and scanned >= max_scan_files:
+                return None
+            scanned += 1
+            if not item.is_file() or item.is_symlink() or not is_media_file(item):
+                continue
+            if found is not None:
+                return None
+            found = item
+    except OSError:
+        return None
+    return found
+
+
+def ytdlp_info_for_media(media_path: Path) -> dict[str, Any]:
+    candidates: list[Path] = []
+    expected = media_path.with_suffix(YTDLP_INFO_SUFFIX)
+    if expected.exists():
+        candidates.append(expected)
+    else:
+        try:
+            candidates.extend(sorted(media_path.parent.glob(f"*{YTDLP_INFO_SUFFIX}"), key=natural_path_key))
+        except OSError:
+            return {}
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def meaningful_metadata_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if not text or text.upper() == "NA" else text
 
 
 def library_item_category(path: Path, metadata: dict[str, Any], first_media: Path | None) -> str:

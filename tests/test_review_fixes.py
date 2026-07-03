@@ -1109,6 +1109,69 @@ def test_library_items_skip_empty_archive_metadata_folder(app_modules: tuple) ->
     assert rows == []
 
 
+def test_library_items_use_ytdlp_info_title_for_single_video_archive(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "gallery-dl" / "youtube.com" / "video-abc123"
+    target.mkdir(parents=True)
+    (target / "_archive_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "gallery-dl",
+                "source_url": "ytdl:https://www.youtube.com/watch?v=abc123",
+                "raw_input": "https://www.youtube.com/watch?v=abc123",
+                "host": "youtube.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (target / "Actual Video [abc123].mp4").write_bytes(b"video")
+    (target / "Actual Video [abc123].info.json").write_text(
+        json.dumps(
+            {
+                "title": "Actual Video Title",
+                "webpage_url": "https://www.youtube.com/watch?v=abc123",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = [row for row in main.library_items() if row.get("target_path") == "gallery-dl/youtube.com/video-abc123"]
+
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Actual Video Title"
+    assert rows[0]["source_url"] == "https://www.youtube.com/watch?v=abc123"
+
+
+def test_decorated_gallerydl_job_uses_ytdlp_info_title_for_single_video(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "gallery-dl" / "youtube.com" / "video-abc123"
+    target.mkdir(parents=True)
+    (target / "Actual Video [abc123].mp4").write_bytes(b"video")
+    (target / "Actual Video [abc123].info.json").write_text(
+        json.dumps({"title": "Actual Video Title"}),
+        encoding="utf-8",
+    )
+    parsed = ParsedDownload(
+        source="gallerydl",
+        raw_input="https://www.youtube.com/watch?v=abc123",
+        gallerydl_url="ytdl:https://www.youtube.com/watch?v=abc123",
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(
+        job_id,
+        status="done",
+        target_dir=str(target),
+        model_title="video-abc123",
+        model_category="gallery-dl",
+        model_type="youtube.com",
+    )
+
+    rows = main.decorate_jobs(db.list_jobs())
+
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Actual Video Title"
+
+
 def test_existing_data_path_preserves_downloaded_media_filename_punctuation(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "gallery-dl" / "youtube.com" / "video-XlFu9nJCA1A"
