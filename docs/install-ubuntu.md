@@ -1,6 +1,6 @@
 # HugCivi Ubuntu Install Guide
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This guide installs HugCivi on an Ubuntu server with Docker Engine and Docker Compose V2. It is intended for a home server, NAS-like Ubuntu box, or development PC used as a long-running archive host.
 
@@ -142,6 +142,8 @@ If only browser traffic works and HugCivi's yt-dlp downloads fail with connectio
 ```text
 YT_DLP_PROXY=socks5://192.168.200.100:1080
 ```
+
+That example matches the `tazihad/byedpi` SOCKS5 proxy container found on the current Docker host. On a different server, replace `192.168.200.100` with the host LAN IP that publishes the proxy. See [ByeDPI SOCKS5 Proxy Guide](byedpi-socks-proxy.md) for the Portainer stack and Docker CLI install examples.
 
 Then restart:
 

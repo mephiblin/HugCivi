@@ -14,7 +14,7 @@
 - `UbuntuPortainer설명서.md`와 `CasaOs설명서.md` 앞부분에 대상 시스템, 접속 방식, 데이터 경로, 포트, 비밀번호, 이미지 태그를 먼저 확인하는 작동 프롬프트를 추가했습니다.
 - 읽기 전용 점검 승인과 설치/변경 승인을 분리해, 사용자가 명시적으로 허가하기 전에는 Docker/Portainer 설치, Stack 배포, `docker pull`, 폴더 생성, 권한 변경, 삭제 작업을 하지 않도록 문서화했습니다.
 - CasaOS 문서는 Portainer가 없을 때 CasaOS Custom Install/Compose fallback과 Portainer 설치 중 무엇을 원하는지 먼저 묻도록 했고, Ubuntu Portainer 문서는 Docker/Portainer 설치까지 진행할지 별도 확인하도록 했습니다.
-- 현재 Docker 호스트에서 발견된 `tazihad/byedpi` SOCKS5 프록시 컨테이너 재설치 방법과 HugCivi `YT_DLP_PROXY=socks5://192.168.200.100:1080` 적용 방법을 [ByeDPI SOCKS5 프록시 가이드](docs/byedpi-socks-proxy.md)에 추가했습니다.
+- 현재 Docker 호스트에서 발견된 `tazihad/byedpi` SOCKS5 프록시 컨테이너 재설치 방법과 HugCivi `YT_DLP_PROXY=socks5://192.168.200.100:1080` 적용 방법을 [ByeDPI SOCKS5 프록시 가이드](docs/byedpi-socks-proxy.md)에 추가하고, Ubuntu/CasaOS 설치 문서의 proxy notes에서도 해당 가이드를 연결했습니다.
 
 ### ASMR.one
 

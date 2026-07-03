@@ -1,6 +1,6 @@
 # HugCivi CasaOS Install Guide
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This guide is for installing HugCivi on a CasaOS host. CasaOS runs Docker apps under the hood, so the durable data rules are the same as the normal Docker deployment:
 
@@ -103,6 +103,8 @@ If only the browser works but HugCivi downloads from yt-dlp-backed sites fail wi
 ```text
 YT_DLP_PROXY=socks5://192.168.200.100:1080
 ```
+
+That example matches the `tazihad/byedpi` SOCKS5 proxy container found on the current Docker host. On another CasaOS server, replace `192.168.200.100` with the host LAN IP that publishes the proxy. See [ByeDPI SOCKS5 Proxy Guide](byedpi-socks-proxy.md) for the Portainer stack and Docker CLI install examples.
 
 `YT_DLP_PROXY` only affects yt-dlp-backed sources and probes, such as YouTube and preferred video hosts. It does not proxy Hugging Face, Civitai, generic HTTP downloads, native Hitomi requests, or internal ZIP/transcode/poster jobs.
 
