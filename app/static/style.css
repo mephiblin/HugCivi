@@ -2890,6 +2890,10 @@ a:hover {
   background: #000000;
 }
 
+.media-display.audio-active {
+  padding: clamp(64px, 8vh, 92px) clamp(28px, 5vw, 80px) 28px;
+}
+
 .media-image,
 .media-video {
   display: block;
@@ -2935,6 +2939,35 @@ a:hover {
   color: #ffffff;
   background: rgba(0, 0, 0, 0.72);
   font-size: 92%;
+}
+
+.media-audio-panel {
+  display: grid;
+  width: min(680px, 100%);
+  gap: 22px;
+  justify-items: center;
+  padding: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.36);
+}
+
+.media-audio-icon {
+  display: grid;
+  width: 82px;
+  height: 82px;
+  place-items: center;
+  border-radius: 50%;
+  background: #f4f1ea;
+  color: #141414;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.media-audio {
+  width: min(520px, 100%);
 }
 
 .media-player-controls {

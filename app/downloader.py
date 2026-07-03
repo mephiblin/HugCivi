@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlparse, urlunparse, unquote
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse, unquote
 
 import requests
 
@@ -46,6 +46,7 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
+ASMRONE_API_BASE = os.getenv("ASMRONE_API_BASE", "https://api.asmr.one/api").rstrip("/")
 HF_DEFAULT_SNAPSHOT_WORKERS = 2
 HF_DOWNLOAD_SUBCOMMAND = "huggingface-download"
 HF_RESULT_PREFIX = "HUGCIVI_HF_RESULT_JSON:"
@@ -762,6 +763,8 @@ def run_job(job_id: int) -> None:
         download_generic(job_id, parsed)
     elif parsed.source == "comfyui":
         download_comfyui(job_id, parsed)
+    elif parsed.source == "asmrone":
+        download_asmrone(job_id, parsed)
     elif parsed.source == "hitomi":
         download_hitomi(job_id, parsed)
     elif parsed.source == "gallerydl":
@@ -1079,6 +1082,8 @@ def provider_key_for_parsed(parsed: ParsedDownload) -> str:
         return "civitai"
     if parsed.source == "hitomi":
         return "hitomi"
+    if parsed.source == "asmrone":
+        return "asmrone"
     if parsed.source == "gallerydl":
         return provider_key_from_url("gallerydl", parsed.gallerydl_url)
     if parsed.source == "generic":
@@ -2632,6 +2637,254 @@ def download_generic(job_id: int, parsed: ParsedDownload) -> None:
     )
     saved = stream_download(job_id, session, parsed.url, target)
     db.update_job(job_id, filename=saved.name)
+
+
+def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
+    if not parsed.asmrone_work_id:
+        raise ValueError("ASMR.one work ID가 없습니다.")
+
+    source_url = parsed.asmrone_url or parsed.raw_input
+    source_id = parsed.asmrone_source_id or f"RJ{parsed.asmrone_work_id}"
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    if source_url:
+        session.headers["Referer"] = source_url
+
+    db.append_log(job_id, f"ASMR.one manifest start: source={redact_sensitive_text(source_url)}")
+    work = fetch_json_value(session, f"{ASMRONE_API_BASE}/work/{quote(parsed.asmrone_work_id)}", job_id)
+    if not isinstance(work, dict):
+        raise RuntimeError("ASMR.one work API did not return an object.")
+    tracks = fetch_json_value(session, f"{ASMRONE_API_BASE}/tracks/{quote(parsed.asmrone_work_id)}?v=2", job_id)
+    if not isinstance(tracks, list):
+        raise RuntimeError("ASMR.one tracks API did not return a list.")
+
+    source_id = str(work.get("source_id") or source_id)
+    title = str(work.get("title") or source_id)
+    target_name = sanitize_segment(f"{source_id} - {title}", source_id)
+    target = base_target(parsed, "asmr.one", target_name)
+    target.mkdir(parents=True, exist_ok=True)
+    db.update_job(
+        job_id,
+        target_dir=str(target),
+        model_category="ASMR.one Work",
+        model_title=title,
+        filename="manifest",
+    )
+
+    entries = asmrone_manifest_entries(tracks, source_id=source_id)
+    downloadable_count = sum(1 for item in entries if item.get("_media_download_url"))
+    total_size = sum(int(item.get("size") or 0) for item in entries)
+    db.update_job(
+        job_id,
+        filename=f"0/{downloadable_count} files",
+        total_bytes=total_size or None,
+        progress_bytes=0,
+        precision=f"{downloadable_count} files",
+        file_format="audio",
+    )
+
+    saved_files: list[Path] = []
+    downloaded_bytes = 0
+    for entry_index, entry in enumerate(entries, start=1):
+        media_download_url = str(entry.pop("_media_download_url", "") or "")
+        local_parts = [str(part) for part in entry.pop("_local_parts", []) if str(part)]
+        if not media_download_url:
+            entry["download_status"] = "skipped_no_download_url"
+            continue
+        if not local_parts:
+            local_parts = [sanitize_segment(str(entry.get("name") or f"{entry_index:03d}.bin"), f"{entry_index:03d}.bin")]
+
+        download_url = asmrone_download_action_url(media_download_url)
+        file_target = safe_join(target, *local_parts[:-1]) if len(local_parts) > 1 else target
+        filename = local_parts[-1]
+        db.append_log(job_id, f"ASMR.one file {len(saved_files) + 1}/{downloadable_count}: {entry.get('local_path') or filename}")
+        saved = stream_download(
+            job_id,
+            session,
+            download_url,
+            file_target,
+            filename_override=filename,
+            progress_base=downloaded_bytes,
+            progress_total=total_size or None,
+        )
+        saved_files.append(saved)
+        saved_size = saved.stat().st_size
+        downloaded_bytes += saved_size
+        entry["download_status"] = "downloaded"
+        entry["downloaded_size"] = saved_size
+        entry["downloaded_size_human"] = human_bytes(saved_size)
+        db.update_job(
+            job_id,
+            filename=f"{len(saved_files)}/{downloadable_count} files",
+            progress_bytes=downloaded_bytes,
+            total_bytes=total_size or downloaded_bytes,
+        )
+
+    if downloadable_count == 0:
+        raise RuntimeError("ASMR.one tracks API did not include downloadable media URLs.")
+
+    manifest = {
+        **metadata_stamp(),
+        "source": "asmrone",
+        "source_url": source_url,
+        "work_id": parsed.asmrone_work_id,
+        "source_id": source_id,
+        "title": title,
+        "file_count": len(entries),
+        "downloaded_file_count": len(saved_files),
+        "total_size": total_size,
+        "total_size_human": human_bytes(total_size),
+        "download_url_strategy": "Use mediaDownloadUrl with action=download; ignore mediaStreamUrl.",
+        "media_download_enabled": True,
+        "files": entries,
+    }
+    write_metadata(
+        target,
+        "_asmrone_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "asmrone",
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "work_id": parsed.asmrone_work_id,
+            "source_id": source_id,
+            "title": title,
+            "circle": work.get("name"),
+            "release": work.get("release"),
+            "price": work.get("price"),
+            "dl_count": work.get("dl_count"),
+            "rate_average_2dp": work.get("rate_average_2dp"),
+            "nsfw": work.get("nsfw"),
+            "file_count": len(entries),
+            "downloaded_file_count": len(saved_files),
+            "total_size": total_size,
+            "downloaded_size": downloaded_bytes,
+            "model_category": "ASMR.one Work",
+            "file_format": "audio",
+        },
+    )
+    write_metadata(
+        target,
+        "_archive_metadata.json",
+        {
+            **metadata_stamp(),
+            "source": "asmrone",
+            "source_url": source_url,
+            "raw_input": parsed.raw_input,
+            "work_id": parsed.asmrone_work_id,
+            "source_id": source_id,
+            "title": title,
+            "model_category": "ASMR.one Work",
+            "file_count": len(entries),
+            "downloaded_file_count": len(saved_files),
+            "precision": f"{len(saved_files)} files",
+        },
+    )
+    write_metadata(target, "_asmrone_tracks.json", {"source": "asmrone", "tracks": asmrone_redacted_tracks(tracks)})
+    write_metadata(target, "_asmrone_manifest.json", manifest)
+    final_size = directory_size(target)
+    db.update_job(
+        job_id,
+        filename=f"{len(saved_files)} files",
+        progress_bytes=final_size,
+        total_bytes=final_size,
+        precision=f"{len(saved_files)} files",
+        model_category="ASMR.one Work",
+        file_format="audio",
+        thumbnail_url=thumbnail_url_for_path(target) or None,
+    )
+    db.append_log(
+        job_id,
+        f"ASMR.one work saved: {target} ({len(saved_files)} files, {human_bytes(final_size)})",
+    )
+
+
+def fetch_json_value(session: requests.Session, url: str, job_id: int | None = None) -> Any:
+    response = request_with_safety(session, "GET", url, job_id=job_id, timeout=(20, 60))
+    response.raise_for_status()
+    return response.json()
+
+
+def asmrone_manifest_entries(nodes: list[Any], *, source_id: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    used_local_paths: set[str] = set()
+
+    def unique_local_parts(parents: list[str], title: str, index: int) -> list[str]:
+        folder_parts = [sanitize_segment(parent, "folder") for parent in parents]
+        filename = sanitize_segment(title, f"{index:03d}.bin")
+        stem = Path(filename).stem or f"{index:03d}"
+        suffix = Path(filename).suffix
+        for attempt in range(1, 10000):
+            candidate_name = filename if attempt == 1 else sanitize_segment(f"{stem}_{attempt}{suffix}", filename)
+            candidate = [*folder_parts, candidate_name]
+            key = "/".join(part.lower() for part in candidate)
+            if key not in used_local_paths:
+                used_local_paths.add(key)
+                return candidate
+        fallback = [*folder_parts, sanitize_segment(f"{index:03d}_{title}", f"{index:03d}.bin")]
+        used_local_paths.add("/".join(part.lower() for part in fallback))
+        return fallback
+
+    def walk(items: list[Any], parents: list[str]) -> None:
+        for node in items:
+            if not isinstance(node, dict):
+                continue
+            title = str(node.get("title") or "untitled")
+            children = node.get("children")
+            if isinstance(children, list):
+                walk(children, [*parents, title])
+                continue
+            media_download_url = str(node.get("mediaDownloadUrl") or "")
+            media_stream_url = str(node.get("mediaStreamUrl") or "")
+            local_parts = unique_local_parts(parents, title, len(entries) + 1)
+            entry = {
+                "type": str(node.get("type") or "file"),
+                "name": title,
+                "path": [source_id, *parents, title],
+                "local_path": "/".join(local_parts),
+                "size": int(node.get("size") or 0),
+                "duration": node.get("duration"),
+                "hash": node.get("hash"),
+                "download_url_kind": "mediaDownloadUrl" if media_download_url else "",
+                "media_download_url_present": bool(media_download_url),
+                "media_download_host": urlparse(media_download_url).netloc if media_download_url else "",
+                "media_stream_url_ignored": bool(media_stream_url),
+            }
+            if media_download_url:
+                entry["_media_download_url"] = media_download_url
+                entry["_local_parts"] = local_parts
+            entries.append(entry)
+
+    walk(nodes, [])
+    return entries
+
+
+def asmrone_redacted_tracks(nodes: list[Any]) -> list[dict[str, Any]]:
+    redacted: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        item: dict[str, Any] = {
+            "type": node.get("type"),
+            "title": node.get("title"),
+            "duration": node.get("duration"),
+            "size": node.get("size"),
+            "hash": node.get("hash"),
+            "mediaDownloadUrl_present": bool(node.get("mediaDownloadUrl")),
+            "mediaStreamUrl_present": bool(node.get("mediaStreamUrl")),
+        }
+        children = node.get("children")
+        if isinstance(children, list):
+            item["children"] = asmrone_redacted_tracks(children)
+        redacted.append(item)
+    return redacted
+
+
+def asmrone_download_action_url(media_download_url: str) -> str:
+    parsed = urlparse(media_download_url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "action"]
+    query.append(("action", "download"))
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def download_comfyui(job_id: int, parsed: ParsedDownload) -> None:
@@ -4602,6 +4855,8 @@ def stream_download(
     url: str,
     target_dir: Path,
     filename_override: str | None = None,
+    progress_base: int = 0,
+    progress_total: int | None = None,
 ) -> Path:
     check_job_control(job_id)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -4633,6 +4888,12 @@ def stream_download(
         ) as response:
             if response.status_code == 416 and final_path.exists():
                 db.append_log(job_id, "server says range already complete")
+                final_size = final_path.stat().st_size
+                db.update_job(
+                    job_id,
+                    progress_bytes=progress_base + final_size,
+                    total_bytes=progress_total if progress_total is not None else final_size,
+                )
                 return final_path
             response.raise_for_status()
 
@@ -4664,7 +4925,8 @@ def stream_download(
             if total is None:
                 total = total_from_head
 
-            db.update_job(job_id, filename=filename, total_bytes=total, progress_bytes=existing)
+            display_total = progress_total if progress_total is not None else total
+            db.update_job(job_id, filename=filename, total_bytes=display_total, progress_bytes=progress_base + existing)
             db.append_log(job_id, f"saving to {final_path}")
 
             downloaded = existing
@@ -4679,7 +4941,7 @@ def stream_download(
                     downloaded += len(chunk)
                     now = time.time()
                     if now - last_update >= 1.0:
-                        db.update_job(job_id, progress_bytes=downloaded, total_bytes=total)
+                        db.update_job(job_id, progress_bytes=progress_base + downloaded, total_bytes=display_total)
                         last_update = now
 
         if total is not None and downloaded < total:
@@ -4687,7 +4949,11 @@ def stream_download(
 
         part_path.replace(final_path)
         final_size = final_path.stat().st_size
-        db.update_job(job_id, progress_bytes=final_size, total_bytes=final_size)
+        db.update_job(
+            job_id,
+            progress_bytes=progress_base + final_size,
+            total_bytes=progress_total if progress_total is not None else final_size,
+        )
         db.append_log(job_id, f"saved: {final_path} ({human_bytes(final_size)})")
         return final_path
     except JobControlStop as exc:

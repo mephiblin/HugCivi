@@ -116,6 +116,7 @@ PWA_SERVICE_WORKER_PATH = BASE_DIR / "static" / "sw.js"
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
+AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".weba"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt"}
 YTDLP_INFO_SUFFIX = ".info.json"
 SUBTITLE_LANGUAGE_LABELS = {
@@ -162,6 +163,7 @@ SIDECAR_FILENAMES = (
     "_civitai_image_metadata.json",
     "_generic_metadata.json",
     "_hitomi_metadata.json",
+    "_asmrone_metadata.json",
     "_workflow_metadata.json",
 )
 
@@ -1890,7 +1892,7 @@ def is_workflow_file(path: Path) -> bool:
 
 
 def is_media_file(path: Path) -> bool:
-    return is_image_file(path) or is_video_file(path)
+    return is_image_file(path) or is_video_file(path) or is_audio_file(path)
 
 
 def is_image_file(path: Path) -> bool:
@@ -1899,6 +1901,10 @@ def is_image_file(path: Path) -> bool:
 
 def is_video_file(path: Path) -> bool:
     return path.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def is_audio_file(path: Path) -> bool:
+    return path.suffix.lower() in AUDIO_EXTENSIONS
 
 
 def is_subtitle_file(path: Path) -> bool:
@@ -2341,7 +2347,7 @@ def normalize_library_source(value: Any) -> str:
     source = str(value or "").strip().lower().replace("_", "-")
     if source in {"gallery-dl", "gallerydl"}:
         return "gallerydl"
-    if source in {"huggingface", "civitai", "generic", "comfyui", "hitomi"}:
+    if source in {"huggingface", "civitai", "generic", "comfyui", "hitomi", "asmrone"}:
         return source
     return str(value or "").strip() or "filesystem"
 
@@ -2517,6 +2523,8 @@ def media_kind(path: Path | None) -> str:
         return "image"
     if is_video_file(path):
         return "video"
+    if is_audio_file(path):
+        return "audio"
     return "file"
 
 
@@ -2539,6 +2547,8 @@ def media_type_for_path(path: Path) -> str:
         return "image/jpeg"
     if is_video_file(path):
         return "video/mp4"
+    if is_audio_file(path):
+        return "audio/mpeg"
     return "application/octet-stream"
 
 
@@ -2895,6 +2905,8 @@ def source_url_for_job(job: dict, parsed: ParsedDownload | None) -> str:
         return parsed.url or ""
     if parsed.source == "comfyui" and is_http_url(parsed.comfyui_workflow_url or ""):
         return parsed.comfyui_workflow_url or ""
+    if parsed.source == "asmrone" and is_http_url(parsed.asmrone_url or ""):
+        return parsed.asmrone_url or ""
     if parsed.source == "hitomi":
         if is_http_url(parsed.hitomi_listing_url or ""):
             return parsed.hitomi_listing_url or ""

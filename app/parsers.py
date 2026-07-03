@@ -17,6 +17,11 @@ CIVITAI_HOSTS = {
     "civitai.green",
     "www.civitai.green",
 }
+ASMRONE_HOSTS = {"asmr.one", "www.asmr.one"}
+ASMRONE_WORK_RE = re.compile(
+    r"^/work/(?:(?P<source_id>[A-Za-z]{2}\d+)|(?P<work_id>\d+)(?:/[^/?#]+/(?P<nested_source_id>[A-Za-z]{2}\d+))?)/?$",
+    re.IGNORECASE,
+)
 COMFYUI_EXPLICIT_COMMANDS = {"workflow", "workflows", "comfyui", "comfyui-workflow", "comfyui-workflows"}
 COMFYUI_DOWNLOAD_COMMANDS = {"curl", "wget", "aria2c"}
 COMFYUI_SUBCOMMANDS = {"workflow", "workflows", "download"}
@@ -93,6 +98,8 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_civitai_url(text, target_subdir=target_subdir)
         if is_hitomi_host(host):
             return parse_hitomi_url(text, target_subdir=target_subdir)
+        if is_asmrone_host(host):
+            return parse_asmrone_url(text, target_subdir=target_subdir)
         if is_comfyui_workflow_url(text, require_hint=True):
             return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
         if is_ytdlp_preferred_url(text):
@@ -111,7 +118,38 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
 
     raise InputParseError(
         "지원하지 않는 입력입니다. Hugging Face URL, Civitai URL, Hitomi URL, YouTube URL, "
-        "gallery-dl URL, 일반 다운로드 URL 또는 안전한 `hf download ...` 형태를 입력하세요."
+        "ASMR.one URL, gallery-dl URL, 일반 다운로드 URL 또는 안전한 `hf download ...` 형태를 입력하세요."
+    )
+
+
+def is_asmrone_host(host: str) -> bool:
+    return host.rstrip(".").lower() in ASMRONE_HOSTS
+
+
+def parse_asmrone_url(
+    url: str,
+    raw_input: str | None = None,
+    target_subdir: str | None = None,
+) -> ParsedDownload:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not is_asmrone_host(parsed.netloc.lower()):
+        raise InputParseError("ASMR.one URL이 아닙니다.")
+    match = ASMRONE_WORK_RE.match(parsed.path)
+    if not match:
+        raise InputParseError("ASMR.one work URL은 /work/RJ123456 또는 /work/123456 형식이어야 합니다.")
+
+    source_id = (match.group("source_id") or match.group("nested_source_id") or "").upper()
+    work_id = match.group("work_id") or re.sub(r"^\D+", "", source_id)
+    if not work_id:
+        raise InputParseError("ASMR.one work ID를 찾지 못했습니다.")
+
+    return ParsedDownload(
+        source="asmrone",
+        raw_input=raw_input or url,
+        target_subdir=target_subdir,
+        asmrone_url=url,
+        asmrone_work_id=work_id,
+        asmrone_source_id=source_id or None,
     )
 
 

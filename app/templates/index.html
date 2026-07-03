@@ -3666,7 +3666,7 @@
       mediaItems = [];
       mediaIndex = 0;
       resetMediaArchiveMetadata();
-      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
+      mediaDisplay.classList.remove('video-active', 'audio-active', 'image-scroll-active');
       document.body.classList.remove('modal-open');
       restoreMediaReturnFocus();
     }
@@ -3675,7 +3675,7 @@
       stopMediaPlayback();
       resetMediaArchiveMetadata();
       mediaCounter.textContent = '0 / 0';
-      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
+      mediaDisplay.classList.remove('video-active', 'audio-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = message;
@@ -3688,7 +3688,7 @@
       stopMediaPlayback();
       resetMediaArchiveMetadata();
       mediaCounter.textContent = '0 / 0';
-      mediaDisplay.classList.remove('video-active', 'image-scroll-active');
+      mediaDisplay.classList.remove('video-active', 'audio-active', 'image-scroll-active');
       mediaDisplay.innerHTML = `<div class="media-loading error">${escapeHtml(message)}</div>`;
       mediaStrip.innerHTML = `<div class="media-list-empty">${escapeHtml(message)}</div>`;
       mediaItemTitle.textContent = '불러오기 실패';
@@ -3710,7 +3710,7 @@
       mediaPath.textContent = data?.path ? `/data/${normalizePath(data.path)}` : (target.path ? `/data/${target.path}` : '/data');
       mediaItems = normalizeMediaItems(data);
       if (!mediaItems.length) {
-        setMediaError('표시할 이미지나 비디오가 없습니다.');
+        setMediaError('표시할 이미지, 비디오 또는 오디오가 없습니다.');
         return;
       }
       const requestedIndex = Number(data?.initial_index ?? data?.initialIndex ?? 0);
@@ -3740,7 +3740,7 @@
       if (!item || typeof item !== 'object') return null;
       const type = normalizeMediaType(item.type || item.kind || item.media_type || item.mediaType || item.mime_type || item.mimeType || item.url || item.stream_url || item.preview_url || item.path);
       const url = item.url || item.stream_url || item.streamUrl || item.src || '';
-      if (!['image', 'video'].includes(type)) return null;
+      if (!['image', 'video', 'audio'].includes(type)) return null;
       const path = normalizePath(item.path || '');
       if (!url && type !== 'video') return null;
       if (!url && !path) return null;
@@ -3802,10 +3802,15 @@
       if (text.startsWith('image/') || /\.(avif|bmp|gif|jpe?g|png|webp)(\?|#|$)/i.test(text) || text === 'image') {
         return 'image';
       }
+      if (text.startsWith('audio/') || /\.(aac|flac|m4a|mp3|ogg|opus|wav|weba)(\?|#|$)/i.test(text) || text === 'audio') {
+        return 'audio';
+      }
       if (text.startsWith('video/') || /\.(m4v|mov|mp4|ogg|ogv|webm)(\?|#|$)/i.test(text) || text === 'video') {
         return 'video';
       }
-      return text.includes('video') ? 'video' : (text.includes('image') ? 'image' : '');
+      if (text.includes('video')) return 'video';
+      if (text.includes('audio')) return 'audio';
+      return text.includes('image') ? 'image' : '';
     }
 
     function normalizeCivitaiImageMetadata(metadata) {
@@ -4130,6 +4135,7 @@
       mediaPrev.disabled = mediaIndex <= 0;
       mediaNext.disabled = mediaIndex >= mediaItems.length - 1;
       mediaDisplay.classList.toggle('video-active', item.type === 'video');
+      mediaDisplay.classList.toggle('audio-active', item.type === 'audio');
       mediaDisplay.classList.remove('image-scroll-active');
       mediaDisplay.innerHTML = renderMediaDisplay(item);
       if (item.type === 'video') {
@@ -4137,7 +4143,7 @@
         if (!item.posterUrl && item.posterJobRequired) {
           prepareMediaPoster(item);
         }
-      } else {
+      } else if (item.type === 'image') {
         setupMediaImageFit();
       }
       mediaItemTitle.textContent = item.name || `${mediaIndex + 1}`;
@@ -4230,6 +4236,16 @@
               </button>
             </div>
           </div>
+        </div>`;
+      }
+      if (item.type === 'audio') {
+        const typeAttr = item.mimeType ? ` type="${escapeHtml(item.mimeType)}"` : '';
+        return `<div class="media-audio-panel">
+          <div class="media-audio-icon" aria-hidden="true">AUD</div>
+          <audio class="media-audio" controls preload="metadata">
+            <source src="${escapeHtml(item.url)}"${typeAttr}>
+            이 브라우저에서 재생할 수 없는 오디오입니다.
+          </audio>
         </div>`;
       }
       return `<img class="media-image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name || 'media')}">`;
@@ -4478,10 +4494,10 @@
         const label = item.name || `${index + 1}`;
         const preview = item.previewUrl
           ? `<img src="${escapeHtml(item.previewUrl)}" alt="">`
-          : `<div class="media-thumb-placeholder">${item.type === 'video' ? 'VID' : 'IMG'}</div>`;
+          : `<div class="media-thumb-placeholder">${item.type === 'video' ? 'VID' : (item.type === 'audio' ? 'AUD' : 'IMG')}</div>`;
         return `<button type="button" class="media-thumb ${index === mediaIndex ? 'active' : ''}" data-media-index="${index}" aria-label="${escapeHtml(label)}">
           <span class="media-thumb-frame">${preview}</span>
-          <span class="media-thumb-kind">${escapeHtml(item.type === 'video' ? 'VIDEO' : 'IMAGE')}</span>
+          <span class="media-thumb-kind">${escapeHtml(item.type === 'video' ? 'VIDEO' : (item.type === 'audio' ? 'AUDIO' : 'IMAGE'))}</span>
           <span class="media-thumb-name">${escapeHtml(label)}</span>
         </button>`;
       }).join('');
@@ -4495,7 +4511,7 @@
 
     function mediaItemMetaText(item) {
       const values = [];
-      if (item.type) values.push(item.type === 'video' ? '비디오' : '이미지');
+      if (item.type) values.push(item.type === 'video' ? '비디오' : (item.type === 'audio' ? '오디오' : '이미지'));
       if (item.width && item.height) values.push(`${item.width}×${item.height}`);
       if (item.durationSeconds) values.push(formatDuration(item.durationSeconds));
       if (item.sizeBytes) values.push(formatFileSize(item.sizeBytes));
@@ -4512,12 +4528,13 @@
     }
 
     function stopMediaPlayback() {
-      const video = mediaDisplay.querySelector('video');
-      if (!video) return;
-      video.pause();
-      video.removeAttribute('src');
-      video.querySelectorAll('source').forEach(source => source.removeAttribute('src'));
-      video.load();
+      const players = Array.from(mediaDisplay.querySelectorAll('video, audio'));
+      players.forEach(player => {
+        player.pause();
+        player.removeAttribute('src');
+        player.querySelectorAll('source').forEach(source => source.removeAttribute('src'));
+        player.load();
+      });
     }
 
     async function openWorkflowViewer(target) {

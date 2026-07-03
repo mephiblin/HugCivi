@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
-SourceType = Literal["huggingface", "civitai", "generic", "comfyui", "hitomi", "gallerydl"]
+SourceType = Literal["huggingface", "civitai", "generic", "comfyui", "hitomi", "gallerydl", "asmrone"]
 
 
 @dataclass
@@ -52,6 +52,11 @@ class ParsedDownload:
 
     # gallery-dl generic archive
     gallerydl_url: str | None = None
+
+    # ASMR.one work manifest
+    asmrone_url: str | None = None
+    asmrone_work_id: str | None = None
+    asmrone_source_id: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
