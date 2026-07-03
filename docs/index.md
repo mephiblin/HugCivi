@@ -14,6 +14,7 @@ Use this page to decide which document is authoritative for current development.
 | [Architecture](architecture.md) | current developer reference | Runtime shape, data boundaries, schedulers, DB, API groups, invariants. |
 | [Feature and Code Map](feature-code-map.md) | current developer reference | Feature-by-feature file/function/test map. Start here for code changes. |
 | [Configuration](configuration.md) | current operator/developer reference | Environment variables, UI-saved settings, compose differences. |
+| [ByeDPI SOCKS5 Proxy Guide](byedpi-socks-proxy.md) | current operator network guide | Recreate the discovered `tazihad/byedpi` SOCKS5 proxy container and apply it to HugCivi's `YT_DLP_PROXY`. |
 | [CasaOS Install Guide](install-casaos.md) | current operator install guide | CasaOS Custom App/Compose deployment, durable folders, proxy notes. |
 | [Ubuntu Install Guide](install-ubuntu.md) | current operator install guide | Docker Engine setup, Compose deployment, durable folders, proxy notes. |
 | [Development](development.md) | current developer reference | Local setup, change patterns, verification commands. |

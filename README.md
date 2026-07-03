@@ -2,7 +2,7 @@
 
 Synology NAS에서 Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl 지원 사이트, YouTube/yt-dlp, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
-브라우저에서 URL을 붙여넣으면 모델, 갤러리, 오디오 work 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, ASMR.one, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
+브라우저에서 URL을 붙여넣으면 모델, 갤러리, ASMR.one work 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, ASMR.one, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
 ## 현재 구조 요약
 
@@ -25,6 +25,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - [문서 인덱스](docs/index.md)
 - [기능별 코드 맵](docs/feature-code-map.md)
 - [구성 레퍼런스](docs/configuration.md)
+- [ByeDPI SOCKS5 프록시 가이드](docs/byedpi-socks-proxy.md)
 - [LLM/인수인계 README](README_LLM.md)
 - [개발 Skill 세트](SKILL_Dev/SKILL.md)
 - [프로젝트 철학](docs/philosophy.md)
@@ -45,7 +46,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - Hitomi artist, language, search, index listing URL discovery와 선택 queue confirm UI
-- ASMR.one work URL 오디오 다운로드
+- ASMR.one work URL 파일 다운로드
 - gallery-dl 지원 사이트 범용 다운로드
 - YouTube/yt-dlp URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
@@ -102,6 +103,8 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 ## 설치 A: Portainer + Repository
 
 Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GHCR에 배포된 `ghcr.io/mephiblin/hugcivi:latest`입니다.
+
+배포 상태(2026-07-03): GHCR `latest`는 현재 `sha-625957b`와 같은 이미지입니다. 이 공개 이미지는 YouTube/라이브러리 수정까지 포함하지만, 소스에 추가된 ASMR.one work 다운로드는 아직 새 이미지로 빌드/푸시되지 않았습니다. Portainer/Synology에서 ASMR.one 기능을 쓰려면 ASMR.one 커밋 이후 이미지를 빌드/푸시한 뒤 `HUGCIVI_IMAGE`에 해당 태그를 지정하세요.
 
 1. NAS에 모델 저장 폴더를 만듭니다.
 
@@ -331,9 +334,11 @@ https://asmr.one/work/RJ361902
 https://asmr.one/work/361902/DLSITE/RJ361902
 ```
 
-ASMR.one work URL은 `/data/asmr.one/{source_id} - {title}` 아래에 API track 폴더 구조대로 오디오 파일을 저장합니다. 다운로드에는 track의 `mediaDownloadUrl`에 `action=download`를 붙인 URL을 사용하고, stream URL은 저장하지 않습니다.
+ASMR.one work URL은 `/data/asmr.one/{source_id} - {title}` 아래에 API track 폴더 구조대로 파일을 저장합니다. 다운로드에는 각 leaf track의 `mediaDownloadUrl`에 `action=download`를 붙인 URL을 사용하고, stream URL은 저장하지 않습니다. ASMR.one API가 이미지, 텍스트, MP3, WAV 같은 구성 파일에 `mediaDownloadUrl`을 제공하면 확장자 필터 없이 함께 저장합니다.
 
 작업 폴더에는 `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, `_archive_metadata.json` sidecar가 함께 저장됩니다.
+
+저장된 MP3, M4A, FLAC, WAV 같은 오디오 파일은 라이브러리 미디어 뷰어에서 바로 재생할 수 있습니다.
 
 ### gallery-dl 범용 다운로드
 
@@ -387,7 +392,7 @@ YouTube 저장 경로는 `/data/gallery-dl/youtube.com/` 아래에서 플레이�
 - `YouTube/yt-dlp Cookies File`: Netscape 형식 `cookies.txt`를 `/config/yt-dlp/cookies.txt`처럼 컨테이너 안 경로로 마운트해 지정합니다.
 - `YouTube/yt-dlp Browser Cookies`: 브라우저 프로필을 컨테이너에 별도로 마운트한 고급 구성에서만 사용합니다.
 - `YouTube/yt-dlp Format`: 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다.
-- `YouTube/yt-dlp Proxy`: `socks5://192.168.200.100:1080` 같은 HTTP/HTTPS/SOCKS 프록시 URL을 입력합니다. yt-dlp 계열 사이트와 메타데이터 probe에만 적용됩니다.
+- `YouTube/yt-dlp Proxy`: `socks5://192.168.200.100:1080` 같은 HTTP/HTTPS/SOCKS 프록시 URL을 입력합니다. yt-dlp 계열 사이트와 메타데이터 probe에만 적용됩니다. 현재 호스트에서 발견된 ByeDPI 컨테이너와 연결하는 방법은 [ByeDPI SOCKS5 프록시 가이드](docs/byedpi-socks-proxy.md)를 참고하세요.
 - `YouTube/yt-dlp Extra Options`: `cmdline-args=--max-filesize 500M`, `raw-options.writesubtitles=true`처럼 한 줄에 하나씩 입력합니다.
   저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 차단됩니다.
 
@@ -547,7 +552,7 @@ YT_DLP_FORMAT
 YT_DLP_EXTRA_OPTIONS
 ```
 
-`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Proxy`는 yt-dlp에 `--proxy`로 전달되는 HTTP/HTTPS/SOCKS URL입니다. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다. 프록시는 `Extra Options` 대신 `YT_DLP_PROXY`를 사용하세요.
+`Cookies File`에는 컨테이너 안에서 읽을 수 있는 Netscape 형식 cookies.txt 경로를 넣습니다. `Browser Cookies`는 브라우저 프로필을 컨테이너에 마운트한 경우에만 사용하세요. `Proxy`는 yt-dlp에 `--proxy`로 전달되는 HTTP/HTTPS/SOCKS URL입니다. 현재 호스트의 ByeDPI 예시는 `socks5://192.168.200.100:1080`입니다. `Format`은 `yt-dlp`의 format selector이며 기본값은 `best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best`입니다. `Extra Options`에는 `cmdline-args=...`, `raw-options.*=...` 또는 `extractor.ytdl.*=...` 형식의 옵션을 한 줄에 하나씩 넣습니다. 저장 경로, 출력 템플릿, 외부 실행, 플러그인 로더, 외부 다운로더, config 파일 위치를 바꾸는 옵션은 앱이 차단합니다. 프록시는 `Extra Options` 대신 `YT_DLP_PROXY`를 사용하세요.
 
 토큰과 인증 정보는 웹 UI에서 저장할 수 있습니다. UI로 저장한 값은 `/config/jobs.sqlite3`에 저장되며, 설정창을 다시 열면 평문으로 표시됩니다. 저장한 값은 새 다운로드 작업부터 재시작 없이 적용됩니다. 값을 비워 저장하면 UI 저장값은 삭제되며, 같은 이름의 환경변수가 있으면 환경변수 값으로 fallback됩니다.
 

@@ -5,19 +5,23 @@
 ### 배포
 
 - `ghcr.io/mephiblin/hugcivi:sha-625957b`와 `ghcr.io/mephiblin/hugcivi:latest` 이미지를 로컬 `linux/amd64` 빌드로 GHCR에 push했습니다.
-- `origin/main`은 `625957b`까지 push되어 Portainer/Synology에서 `latest`를 다시 pull하면 아래 YouTube/라이브러리 수정이 반영됩니다.
+- `docker buildx imagetools inspect` 기준 GHCR `latest`와 `sha-625957b`는 같은 digest(`sha256:5708dffc57beb83f56870c43b586df9d00ab2897e23a03329c194d54b712317b`)입니다.
+- `origin/main`은 `112ed0b`까지 push되어 설치/운영 문서 수정은 원격에 반영되어 있지만, 마지막 확인된 GHCR 이미지는 코드 기준 `625957b`입니다.
+- ASMR.one 구현 커밋 `6107ece`와 문서 커밋 `b5c60f1`은 현재 로컬 `main`에만 있으며, `sha-6107ece`와 `sha-b5c60f1` GHCR 태그는 아직 없습니다. Portainer/Synology 기본 `latest` 배포에는 ASMR.one 다운로드가 포함되지 않습니다.
 
 ### 설치 운영 문서
 
 - `UbuntuPortainer설명서.md`와 `CasaOs설명서.md` 앞부분에 대상 시스템, 접속 방식, 데이터 경로, 포트, 비밀번호, 이미지 태그를 먼저 확인하는 작동 프롬프트를 추가했습니다.
 - 읽기 전용 점검 승인과 설치/변경 승인을 분리해, 사용자가 명시적으로 허가하기 전에는 Docker/Portainer 설치, Stack 배포, `docker pull`, 폴더 생성, 권한 변경, 삭제 작업을 하지 않도록 문서화했습니다.
 - CasaOS 문서는 Portainer가 없을 때 CasaOS Custom Install/Compose fallback과 Portainer 설치 중 무엇을 원하는지 먼저 묻도록 했고, Ubuntu Portainer 문서는 Docker/Portainer 설치까지 진행할지 별도 확인하도록 했습니다.
+- 현재 Docker 호스트에서 발견된 `tazihad/byedpi` SOCKS5 프록시 컨테이너 재설치 방법과 HugCivi `YT_DLP_PROXY=socks5://192.168.200.100:1080` 적용 방법을 [ByeDPI SOCKS5 프록시 가이드](docs/byedpi-socks-proxy.md)에 추가했습니다.
 
 ### ASMR.one
 
 - ASMR.one work URL(`/work/RJ...`, `/work/<id>/DLSITE/RJ...`)을 다운로드 source로 추가했습니다.
-- ASMR.one 작업은 `mediaDownloadUrl?action=download`로 실제 오디오 파일을 저장하고, `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, `_archive_metadata.json` sidecar를 남깁니다.
+- ASMR.one 작업은 `mediaDownloadUrl?action=download`로 실제 track 파일을 저장하고, `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, `_archive_metadata.json` sidecar를 남깁니다.
 - 라이브러리와 미디어 viewer가 오디오 파일을 미디어 항목으로 인식하도록 했습니다.
+- 이 기능은 현재 소스에는 있지만 새 컨테이너 이미지가 push되기 전까지 GHCR `latest` 배포에서는 사용할 수 없습니다.
 
 ### YouTube/yt-dlp
 

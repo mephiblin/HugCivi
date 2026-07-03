@@ -168,6 +168,8 @@ Restart handling is conservative. `running` jobs are requeued, `pausing` becomes
 
 Provider keys are intentionally coarse for major services and host-based for generic/gallery-dl style inputs. This favors safety and rate-limit avoidance over maximum throughput.
 
+ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json` so the library can recover the archive after DB loss.
+
 ## Internal Job Flow
 
 Internal jobs protect the server from expensive user-triggered operations.
@@ -182,6 +184,8 @@ Folder ZIP:
 
 Media transcode:
 
+- `/api/media/list` recognizes image, video, and audio files
+- audio files are served directly through `/api/media/file` and do not create internal media jobs
 - `/api/media/play` returns the original file if the browser can play it or a cached transcode already exists
 - on cache miss it returns `202` with `job_required`
 - `/api/media/transcode-jobs` creates a `media_transcode` job

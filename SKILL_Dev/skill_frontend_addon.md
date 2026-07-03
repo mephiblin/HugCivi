@@ -12,7 +12,8 @@ Use this before editing `app/templates/index.html`, `app/static/style.css`, PWA 
 - The main UI is a single Jinja-rendered page with client-side JavaScript.
 - Keep API response shape changes additive unless backend and frontend change together.
 - Long work should show queued/running/done state and poll; do not block HTTP requests.
-- Preserve mobile panels, settings modal behavior, job controls, library cards, media viewer, workflow viewer, and context menu flows.
+- Preserve mobile panels, settings modal behavior, job controls, library cards, image/video/audio media viewer, workflow viewer, and context menu flows.
+- Treat ASMR.one audio media cards as part of the media viewer surface when changing media listing or playback behavior.
 - Keep text fitting on desktop and mobile; avoid layout shifts for buttons/toolbars.
 
 ## Chrome Extension Rules
@@ -35,6 +36,12 @@ node --check chrome-extension/background.js
 node --check chrome-extension/popup.js
 node -e "JSON.parse(require('fs').readFileSync('chrome-extension/manifest.json','utf8'))"
 python3 -m pytest -q -p no:cacheprovider tests/test_review_fixes.py
+```
+
+When changing media listing, file-type detection, or player behavior, also run:
+
+```bash
+python3 -m pytest -q -p no:cacheprovider tests/test_asmrone_provider.py
 ```
 
 When changing layout-heavy UI, start the app locally and inspect desktop/mobile behavior. When changing addon packaging, verify `/api/addon/chrome-extension` returns a zip containing `hugcivi-chrome-extension/manifest.json`.

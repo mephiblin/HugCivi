@@ -65,6 +65,7 @@ Download queue settings apply to external downloads:
 - Hugging Face
 - Civitai
 - Hitomi gallery child jobs
+- ASMR.one work downloads
 - gallery-dl
 - yt-dlp/YouTube
 - generic HTTP/HTTPS files
@@ -87,6 +88,14 @@ Internal server-local jobs use a separate limit:
 | `INTERNAL_JOB_MAX_CONCURRENT` | Concurrent ZIP/transcode/poster jobs. Default is `2`; `1` is recommended on modest NAS hardware. |
 
 Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
+
+## ASMR.one Downloads
+
+ASMR.one `/work/RJ...` and `/work/<id>/DLSITE/RJ...` URLs run as ordinary external download jobs in the `asmrone` provider bucket, so the global/per-provider queue limits and provider cooldown settings apply.
+
+The handler uses `ASMRONE_API_BASE` for work and track metadata, but file bodies are downloaded from each leaf track `mediaDownloadUrl` with `action=download`. `mediaStreamUrl` is intentionally ignored. Output defaults under `/data/asmr.one/...` unless the user chose a target folder, with downloaded track files plus `_asmrone_metadata.json`, redacted `_asmrone_tracks.json`, `_asmrone_manifest.json`, and `_archive_metadata.json`.
+
+Downloaded ASMR.one audio files are recognized by the media viewer and play through the browser audio element. Non-audio files with a download URL are still stored in the work folder. Audio does not use the internal video transcode/poster queue.
 
 ## YouTube Subscriptions
 
@@ -126,6 +135,8 @@ YT_DLP_PROXY=socks5://192.168.200.100:1080
 
 The same value can be saved in the web UI settings modal as `YouTube/yt-dlp Proxy`. UI-saved values are stored in `/config/jobs.sqlite3` and take precedence over environment variables. Authenticated proxy URLs can contain credentials, so treat DB backups as credential backups.
 
+The current Docker host has a discovered `byedpi` container from image `tazihad/byedpi`, publishing SOCKS5 on `192.168.200.100:1080`. See [ByeDPI SOCKS5 Proxy Guide](byedpi-socks-proxy.md) for the Portainer compose example and HugCivi setup steps.
+
 This setting only affects yt-dlp-backed downloads and yt-dlp metadata probes, including YouTube, xHamster, Pornhub, and other preferred yt-dlp video hosts. It does not proxy Hugging Face, Civitai, generic HTTP downloads, native Hitomi requests, or internal server-local ZIP/media jobs.
 
 Default YouTube subtitle downloads are treated as optional sidecars. HugCivi still requires at least one non-subtitle media file before marking a yt-dlp job successful, so a subtitle-only partial result is cleaned up or failed instead of becoming a library item.
@@ -142,6 +153,7 @@ Folder downloads:
 Media:
 
 - Browser-playable videos are served directly.
+- Audio files are served directly in the media viewer.
 - Unplayable videos create `media_transcode` jobs on demand.
 - Missing video posters create `media_poster` jobs on demand.
 - Media cache files live under `/config/media-cache`.

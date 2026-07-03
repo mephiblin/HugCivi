@@ -59,7 +59,7 @@ Run the fast checks before commit:
 
 ```bash
 git diff --check
-python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py app/parsers.py app/workflows.py app/metadata.py app/utils.py
+python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py app/parsers.py app/workflows.py app/metadata.py app/utils.py app/subscriptions.py
 node --check chrome-extension/shared.js
 node --check chrome-extension/background.js
 node --check chrome-extension/popup.js
@@ -70,6 +70,10 @@ python3 -m pytest -q -p no:cacheprovider
 If Chrome extension files do not exist in a future branch, skip only the `node` extension checks and explain why.
 
 For Markdown-only edits, the full pytest run is still preferred before a production image push. At minimum, run `git diff --check` and any tests covering touched code.
+
+## Documentation Handoff
+
+Before commit/build for a substantive change, follow `skill_docs_handoff.md`. Confirm the dated `docs/patch-notes/YYYY-MM-DD.md` entry records verification and deploy impact; update root `PATCH_NOTES.md` only when the user-facing changelog changes.
 
 ## Commit
 
