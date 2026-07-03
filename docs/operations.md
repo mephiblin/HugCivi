@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -33,7 +33,7 @@ Do not run two HugCivi containers against the same `/config/jobs.sqlite3` at the
 1. Stop the existing HugCivi container.
 2. Confirm the `/data` bind mount points to the expected NAS folder.
 3. Back up `/config/jobs.sqlite3`.
-4. Pull or deploy the new image.
+4. Pull or deploy the new image. The normal production tag is `ghcr.io/mephiblin/hugcivi:latest`; use `ghcr.io/mephiblin/hugcivi:sha-<commit>` if you want to pin a specific pushed build.
 5. Start exactly one container with the same `/data` and `/config` mounts.
 6. Open the UI and confirm the library and job list load.
 

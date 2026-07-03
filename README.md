@@ -100,7 +100,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 ## 설치 A: Portainer + Repository
 
-Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GitHub Actions가 배포하는 `ghcr.io/mephiblin/hugcivi:latest`입니다.
+Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GHCR에 배포된 `ghcr.io/mephiblin/hugcivi:latest`입니다.
 
 1. NAS에 모델 저장 폴더를 만듭니다.
 
@@ -140,7 +140,7 @@ PGID=100
 UMASK=022
 ```
 
-`HUGCIVI_IMAGE`는 선택사항입니다. 기본값은 `ghcr.io/mephiblin/hugcivi:latest`이며, 다른 레지스트리 이미지를 직접 쓰려면 `HUGCIVI_IMAGE=이미지주소`를 추가하세요.
+`HUGCIVI_IMAGE`는 선택사항입니다. 기본값은 `ghcr.io/mephiblin/hugcivi:latest`이며, 특정 릴리스로 고정하려면 `ghcr.io/mephiblin/hugcivi:sha-<커밋>` 형태를 넣을 수 있습니다. 다른 레지스트리 이미지를 직접 쓰려면 `HUGCIVI_IMAGE=이미지주소`를 추가하세요.
 
 Synology에서 `PUID`와 `PGID`는 파일을 소유할 DSM 사용자/그룹 ID로 맞춥니다. 권한이 맞지 않는 기존 폴더를 한 번 정리해야 하면 `HUGCIVI_CHOWN_ON_START=1`을 임시로 켤 수 있습니다.
 

@@ -2,6 +2,17 @@
 
 ## 2026-07-03
 
+### 배포
+
+- `ghcr.io/mephiblin/hugcivi:sha-625957b`와 `ghcr.io/mephiblin/hugcivi:latest` 이미지를 로컬 `linux/amd64` 빌드로 GHCR에 push했습니다.
+- `origin/main`은 `625957b`까지 push되어 Portainer/Synology에서 `latest`를 다시 pull하면 아래 YouTube/라이브러리 수정이 반영됩니다.
+
+### 설치 운영 문서
+
+- `UbuntuPortainer설명서.md`와 `CasaOs설명서.md` 앞부분에 대상 시스템, 접속 방식, 데이터 경로, 포트, 비밀번호, 이미지 태그를 먼저 확인하는 작동 프롬프트를 추가했습니다.
+- 읽기 전용 점검 승인과 설치/변경 승인을 분리해, 사용자가 명시적으로 허가하기 전에는 Docker/Portainer 설치, Stack 배포, `docker pull`, 폴더 생성, 권한 변경, 삭제 작업을 하지 않도록 문서화했습니다.
+- CasaOS 문서는 Portainer가 없을 때 CasaOS Custom Install/Compose fallback과 Portainer 설치 중 무엇을 원하는지 먼저 묻도록 했고, Ubuntu Portainer 문서는 Docker/Portainer 설치까지 진행할지 별도 확인하도록 했습니다.
+
 ### YouTube/yt-dlp
 
 - 기본 YouTube 자막 다운로드를 best-effort로 처리해, YouTube가 자막 요청에 `HTTP 429 Too Many Requests`를 반환해도 영상 파일이 저장되면 작업이 성공할 수 있게 했습니다.

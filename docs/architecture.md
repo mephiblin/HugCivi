@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-02
+Last updated: 2026-07-03
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -209,6 +209,8 @@ Indexer behavior:
 - `/api/library?mode=live` can force filesystem scan behavior
 
 The index row stores the same kind of payload the UI already expects, rather than normalizing every display field into separate columns. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
+
+Single-media yt-dlp/gallery-dl archives can enrich their library payload from the saved `*.info.json` sidecar, using the real media title and webpage URL for the card when the folder metadata only has a fallback slug. Multi-video channel or playlist folders keep folder-level titles so one child video title does not rename the whole archive.
 
 Filesystem operations from the app update related path state:
 

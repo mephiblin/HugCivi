@@ -1,5 +1,47 @@
 # OpenAI Codex용 HugCivi CasaOS 설치 운영 지시서
 
+## 0. 시작 프롬프트: 점검 질문과 설치 허가
+
+Codex는 이 문서를 받으면 CasaOS/SSH 접속, 읽기 전용 점검, 설치 또는 변경 명령을 시작하기 전에 먼저 아래 질문을 사용자에게 던지고 답을 기다린다. 사용자가 명시적으로 `점검 진행`, `설치 진행`, `승인`, `OK`처럼 허가하기 전에는 Portainer 설치, CasaOS Custom Install 배포, `docker pull`, `docker compose up`, `mkdir`, `chown`, `chmod`, container/volume 삭제, 앱 삭제 옵션 변경 같은 작업을 하지 않는다.
+
+첫 응답은 아래처럼 시작한다.
+
+```markdown
+HugCivi를 CasaOS 환경에 설치하거나 업데이트하기 전에 대상 시스템과 허가 범위를 확인하겠습니다.
+
+1. 대상 CasaOS 서버의 접속 방식은 무엇인가요? CasaOS URL, SSH 주소, 사용자명, sudo 가능 여부를 알려주세요.
+2. Portainer가 이미 설치되어 있나요? 모르면 제가 읽기 전용 명령으로 확인해도 될까요?
+3. Portainer가 없으면 CasaOS Custom Install/Compose를 기본으로 진행할까요, 아니면 Portainer 설치를 원하시나요?
+4. 기존 HugCivi 데이터가 있나요? 있으면 `/data`와 `/config`로 쓸 host path를 알려주세요. 기본값은 `/DATA/HugCivi/models`, `/DATA/AppData/hugcivi/config`입니다.
+5. HugCivi 외부 접속 포트는 기본 `8088`로 진행할까요? CasaOS 앱 포트, 리버스 프록시, 공유기/방화벽 조건이 있나요?
+6. 관리자 ID는 기본 `admin`으로 둘까요? `APP_PASSWORD`는 직접 제공할까요, 제가 생성할까요?
+7. 컨테이너 파일 소유자는 현재 CasaOS 사용자 또는 `1000:1000` 중 무엇으로 둘까요? 기존 데이터가 있으면 재귀 `chown`은 별도 승인 후에만 진행합니다.
+8. 사용할 이미지 태그는 `ghcr.io/mephiblin/hugcivi:latest`인가요, 특정 `sha-...` 태그인가요?
+9. 위 답변을 받은 뒤 먼저 읽기 전용 점검 명령만 실행해도 될까요?
+```
+
+읽기 전용 점검 승인을 받으면 1, 4, 5단계의 상태 확인 명령을 실행하고 결과를 요약한다. 점검 승인과 설치 승인은 별개로 취급한다. 점검 뒤에는 다음 형식으로 다시 허가를 받는다.
+
+```markdown
+점검 결과를 요약하면 다음과 같습니다.
+
+- Portainer 상태:
+- CasaOS/Docker/Compose 상태:
+- HugCivi data/config 경로:
+- 포트와 접근 경로:
+- 기존 데이터 보존 주의점:
+
+아래 계획으로 설치/업데이트를 진행해도 될까요?
+
+- 선택한 배포 방식:
+- 사용할 이미지:
+- 만들거나 수정할 경로:
+- 실행할 변경 명령:
+- 변경하지 않을 항목:
+```
+
+설치 또는 업데이트는 사용자가 두 번째 허가에 답한 뒤에만 진행한다. 허가가 모호하면 작업 범위를 좁혀 다시 묻고, 데이터 삭제나 대량 권한 변경은 항상 별도 확인을 받는다.
+
 ## 1. 첫 단계: Portainer 설치 여부 점검
 
 Codex는 이 문서를 받으면 다른 설치 작업보다 먼저 CasaOS 서버에 Portainer가 이미 설치되어 있는지 확인한다. Docker 권한 오류가 나면 같은 명령을 `sudo`로 재시도한다.

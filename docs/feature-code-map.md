@@ -33,7 +33,7 @@ This document is the first stop for a human or LLM developer who needs to change
 | `chrome-extension/*` | Manifest V3 Chrome extension for sending current tab or typed input to HugCivi. |
 | `tests/*` | Pytest coverage for parsers, queues, runtime behavior, APIs, archive/media safety, library, and regressions. |
 | `Dockerfile`, `docker-compose.yml`, `portainer-stack.yml`, `docker-entrypoint.sh` | Container build, local compose, NAS/Portainer deployment, UID/GID/chown startup behavior. |
-| `.github/workflows/container-image.yml` | Manual GHCR multi-arch image build and push. |
+| `.github/workflows/container-image.yml`, `SKILL_Dev/skill_build.md` | GHCR image build/push references for GitHub Actions and local Portainer/Synology release flow. |
 
 ## Runtime Shape
 
@@ -82,7 +82,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | PWA install | Web manifest and service worker | `web_manifest`, `service_worker` routes | `<link rel="manifest">`, `app/static/sw.js` | static cache `hugcivi-static-v3` | `test_pwa_manifest_and_service_worker_are_declared` |
 | Chrome extension remote | Extension popup and shortcut | HugCivi APIs reused: `/api/jobs/bulk`, `/api/jobs`; addon zip endpoint exposes package | `chrome-extension/manifest.json`, `background.js`, `popup.html`, `popup.js`, `shared.js` | `chrome.storage.local` settings and last activity | JS syntax checks: `node --check chrome-extension/*.js`; manifest JSON parse |
 | Database maintenance | Maintenance APIs and optional clear-history vacuum | `api_db_wal`, checkpoint, optimize, compact, backup, `api_clear_jobs`; DB helpers | currently API-only or admin tooling | `maintenance_runs`, `/config/backups`; `SQLITE_VACUUM_AFTER_CLEAR` controls clear-history `VACUUM` | `test_database_backup_uses_sqlite_backup_api` |
-| Container deployment | Docker/Portainer/GHCR | Dockerfile and entrypoint only | N/A | `/data`, `/config`, image `ghcr.io/mephiblin/hugcivi` | build smoke/manual CI workflow |
+| Container deployment | Docker/Portainer/GHCR | Dockerfile, entrypoint, `portainer-stack.yml`, build skill workflow | N/A | `/data`, `/config`, image `ghcr.io/mephiblin/hugcivi:latest` and `sha-<commit>` tags | build smoke/manual CI workflow; local image push verification in patch notes |
 
 ## API Route Index
 
