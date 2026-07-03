@@ -81,7 +81,7 @@ The authenticated settings modal renders these credential and option values in p
 | `YT_DLP_COOKIES_FROM_BROWSER` | empty | env/UI | Browser profile mode. Alias `YTDLP_COOKIES_FROM_BROWSER` is also read. |
 | `YT_DLP_PROXY` | empty | env/UI | HTTP/HTTPS/SOCKS proxy URL passed to yt-dlp as `--proxy`. Alias `YTDLP_PROXY` is also read. Treat authenticated proxy URLs as credentials. |
 | `YT_DLP_FORMAT` | H.264 MP4 first | env/UI | Format selector. Alias `YTDLP_FORMAT` is also read. |
-| `YT_DLP_EXTRA_OPTIONS` | empty | env/UI | Supports `cmdline-args=` and selected config keys for advanced yt-dlp tuning. Output/path/exec/plugin/downloader/config overrides are blocked. Alias `YTDLP_EXTRA_OPTIONS` is also read. Prefer `YT_DLP_PROXY` for proxy configuration. |
+| `YT_DLP_EXTRA_OPTIONS` | empty | env/UI | Supports `cmdline-args=` and selected config keys for advanced yt-dlp tuning. Output/path/exec/plugin/downloader/config overrides are blocked. Alias `YTDLP_EXTRA_OPTIONS` is also read. Prefer `YT_DLP_PROXY` for proxy configuration. Explicit subtitle or error-handling options override HugCivi's best-effort default YouTube subtitle behavior. |
 
 ## Queue And Request Safety
 

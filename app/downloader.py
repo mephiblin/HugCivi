@@ -153,6 +153,7 @@ YOUTUBE_AUTO_SUBTITLE_LANGS = ("en",)
 YOUTUBE_SUBTITLE_FORMAT = "vtt/srt/best"
 YOUTUBE_METADATA_PROBE_TIMEOUT_SECONDS = 45
 YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
+GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES = {".part", ".json", ".txt", ".srt", ".vtt"}
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_OUTPUT_RE = re.compile(
     r"https?://(?:www\.)?hitomi\.la/(?:galleries|reader)/(?:[^/?#]+-)?(?P<id>\d+)(?:\.html)?",
@@ -222,6 +223,12 @@ YT_DLP_SUBTITLE_CMDLINE_OPTIONS = {
     "--write-subs",
     "--write-sub",
     "--write-subtitles",
+}
+YT_DLP_ERROR_CMDLINE_OPTIONS = {
+    "--abort-on-error",
+    "--ignore-errors",
+    "--no-abort-on-error",
+    "--no-ignore-errors",
 }
 
 
@@ -3599,6 +3606,7 @@ def default_youtube_subtitle_cmdline_args(url: str, existing_args: list[str]) ->
     if not is_youtube_url(url) or has_any_ytdlp_cmdline_option(existing_args, YT_DLP_SUBTITLE_CMDLINE_OPTIONS):
         return []
 
+    best_effort_args = [] if has_any_ytdlp_cmdline_option(existing_args, YT_DLP_ERROR_CMDLINE_OPTIONS) else ["--ignore-errors"]
     info = yt_dlp_subtitle_info(url, existing_args)
     manual_languages = preferred_subtitle_languages(info.get("subtitles"), YOUTUBE_MANUAL_SUBTITLE_LANGS)
     if manual_languages:
@@ -3610,6 +3618,7 @@ def default_youtube_subtitle_cmdline_args(url: str, existing_args: list[str]) ->
             YOUTUBE_SUBTITLE_FORMAT,
             "--convert-subs",
             "srt",
+            *best_effort_args,
         ]
 
     auto_languages = preferred_subtitle_languages(info.get("automatic_captions"), YOUTUBE_AUTO_SUBTITLE_LANGS)
@@ -3622,6 +3631,7 @@ def default_youtube_subtitle_cmdline_args(url: str, existing_args: list[str]) ->
             YOUTUBE_SUBTITLE_FORMAT,
             "--convert-subs",
             "srt",
+            *best_effort_args,
         ]
     return []
 
@@ -4251,7 +4261,6 @@ def update_gallery_dl_progress(job_id: int, target: Path) -> None:
 
 
 def gallery_dl_progress_snapshot(target: Path, *, max_items: int) -> tuple[str | None, int]:
-    ignored_suffixes = {".part", ".json", ".txt"}
     latest_name: str | None = None
     latest_mtime = -1.0
     total_size = 0
@@ -4265,7 +4274,7 @@ def gallery_dl_progress_snapshot(target: Path, *, max_items: int) -> tuple[str |
             try:
                 if not item.is_file() or item.is_symlink():
                     continue
-                if item.suffix.lower() in ignored_suffixes or item.name.endswith(".part"):
+                if item.suffix.lower() in GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES or item.name.endswith(".part"):
                     continue
                 stat = item.stat()
             except OSError:
@@ -4280,12 +4289,11 @@ def gallery_dl_progress_snapshot(target: Path, *, max_items: int) -> tuple[str |
 
 
 def gallery_dl_downloaded_files(target: Path) -> list[Path]:
-    ignored_suffixes = {".part", ".json", ".txt"}
     files = [
         item
         for item in target.rglob("*")
         if item.is_file()
-        and item.suffix.lower() not in ignored_suffixes
+        and item.suffix.lower() not in GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES
         and not item.name.endswith(".part")
     ]
     return sorted(files, key=lambda item: item.name.lower())
@@ -4302,7 +4310,7 @@ def cleanup_empty_gallery_archive_target(job_id: int, target: Path) -> None:
                 continue
             if item.is_file():
                 suffix = item.suffix.lower()
-                if suffix in {".json", ".txt", ".part"} or item.name.endswith(".part"):
+                if suffix in GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES or item.name.endswith(".part"):
                     item.unlink()
             elif item.is_dir():
                 try:

@@ -919,6 +919,20 @@ class DownloaderRuntimeTests(unittest.TestCase):
                     downloader.download_gallerydl(57, parsed)
             self.assertFalse((root / "gallery-dl" / "xhamster3.com" / "sample-video-123456").exists())
 
+    def test_gallery_dl_downloaded_files_ignores_subtitle_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            (target / "sample [abc123].en.srt").write_text("subtitle", encoding="utf-8")
+            (target / "sample [abc123].ko.vtt").write_text("WEBVTT", encoding="utf-8")
+            (target / "sample [abc123].info.json").write_text("{}", encoding="utf-8")
+
+            self.assertEqual(downloader.gallery_dl_downloaded_files(target), [])
+
+            media = target / "sample [abc123].mp4"
+            media.write_bytes(b"video")
+
+            self.assertEqual(downloader.gallery_dl_downloaded_files(target), [media])
+
     def test_empty_gallery_archive_cleanup_keeps_real_media(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "data"
@@ -1467,6 +1481,7 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertEqual(command[command.index("--sub-langs") + 1], "ko,en")
         self.assertIn("--convert-subs", command)
         self.assertEqual(command[command.index("--convert-subs") + 1], "srt")
+        self.assertIn("--ignore-errors", command)
 
     def test_yt_dlp_command_falls_back_to_auto_english_subtitles(self) -> None:
         with (
@@ -1486,6 +1501,7 @@ class DownloaderRuntimeTests(unittest.TestCase):
         self.assertIn("--write-auto-subs", command)
         self.assertNotIn("--write-subs", command)
         self.assertEqual(command[command.index("--sub-langs") + 1], "en")
+        self.assertIn("--ignore-errors", command)
 
     def test_yt_dlp_command_keeps_explicit_subtitle_options(self) -> None:
         fake_db = FakeDb({}, secrets={"YT_DLP_EXTRA_OPTIONS": "cmdline-args=--write-auto-subs --sub-langs ja"})
@@ -1503,6 +1519,27 @@ class DownloaderRuntimeTests(unittest.TestCase):
         probe.assert_not_called()
         self.assertEqual(command.count("--write-auto-subs"), 1)
         self.assertEqual(command[command.index("--sub-langs") + 1], "ja")
+
+    def test_yt_dlp_command_keeps_explicit_error_policy_for_default_subtitles(self) -> None:
+        fake_db = FakeDb({}, secrets={"YT_DLP_EXTRA_OPTIONS": "cmdline-args=--abort-on-error"})
+
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader.shutil, "which", return_value=None),
+            mock.patch.object(
+                downloader,
+                "yt_dlp_subtitle_info",
+                return_value={"subtitles": {"en": []}, "automatic_captions": {}},
+            ),
+        ):
+            command = downloader.yt_dlp_command(
+                "https://www.youtube.com/watch?v=abc123",
+                Path("/downloads/youtube"),
+            )
+
+        self.assertIn("--write-subs", command)
+        self.assertIn("--abort-on-error", command)
+        self.assertNotIn("--ignore-errors", command)
 
     def test_stall_watchdog_defaults_to_enabled(self) -> None:
         with mock.patch.object(downloader, "db", FakeDb({})):

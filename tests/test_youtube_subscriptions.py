@@ -31,10 +31,12 @@ def app_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("APP_PASSWORD", "test-password-that-is-long")
 
     import app.db as db
+    import app.downloader as downloader
     import app.subscriptions as subscriptions
     import app.main as main
 
     importlib.reload(db)
+    importlib.reload(downloader)
     importlib.reload(subscriptions)
     importlib.reload(main)
     db.init_db()

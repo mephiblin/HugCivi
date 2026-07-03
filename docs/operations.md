@@ -99,6 +99,7 @@ Operational behavior:
 - Scheduled checks do not create normal download jobs.
 - If `auto_queue` is enabled, the independent subscription download worker downloads eligible items without adding them to the normal job list.
 - Manual one-shot YouTube downloads still use the regular external download queue.
+- Default YouTube subtitle downloads are best-effort. A subtitle-only HTTP 429 does not fail the item when the media file itself was saved.
 
 Useful controls:
 
@@ -126,6 +127,8 @@ YT_DLP_PROXY=socks5://192.168.200.100:1080
 The same value can be saved in the web UI settings modal as `YouTube/yt-dlp Proxy`. UI-saved values are stored in `/config/jobs.sqlite3` and take precedence over environment variables. Authenticated proxy URLs can contain credentials, so treat DB backups as credential backups.
 
 This setting only affects yt-dlp-backed downloads and yt-dlp metadata probes, including YouTube, xHamster, Pornhub, and other preferred yt-dlp video hosts. It does not proxy Hugging Face, Civitai, generic HTTP downloads, native Hitomi requests, or internal server-local ZIP/media jobs.
+
+Default YouTube subtitle downloads are treated as optional sidecars. HugCivi still requires at least one non-subtitle media file before marking a yt-dlp job successful, so a subtitle-only partial result is cleaned up or failed instead of becoming a library item.
 
 ## Expensive Local Work
 
