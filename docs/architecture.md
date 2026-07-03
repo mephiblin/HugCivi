@@ -10,7 +10,7 @@ Runtime topology:
 
 - FastAPI serves the HTML UI, API, static assets, media previews, and artifact downloads.
 - SQLite at `/config/jobs.sqlite3` is the authoritative state store for jobs, settings, favorites, notes, library index rows, artifacts, and maintenance history.
-- `/data` is the durable archive root. Model files, images, videos, comics, workflows, sidecar metadata, and user-managed folders stay on the filesystem.
+- `/data` is the durable archive root. Model files, images, videos, audio, comics, workflows, sidecar metadata, and user-managed folders stay on the filesystem.
 - Background work runs as in-process scheduler threads. HugCivi intentionally avoids Redis, Celery, Elasticsearch, or a second service for the current personal NAS target.
 - ffmpeg, gallery-dl, yt-dlp, Deno, and the Hugging Face CLI paths are invoked only where the matching source type needs them.
 
@@ -47,7 +47,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | --- | --- |
 | `app/main.py` | FastAPI app, lifespan, API routes, HTML rendering, local file operations, media viewer, ZIP/media internal job handlers, library indexer. |
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
-| `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
+| `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
 | `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
@@ -138,7 +138,7 @@ External download jobs:
 - created by `db.create_job()`
 - scheduled by `app/downloader.py`
 - limited by global download concurrency, per-provider concurrency, and provider cooldown
-- source types: `huggingface`, `civitai`, `generic`, `comfyui`, `hitomi`, `gallerydl`
+- source types: `huggingface`, `civitai`, `generic`, `comfyui`, `hitomi`, `asmrone`, `gallerydl`
 
 Internal jobs:
 

@@ -1,6 +1,6 @@
 ---
 name: hugcivi-download-providers
-description: Stable workflow for changing HugCivi input parsing and download providers: Hugging Face, Civitai, Hitomi, gallery-dl, yt-dlp, generic HTTP, and ComfyUI workflow downloads.
+description: Stable workflow for changing HugCivi input parsing and download providers: Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic HTTP, and ComfyUI workflow downloads.
 ---
 
 # HugCivi Download Providers Skill
@@ -30,7 +30,7 @@ Use this before adding or changing URL parsing, provider classification, externa
 ```bash
 sed -n '1,280p' app/parsers.py
 sed -n '1,260p' app/models.py
-rg -n "def (provider_key_for_parsed|run_job|download_huggingface|download_civitai|download_civitai_image_page|download_hitomi|download_hitomi_listing|download_gallerydl|download_generic|download_comfyui)" app/downloader.py
+rg -n "def (provider_key_for_parsed|run_job|download_huggingface|download_civitai|download_civitai_image_page|download_hitomi|download_hitomi_listing|download_asmrone|download_gallerydl|download_generic|download_comfyui)" app/downloader.py
 ```
 
 ## Test Focus

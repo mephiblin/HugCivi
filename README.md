@@ -1,8 +1,8 @@
 # hugcivi
 
-Synology NAS에서 Hugging Face, Civitai, Hitomi, gallery-dl 지원 사이트, YouTube/yt-dlp, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
+Synology NAS에서 Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl 지원 사이트, YouTube/yt-dlp, 일반 URL 파일과 ComfyUI 워크플로우를 내려받아 보관하는 웹 앱입니다.
 
-브라우저에서 URL을 붙여넣으면 모델과 갤러리 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
+브라우저에서 URL을 붙여넣으면 모델, 갤러리, 오디오 work 정보를 읽고, LLM, LoRA, Checkpoint, Embedding, Hitomi, ASMR.one, gallery-dl, YouTube 같은 종류에 맞춰 폴더를 자동으로 나눠 저장합니다. ComfyUI 워크플로우 JSON과 워크플로우가 내장된 PNG는 저장하고 뷰어에서 노드 그래프로 확인할 수 있습니다.
 
 ## 현재 구조 요약
 
@@ -34,7 +34,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 - NAS에 AI 모델 파일을 모아두고 싶을 때
 - Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
-- Hitomi, gallery-dl 지원 사이트, YouTube 영상을 폴더로 보관하고 필요할 때 받고 싶을 때
+- Hitomi, ASMR.one, gallery-dl 지원 사이트, YouTube 영상을 폴더로 보관하고 필요할 때 받고 싶을 때
 - ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
 - ComfyUI 워크플로우 공유 PNG 또는 JSON을 NAS에 저장하고 나중에 다시 보고 싶을 때
 - 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
@@ -45,6 +45,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - Hitomi artist, language, search, index listing URL discovery와 선택 queue confirm UI
+- ASMR.one work URL 오디오 다운로드
 - gallery-dl 지원 사이트 범용 다운로드
 - YouTube/yt-dlp URL 다운로드
 - 일반 HTTP/HTTPS 파일 URL 다운로드
@@ -258,6 +259,7 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 /data/comfyui/workflows
 /data/generic
 /data/hitomi
+/data/asmr.one
 /data/gallery-dl
 ```
 
@@ -269,7 +271,7 @@ mkdir -p /volume1/docker/nas-model-archiver/config
 2. 왼쪽 아래 사용자 버튼을 누릅니다.
 3. 필요한 경우 Hugging Face Token, Civitai Token, gallery-dl, YouTube/yt-dlp 인증 정보를 입력합니다.
 4. 필요한 경우 기본 폴더 경로와 대기열 설정을 바꿉니다.
-5. 상단 입력창에 Hugging Face, Civitai, Hitomi, gallery-dl, YouTube/yt-dlp 또는 일반 URL을 붙여넣습니다.
+5. 상단 입력창에 Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, YouTube/yt-dlp 또는 일반 URL을 붙여넣습니다.
 6. 다운로드 버튼을 누릅니다.
 7. 작업 목록에서 진행률과 로그를 확인합니다.
 
@@ -321,6 +323,17 @@ artist, tag, language, search, index 같은 listing URL은 갤러리 URL을 disc
 Hitomi 다운로드는 기본적으로 `gallery-dl`을 우선 백엔드로 사용합니다. 컨테이너 시작 시 `gallery-dl` 패키지만 최신 안정 버전 범위로 업그레이드할 수 있고, 실패하면 이미지에 포함된 버전으로 계속 실행합니다. `gallery-dl` 실행이 실패했을 때는 내장 Hitomi 다운로더로 한 번 더 시도합니다.
 
 컨테이너 로그와 작업 로그에는 실행된 `gallery-dl` 버전이 남습니다. 재시작 속도나 재현성이 더 중요하면 설정창의 `시작 시 gallery-dl 자동 업데이트`를 끄거나 `GALLERY_DL_AUTO_UPDATE=0`으로 두고 이미지 빌드 시점의 버전을 그대로 사용하세요. UI에서 저장한 값은 `/config/startup.env`에 기록되어 다음 컨테이너 시작부터 적용됩니다.
+
+### ASMR.one
+
+```text
+https://asmr.one/work/RJ361902
+https://asmr.one/work/361902/DLSITE/RJ361902
+```
+
+ASMR.one work URL은 `/data/asmr.one/{source_id} - {title}` 아래에 API track 폴더 구조대로 오디오 파일을 저장합니다. 다운로드에는 track의 `mediaDownloadUrl`에 `action=download`를 붙인 URL을 사용하고, stream URL은 저장하지 않습니다.
+
+작업 폴더에는 `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, `_archive_metadata.json` sidecar가 함께 저장됩니다.
 
 ### gallery-dl 범용 다운로드
 
@@ -574,6 +587,7 @@ GALLERY_DL_PASSWORD=
 GALLERY_DL_COOKIES_FILE=
 GALLERY_DL_COOKIES_FROM_BROWSER=
 GALLERY_DL_EXTRA_OPTIONS=
+ASMRONE_API_BASE=https://api.asmr.one/api
 YT_DLP_COOKIES_FILE=
 YT_DLP_COOKIES_FROM_BROWSER=
 YT_DLP_PROXY=

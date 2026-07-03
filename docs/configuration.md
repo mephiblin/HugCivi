@@ -120,6 +120,7 @@ The authenticated settings modal renders these credential and option values in p
 | `CIVITAI_API_BASE` | `https://civitai.com/api/v1` | env | Override only for tests or compatible mirrors. |
 | `CIVITAI_IMAGE_RESOURCE_RETRY_DELAY_SECONDS` | `86400` | env/settings fallback | Delay before retrying non-permanent Civitai image resource failures. There is no current visible UI field for this value. |
 | `CIVITAI_IMAGE_MAX_RESOURCE_JOBS` | `30` | env | Max child jobs created from one Civitai image page. |
+| `ASMRONE_API_BASE` | `https://api.asmr.one/api` | env | Override only for tests or compatible ASMR.one API mirrors. |
 | `HITOMI_BACKEND` | `auto` | env | `auto`, gallery-dl first with native fallback. |
 | `HITOMI_IMAGE_FORMAT` | `webp` | env | Preferred native Hitomi image format. |
 | `HITOMI_LISTING_QUEUE_MODE` | `auto` | env/UI | `auto` or `confirm`. |

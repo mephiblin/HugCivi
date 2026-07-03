@@ -17,7 +17,7 @@ Codex auto-discovery uses `.agents/skills/hugcivi-dev-core/SKILL.md` as a small 
 | First orientation or broad architecture changes | [skill_project_core.md](skill_project_core.md) |
 | Rename, move, delete, archive, path handling, symlink safety | [skill_filesystem_safety.md](skill_filesystem_safety.md) |
 | SQLite schema, job lifecycle, internal/external queues, settings | [skill_database_jobs.md](skill_database_jobs.md) |
-| Parser/provider/downloader changes for HF, Civitai, Hitomi, gallery-dl, yt-dlp, generic, ComfyUI | [skill_download_providers.md](skill_download_providers.md) |
+| Parser/provider/downloader changes for HF, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic, ComfyUI | [skill_download_providers.md](skill_download_providers.md) |
 | Browser UI, PWA, Chrome extension, frontend API compatibility | [skill_frontend_addon.md](skill_frontend_addon.md) |
 | Updating README/LLM README/docs/feature-code map/config docs/patch notes | [skill_docs_handoff.md](skill_docs_handoff.md) |
 
