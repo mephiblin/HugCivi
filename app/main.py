@@ -1068,8 +1068,9 @@ async def api_create_folder(request: Request, _: str = Depends(require_auth)) ->
 
 
 @app.get("/api/library")
-def api_library(mode: str = "index", _: str = Depends(require_auth)) -> JSONResponse:
-    return JSONResponse(library_items(mode=mode))
+def api_library(mode: str = "index", path: str = "", _: str = Depends(require_auth)) -> JSONResponse:
+    root = existing_data_path(path) if path else None
+    return JSONResponse(library_items(mode=mode, root_path=root))
 
 
 @app.post("/api/library/reindex")
@@ -1682,7 +1683,9 @@ def decorate_job_media_flags(job: dict[str, Any]) -> None:
             job["media_type"] = "image"
 
 
-def library_items(max_items: int = 1000, *, mode: str = "index") -> list[dict[str, Any]]:
+def library_items(max_items: int = 1000, *, mode: str = "index", root_path: Path | None = None) -> list[dict[str, Any]]:
+    if root_path is not None:
+        return live_library_items(max_items=max_items, root_path=root_path)
     if mode != "live":
         indexed_items = db.list_library_index_items(limit=max_items)
         if indexed_items:
@@ -1694,11 +1697,15 @@ def library_items(max_items: int = 1000, *, mode: str = "index") -> list[dict[st
         if db.get_library_scan_state("library.indexing", "0") == "1":
             return []
 
+    return live_library_items(max_items=max_items)
+
+
+def live_library_items(max_items: int = 1000, *, root_path: Path | None = None) -> list[dict[str, Any]]:
     favorites = db.favorite_paths()
     items: list[dict[str, Any]] = []
     indexed_dirs: set[Path] = set()
 
-    for path in iter_data_paths(max_items=max_items * 3):
+    for path in iter_data_paths(max_items=max_items * 3, root_path=root_path):
         if len(items) >= max_items:
             break
         try:
@@ -1709,7 +1716,7 @@ def library_items(max_items: int = 1000, *, mode: str = "index") -> list[dict[st
         except OSError:
             continue
 
-    for path in iter_data_paths(max_items=max_items * 6):
+    for path in iter_data_paths(max_items=max_items * 6, root_path=root_path):
         if len(items) >= max_items:
             break
         try:
@@ -1882,11 +1889,21 @@ def has_indexed_library_ancestor(path: Path) -> bool:
         current = current.parent
 
 
-def iter_data_paths(*, max_items: int) -> list[Path]:
+def iter_data_paths(*, max_items: int, root_path: Path | None = None) -> list[Path]:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    root_path = root_path or DATA_ROOT
     paths: list[Path] = []
     try:
-        iterator = DATA_ROOT.rglob("*")
+        if lexical_absolute(root_path) != lexical_absolute(DATA_ROOT) and not should_skip_index_path(root_path):
+            paths.append(root_path)
+    except OSError:
+        return paths
+    if len(paths) >= max_items:
+        return paths
+    if not root_path.is_dir():
+        return paths
+    try:
+        iterator = root_path.rglob("*")
         for path in iterator:
             if len(paths) >= max_items:
                 break

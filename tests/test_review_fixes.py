@@ -666,6 +666,56 @@ def test_clear_history_resets_stale_library_index_so_existing_model_cards_surviv
     assert rows[0]["has_media"] is False
 
 
+def test_library_live_path_finds_child_model_cards_when_index_is_stale(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    indexed = data_root / "gallery-dl" / "example"
+    indexed.mkdir(parents=True)
+    (indexed / "page.jpg").write_bytes(b"image")
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    parent = data_root / "stable-diffusion" / "loras" / "zimagebase" / "hands-xl-_-sd-1.5-_-f1d-_-pony"
+    target = parent / "version_3012596"
+    target.mkdir(parents=True)
+    (target / "Hands_zib_v1.safetensors").write_bytes(b"model")
+    (target / "civitai_example_134865393.jpg").write_bytes(b"image")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/200255",
+                "model_id": "200255",
+                "version_id": "3012596",
+                "archive_info": {"model_title": "Hands XL", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert [
+        row
+        for row in main.library_items()
+        if row.get("target_path") == "stable-diffusion/loras/zimagebase/hands-xl-_-sd-1.5-_-f1d-_-pony/version_3012596"
+    ] == []
+
+    payload = json.loads(
+        main.api_library(
+            mode="live",
+            path="stable-diffusion/loras/zimagebase/hands-xl-_-sd-1.5-_-f1d-_-pony",
+            _="_",
+        ).body.decode("utf-8")
+    )
+
+    rows = [
+        row
+        for row in payload
+        if row.get("target_path") == "stable-diffusion/loras/zimagebase/hands-xl-_-sd-1.5-_-f1d-_-pony/version_3012596"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Hands XL"
+    assert rows[0]["has_media"] is True
+    assert rows[0]["thumbnail_url"].endswith("civitai_example_134865393.jpg")
+
+
 def test_library_item_uses_scan_budgets_for_large_folders(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -946,6 +996,8 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);" in template
     assert "async function refreshLibraryItems(options = {})" in template
+    assert "refreshLibraryItems({mode: 'live', path: activeLibraryPath});" in template
+    assert "params.set('path', normalizePath(options.path || ''))" in template
     assert "await refreshLibraryItems({mode: 'live'});" in template
     assert "function folderSearchScopePath()" in template
     assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template

@@ -2706,6 +2706,7 @@
       homeView.classList.remove('active');
       libraryView.classList.add('active');
       renderLibrary();
+      refreshLibraryItems({mode: 'live', path: activeLibraryPath});
       if (isMobileLayout()) {
         activateMobileTab('library');
       }
@@ -2929,6 +2930,7 @@
       try {
         const params = new URLSearchParams();
         if (options.mode) params.set('mode', options.mode);
+        if (Object.prototype.hasOwnProperty.call(options, 'path')) params.set('path', normalizePath(options.path || ''));
         const query = params.toString();
         const response = await fetch(query ? `/api/library?${query}` : '/api/library');
         if (!response.ok) return;
