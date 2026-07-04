@@ -249,7 +249,7 @@ Main API groups:
 | Addon package | `/api/addon/chrome-extension` |
 | DB maintenance | `/api/maintenance/db/wal`, checkpoint, optimize, compact, backup |
 
-`/api/jobs` keeps the legacy array response when called without pagination parameters. Cursor pagination returns a wrapper with `jobs` and `next_cursor`. Numbered pagination with `limit` and `page` returns a wrapper with `jobs`, `page`, `limit`, `total_count`, and `total_pages`; the browser job table uses this mode with 50 rows per page.
+`/api/jobs` keeps the legacy array response when called without pagination parameters. Cursor pagination returns a wrapper with `jobs` and `next_cursor`. Numbered pagination with `limit` and `page` returns a wrapper with `jobs`, `page`, `limit`, `total_count`, `total_pages`, `active_source`, and `source_counts`; the browser job table uses this mode with 50 rows per page. `source=<provider>` filters the visible job list server-side while `source_counts` keeps the `ALL` and provider filter buttons in sync with the full job history.
 
 Civitai resource health accepts either model-version IDs or model archive components. Model-version checks report presence from completed jobs and Civitai sidecars. Component checks require a `/data` path and compare requested component filenames against local files in that archive folder.
 

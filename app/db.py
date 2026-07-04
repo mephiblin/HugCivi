@@ -854,10 +854,26 @@ def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
         return [redact_job_row(dict(row)) for row in rows]
 
 
-def count_jobs() -> int:
+def count_jobs(source: str | None = None) -> int:
+    where = "WHERE source = ?" if source else ""
+    params: tuple[Any, ...] = (source,) if source else ()
     with _DB_LOCK, connect() as conn:
-        row = conn.execute("SELECT COUNT(*) AS count FROM jobs").fetchone()
+        row = conn.execute(f"SELECT COUNT(*) AS count FROM jobs {where}", params).fetchone()
         return int(row["count"] if row else 0)
+
+
+def count_jobs_by_source() -> list[dict[str, Any]]:
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source, COUNT(*) AS count
+            FROM jobs
+            WHERE source IS NOT NULL AND TRIM(source) <> ''
+            GROUP BY source
+            ORDER BY count DESC, source ASC
+            """
+        ).fetchall()
+    return [{"source": str(row["source"]), "count": int(row["count"])} for row in rows]
 
 
 def list_download_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
@@ -874,9 +890,23 @@ def list_download_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
         return [redact_job_row(dict(row)) for row in rows]
 
 
-def list_job_summaries(limit: int = 100, before_id: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+def list_job_summaries(
+    limit: int = 100,
+    before_id: int | None = None,
+    offset: int = 0,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
     safe_limit = max(1, min(500, int(limit)))
     safe_offset = max(0, int(offset))
+    where: list[str] = []
+    params: list[Any] = []
+    if source:
+        where.append("source = ?")
+        params.append(source)
+    if before_id is not None:
+        where.append("id < ?")
+        params.append(before_id)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     columns = """
         id, created_at, updated_at, input_text, parsed_json, source, status,
         target_dir, filename, progress_bytes, total_bytes, error,
@@ -887,13 +917,13 @@ def list_job_summaries(limit: int = 100, before_id: int | None = None, offset: i
     with _DB_LOCK, connect() as conn:
         if before_id is None:
             rows = conn.execute(
-                f"SELECT {columns} FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?",
-                (safe_limit, safe_offset),
+                f"SELECT {columns} FROM jobs {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+                params + [safe_limit, safe_offset],
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT {columns} FROM jobs WHERE id < ? ORDER BY id DESC LIMIT ?",
-                (before_id, safe_limit),
+                f"SELECT {columns} FROM jobs {where_sql} ORDER BY id DESC LIMIT ?",
+                params + [safe_limit],
             ).fetchall()
         return [redact_job_row(dict(row)) for row in rows]
 

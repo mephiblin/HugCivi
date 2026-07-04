@@ -522,6 +522,46 @@ def test_job_summary_query_omits_heavy_fields_and_supports_cursor(app_modules: t
     assert [job["id"] for job in page_payload["jobs"]] == [ids[0]]
 
 
+def test_job_page_payload_supports_source_filters(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    generic_first = db.create_job(
+        ParsedDownload(source="generic", raw_input="https://example.com/one.bin", url="https://example.com/one.bin")
+    )
+    db.create_job(
+        ParsedDownload(
+            source="hitomi",
+            raw_input="hitomi 123456",
+            hitomi_gallery_id="123456",
+            hitomi_gallery_url="https://hitomi.la/galleries/123456.html",
+        )
+    )
+    db.create_job(
+        ParsedDownload(
+            source="asmrone",
+            raw_input="https://asmr.one/work/RJ1",
+            asmrone_url="https://asmr.one/work/RJ1",
+            asmrone_work_id="RJ1",
+        )
+    )
+    generic_second = db.create_job(
+        ParsedDownload(source="generic", raw_input="https://example.com/two.bin", url="https://example.com/two.bin")
+    )
+
+    payload = main.jobs_page_payload(limit=1, page=1, source="generic")
+    api_payload = json.loads(main.api_jobs(limit=5, page=1, source="hitomi", _="_").body.decode("utf-8"))
+    cursor_payload = json.loads(main.api_jobs(limit=5, cursor=generic_second + 1, source="generic", _="_").body.decode("utf-8"))
+    source_counts = {item["source"]: item["count"] for item in payload["source_counts"]}
+
+    assert payload["active_source"] == "generic"
+    assert payload["total_count"] == 2
+    assert payload["total_pages"] == 2
+    assert [job["id"] for job in payload["jobs"]] == [generic_second]
+    assert source_counts == {"generic": 2, "asmrone": 1, "hitomi": 1}
+    assert api_payload["total_count"] == 1
+    assert [job["source"] for job in api_payload["jobs"]] == ["hitomi"]
+    assert [job["id"] for job in cursor_payload["jobs"]] == [generic_second, generic_first]
+
+
 def test_database_backup_uses_sqlite_backup_api(app_modules: tuple) -> None:
     _utils, db, _downloader, _main, _data_root, config_root = app_modules
     parsed = ParsedDownload(source="generic", raw_input="https://example.com/model.bin", url="https://example.com/model.bin")
@@ -995,6 +1035,20 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'id="folder_search"' in template
     assert 'id="folder-search-results"' in template
     assert 'id="folder-refresh-button"' in template
+    assert 'id="job-source-filters"' in template
+    assert 'data-job-source-filter' in template
+    assert "function renderJobSourceFilters()" in template
+    assert "params.set('source', requestedSource);" in template
+    assert ".job-source-filters" in stylesheet
+    assert 'id="refresh-button"' not in template
+    assert ".refresh-corner" not in stylesheet
+    top_corner = template[template.index('<div class="top-corner-actions">'):template.index('<section class="hero')]
+    assert (
+        top_corner.index('id="storage-readout"')
+        < top_corner.index('id="storage-calc-button"')
+        < top_corner.index('class="addon-button"')
+        < top_corner.index('id="thumbnail-blur-toggle"')
+    )
     assert '<th class="col-move">이동</th>' in template
     assert 'data-job-action="goto-folder"' in template
     assert 'function goToJobFolder(jobId)' in template
@@ -1021,7 +1075,6 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "await refreshFolders({manual: true, preserveExpanded: true});" in template
     assert "function jobsCompletedWithTarget(previousJobs, nextJobs)" in template
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
-    assert "await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);" in template
     assert "async function refreshLibraryItems(options = {})" in template
     assert "async function refreshLibraryForActivePath(options = {})" in template
     assert "refreshLibraryItems({mode: 'live', path: activeLibraryPath});" in template

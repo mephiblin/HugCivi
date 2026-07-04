@@ -52,7 +52,9 @@ Keep these recent operational behaviors in mind when touching handoff, provider,
 - Civitai normal model/version downloads also fetch files marked `metadata.isRequired=true` unless the input requested a specific file or raw download URL. Refresh jobs reuse existing primary/component files and refresh sidecars/previews in the same archive folder.
 - The Civitai media viewer can check both model-version resources and local component files through `/api/civitai/resource-health`; model archives send their archive path plus `component_downloads`.
 - The library view can live-scan a selected folder with `/api/library?mode=live&path=<relative-data-path>`. Clearing inactive job history resets the library index so sidecar-backed cards, including Civitai model folders, can be restored from disk.
-- ASMR.one downloads keep Unicode/Japanese local paths, record per-file status in `_asmrone_manifest.json`, and treat missing optional image/text/audio leaves as nonfatal when at least one file was saved.
+- The default job table is paginated at 50 rows per page and can be filtered by source. Use `/api/jobs?limit=50&page=N&source=civitai` for the wrapped page payload with `source_counts`; legacy `/api/jobs` array behavior remains available when `page` is omitted.
+- ASMR.one downloads keep Unicode/Japanese local paths, record per-file status in `_asmrone_manifest.json`, and treat missing optional image/text/audio leaves as nonfatal when at least one file was saved. Work cover metadata is saved as `cover.jpg` when available, and Cloudflare HTML/error-placeholder image responses are discarded and recorded as failed entries.
+- Media archives include image, video, audio, and document items. `.txt`, `.md`, and `.markdown` files are read through `/api/media/text` with a bounded preview size and rendered as escaped text; Markdown is not converted to HTML.
 
 ## Patch Notes Policy
 
@@ -81,7 +83,7 @@ See `docs/patch-notes/README.md` for the exact template.
 After a non-trivial change, update:
 
 - `README.md` only for user-visible behavior, install/deploy, examples, or troubleshooting.
-- `README_LLM.md` when reading order, folder roles, or handoff policy changes.
+- `README_LLM.md` when reading order, folder roles, handoff policy, or high-value current behavior notes change.
 - `AGENTS.md` only for recurring rules that should apply every Codex session.
 - `docs/feature-code-map.md` when code ownership, endpoint responsibility, state, or test coverage changes.
 - `docs/configuration.md` when any setting/env var/default changes.

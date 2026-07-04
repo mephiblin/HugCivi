@@ -648,11 +648,13 @@ def api_jobs(
     limit: int = 100,
     cursor: int | None = None,
     page: int | None = None,
+    source: str | None = None,
     _: str = Depends(require_auth),
 ) -> JSONResponse:
+    source_filter = normalize_job_source_filter(source)
     if page is not None:
-        return JSONResponse(jobs_page_payload(limit=limit, page=page))
-    jobs = decorate_jobs(db.list_job_summaries(limit=limit, before_id=cursor))
+        return JSONResponse(jobs_page_payload(limit=limit, page=page, source=source_filter))
+    jobs = decorate_jobs(db.list_job_summaries(limit=limit, before_id=cursor, source=source_filter))
     if cursor is None:
         return JSONResponse(jobs)
     next_cursor = jobs[-1]["id"] if len(jobs) >= max(1, min(500, limit)) else None
@@ -934,13 +936,19 @@ def jobs_response() -> JSONResponse:
     return JSONResponse({"ok": True, "jobs": decorate_jobs(db.list_jobs())})
 
 
-def jobs_page_payload(*, limit: int = JOB_LIST_PAGE_SIZE, page: int = 1) -> dict[str, Any]:
+def normalize_job_source_filter(source: str | None) -> str | None:
+    value = str(source or "").strip()
+    return value[:80] if value else None
+
+
+def jobs_page_payload(*, limit: int = JOB_LIST_PAGE_SIZE, page: int = 1, source: str | None = None) -> dict[str, Any]:
     safe_limit = max(1, min(500, int(limit)))
-    total_count = db.count_jobs()
+    source_filter = normalize_job_source_filter(source)
+    total_count = db.count_jobs(source=source_filter)
     total_pages = max(1, (total_count + safe_limit - 1) // safe_limit)
     current_page = max(1, min(total_pages, int(page)))
     offset = (current_page - 1) * safe_limit
-    jobs = decorate_jobs(db.list_job_summaries(limit=safe_limit, offset=offset))
+    jobs = decorate_jobs(db.list_job_summaries(limit=safe_limit, offset=offset, source=source_filter))
     return {
         "ok": True,
         "jobs": jobs,
@@ -948,6 +956,8 @@ def jobs_page_payload(*, limit: int = JOB_LIST_PAGE_SIZE, page: int = 1) -> dict
         "limit": safe_limit,
         "total_count": total_count,
         "total_pages": total_pages,
+        "active_source": source_filter or "",
+        "source_counts": db.count_jobs_by_source(),
     }
 
 

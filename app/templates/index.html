@@ -115,16 +115,10 @@
           <strong id="storage-used">-</strong>
           <span id="storage-total">/ -</span>
         </div>
-        <a class="addon-button" href="/api/addon/chrome-extension" title="크롬 확장 다운로드" aria-label="크롬 확장 다운로드">애드온</a>
         <button type="button" class="storage-calc-button" id="storage-calc-button" title="HugCivi 사용량 계산" aria-label="HugCivi 사용량 계산">
           계산
         </button>
-        <button type="button" class="refresh-corner" id="refresh-button" title="새로고침" aria-label="새로고침">
-          <svg viewBox="0 0 24 24" focusable="false">
-            <path d="M19.7 12.7a7.7 7.7 0 0 1-12.9 4.4l1.4-1.4a5.7 5.7 0 0 0 9.5-3.2h2Zm-15.4-1.4A7.7 7.7 0 0 1 17.2 6.9l-1.4 1.4a5.7 5.7 0 0 0-9.5 3.2h-2Z"/>
-            <path d="M18.3 3.7V8h-4.3l4.3-4.3ZM5.7 20.3V16H10l-4.3 4.3Z"/>
-          </svg>
-        </button>
+        <a class="addon-button" href="/api/addon/chrome-extension" title="크롬 확장 다운로드" aria-label="크롬 확장 다운로드">애드온</a>
         <button type="button" class="thumbnail-blur-toggle" id="thumbnail-blur-toggle" title="썸네일 블러 켜기" aria-label="썸네일 블러" aria-pressed="false">
           <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
             <path d="M12 5c5 0 8.8 4.4 9.8 6.6a1 1 0 0 1 0 .8C20.8 14.6 17 19 12 19s-8.8-4.4-9.8-6.6a1 1 0 0 1 0-.8C3.2 9.4 7 5 12 5Zm0 2c-3.8 0-6.8 3.1-7.7 5 .9 1.9 3.9 5 7.7 5s6.8-3.1 7.7-5C18.8 10.1 15.8 7 12 7Zm0 2.2A2.8 2.8 0 1 1 12 14.8 2.8 2.8 0 0 1 12 9.2Z"/>
@@ -161,7 +155,10 @@
       <section class="view active mobile-panel is-mobile-panel-active" id="home-view" data-mobile-panel="download" aria-label="작업 목록">
         <section class="jobs-section" id="jobs-section">
           <div class="jobs-heading">
-            <h2>작업 목록</h2>
+            <div class="jobs-heading-main">
+              <h2>작업 목록</h2>
+              <div class="job-source-filters" id="job-source-filters" aria-label="작업 소스 필터"></div>
+            </div>
             <button type="button" class="clear-history-button" id="clear-jobs-button">기록 지우기</button>
           </div>
           <div class="table-shell">
@@ -883,7 +880,6 @@
     const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
-    const refreshButton = document.getElementById('refresh-button');
     const storageReadout = document.getElementById('storage-readout');
     const storageLabel = document.getElementById('storage-label');
     const storageUsed = document.getElementById('storage-used');
@@ -958,6 +954,7 @@
     const downloadQueueClose = document.getElementById('download-queue-close');
     const jobsSection = document.getElementById('jobs-section');
     const clearJobsButton = document.getElementById('clear-jobs-button');
+    const jobSourceFilters = document.getElementById('job-source-filters');
     const mobileJobsList = document.getElementById('mobile-jobs-list');
     const jobsPagination = document.getElementById('jobs-pagination');
     const subscriptionWorkSection = document.getElementById('subscription-work-section');
@@ -1021,6 +1018,7 @@
     let subscriptionWorkScheduler = null;
     let subscriptionWorkPollTimer = null;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
+    let activeJobSource = normalizeJobSource(initialJobsPage?.active_source || '');
     let currentJobsPage = normalizeJobsPage(initialJobsPage, currentJobs.length);
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
@@ -1240,7 +1238,6 @@
       }
     });
 
-    refreshButton.addEventListener('click', refreshData);
     storageCalcButton.addEventListener('click', calculateStorageUsage);
     thumbnailBlurToggle.addEventListener('click', () => {
       applyThumbnailBlurPreference(!thumbnailBlurEnabled, true);
@@ -1308,6 +1305,15 @@
       if (!button || button.disabled) return;
       event.preventDefault();
       refreshJobs({page: Number(button.dataset.jobsPage || 1)});
+    });
+    jobSourceFilters?.addEventListener('click', event => {
+      const button = event.target.closest('[data-job-source-filter]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      const source = normalizeJobSource(button.dataset.jobSourceFilter || '');
+      if (source === activeJobSource) return;
+      activeJobSource = source;
+      refreshJobs({page: 1, source});
     });
     librarySort.addEventListener('change', renderLibrary);
     propertiesClose.addEventListener('click', closePropertiesModal);
@@ -2935,11 +2941,21 @@
       const limit = Number(pageData?.limit || 50);
       const totalCount = Number(pageData?.total_count ?? fallbackCount ?? 0);
       const totalPages = Number(pageData?.total_pages || Math.max(1, Math.ceil(totalCount / Math.max(1, limit))));
+      const sourceCounts = Array.isArray(pageData?.source_counts)
+        ? pageData.source_counts
+            .map(item => ({
+              source: normalizeJobSource(item?.source || ''),
+              count: Math.max(0, Number(item?.count || 0)),
+            }))
+            .filter(item => item.source && item.count > 0)
+        : [];
       return {
         page: Number.isFinite(page) && page > 0 ? Math.floor(page) : 1,
         limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50,
         total_count: Number.isFinite(totalCount) && totalCount > 0 ? Math.floor(totalCount) : 0,
         total_pages: Number.isFinite(totalPages) && totalPages > 0 ? Math.floor(totalPages) : 1,
+        active_source: normalizeJobSource(pageData?.active_source || activeJobSource || ''),
+        source_counts: sourceCounts,
       };
     }
 
@@ -2947,14 +2963,24 @@
       try {
         const page = Math.max(1, Number(options.page || currentJobsPage.page || 1));
         const limit = Math.max(1, Number(options.limit || currentJobsPage.limit || 50));
+        const requestedSource = normalizeJobSource(Object.prototype.hasOwnProperty.call(options, 'source') ? options.source : activeJobSource);
         const params = new URLSearchParams({limit: String(limit), page: String(page)});
+        if (requestedSource) params.set('source', requestedSource);
         const response = await fetch(`/api/jobs?${params.toString()}`);
         if (!response.ok) return;
         const data = await response.json();
         const nextJobs = Array.isArray(data) ? data : (Array.isArray(data.jobs) ? data.jobs : []);
         const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);
+        const nextPage = normalizeJobsPage(data, nextJobs.length);
+        const availableSources = new Set(nextPage.source_counts.map(item => item.source));
+        if (requestedSource && !availableSources.has(requestedSource) && !options.retriedWithoutSource) {
+          activeJobSource = '';
+          await refreshJobs({page: 1, limit, source: '', retriedWithoutSource: true});
+          return;
+        }
+        activeJobSource = normalizeJobSource(nextPage.active_source || requestedSource);
         currentJobs = nextJobs;
-        currentJobsPage = normalizeJobsPage(data, currentJobs.length);
+        currentJobsPage = nextPage;
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
         if (refreshFoldersAfterRender) {
@@ -3033,10 +3059,6 @@
       } catch (err) {
         console.error(err);
       }
-    }
-
-    async function refreshData() {
-      await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);
     }
 
     function renderStorage(storage) {
@@ -3152,6 +3174,7 @@
 
     function renderJobs(jobs) {
       const body = document.getElementById('jobs-body');
+      renderJobSourceFilters();
       if (!jobs.length) {
         body.innerHTML = '<tr><td colspan="10" class="empty-row">아직 작업이 없습니다.</td></tr>';
         renderMobileJobs(jobs);
@@ -3178,6 +3201,60 @@
       }).join('');
       renderMobileJobs(jobs);
       renderJobsPagination();
+    }
+
+    function renderJobSourceFilters() {
+      if (!jobSourceFilters) return;
+      const sourceCounts = sortedJobSourceCounts(currentJobsPage.source_counts || []);
+      const totalCount = sourceCounts.reduce((sum, item) => sum + Number(item.count || 0), 0);
+      const buttons = [{source: '', label: 'ALL', count: totalCount}, ...sourceCounts.map(item => ({
+        source: item.source,
+        label: jobSourceLabel(item.source),
+        count: item.count,
+      }))];
+      jobSourceFilters.innerHTML = buttons.map(item => {
+        const active = normalizeJobSource(item.source) === activeJobSource;
+        return `<button type="button" data-job-source-filter="${escapeHtml(item.source)}" class="${active ? 'active' : ''}" aria-pressed="${active ? 'true' : 'false'}">
+          <span>${escapeHtml(item.label)}</span>
+          <small>${formatCount(item.count)}</small>
+        </button>`;
+      }).join('');
+    }
+
+    function sortedJobSourceCounts(counts) {
+      const order = ['civitai', 'huggingface', 'hitomi', 'asmrone', 'gallerydl', 'comfyui', 'generic'];
+      return [...counts].sort((left, right) => {
+        const leftIndex = order.indexOf(left.source);
+        const rightIndex = order.indexOf(right.source);
+        if (leftIndex !== rightIndex) {
+          if (leftIndex < 0) return 1;
+          if (rightIndex < 0) return -1;
+          return leftIndex - rightIndex;
+        }
+        return jobSourceLabel(left.source).localeCompare(jobSourceLabel(right.source));
+      });
+    }
+
+    function normalizeJobSource(source) {
+      return String(source || '').trim().slice(0, 80);
+    }
+
+    function jobSourceLabel(source) {
+      const labels = {
+        civitai: 'Civitai',
+        huggingface: 'Hugging Face',
+        hitomi: 'Hitomi',
+        asmrone: 'ASMR.one',
+        gallerydl: 'gallery-dl',
+        comfyui: 'ComfyUI',
+        generic: 'URL',
+        archive_zip: 'Archive',
+        media_transcode: 'Transcode',
+        media_poster: 'Poster',
+      };
+      const value = normalizeJobSource(source);
+      if (labels[value]) return labels[value];
+      return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) || 'Unknown';
     }
 
     function renderJobsPagination() {
@@ -5798,6 +5875,7 @@
       if (source === 'comfyui') return 'WF';
       if (source === 'hitomi') return 'HT';
       if (source === 'gallerydl') return 'GDL';
+      if (source === 'asmrone') return 'ASMR';
       return 'URL';
     }
 

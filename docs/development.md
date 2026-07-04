@@ -161,6 +161,7 @@ Important compatibility points:
 
 - `/api/jobs` without cursor returns an array.
 - `/api/jobs` with cursor returns a wrapper containing `jobs` and `next_cursor`.
+- `/api/jobs?limit=50&page=N` returns the numbered job-table wrapper; adding `source=<provider>` filters rows server-side and the wrapper includes `source_counts` for the frontend filter buttons.
 - `/api/fs/download-jobs` returns direct file download info for files and a job for folders.
 - `/api/media/play` and `/api/media/poster` may return `202` JSON on cache miss.
 - Job action endpoints must route by `job_kind`.
