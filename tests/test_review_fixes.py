@@ -613,6 +613,59 @@ def test_clear_history_can_vacuum_when_enabled(
     assert called == [True]
 
 
+def test_clear_history_resets_stale_library_index_so_existing_model_cards_survive(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    indexed = data_root / "gallery-dl" / "example"
+    indexed.mkdir(parents=True)
+    (indexed / "page.jpg").write_bytes(b"image")
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    target = data_root / "stable-diffusion" / "loras" / "zimagebase" / "hands" / "version_3012596"
+    target.mkdir(parents=True)
+    (target / "Hands_zib_v1.safetensors").write_bytes(b"model")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/200255",
+                "model_id": "200255",
+                "version_id": "3012596",
+                "archive_info": {"model_title": "Hands XL", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed = ParsedDownload(
+        source="civitai",
+        raw_input="https://civitai.com/models/200255",
+        civitai_model_id="200255",
+        civitai_version_id="3012596",
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="done", target_dir=str(target), model_title="DB Row")
+
+    assert [
+        row
+        for row in main.library_items()
+        if row.get("target_path") == "stable-diffusion/loras/zimagebase/hands/version_3012596"
+    ] == []
+
+    payload = json.loads(main.api_clear_jobs("_").body.decode("utf-8"))
+
+    rows = [
+        row
+        for row in main.library_items()
+        if row.get("target_path") == "stable-diffusion/loras/zimagebase/hands/version_3012596"
+    ]
+    assert payload["deleted"] == 1
+    assert payload["library_index_reset"] is True
+    assert db.get_job(job_id) is None
+    assert len(rows) == 1
+    assert rows[0]["model_title"] == "Hands XL"
+    assert rows[0]["source"] == "civitai"
+    assert rows[0]["has_media"] is False
+
+
 def test_library_item_uses_scan_budgets_for_large_folders(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -892,6 +945,8 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "function jobsCompletedWithTarget(previousJobs, nextJobs)" in template
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);" in template
+    assert "async function refreshLibraryItems(options = {})" in template
+    assert "await refreshLibraryItems({mode: 'live'});" in template
     assert "function folderSearchScopePath()" in template
     assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template
     assert "return normalized ? `/data/${normalized} 내부` : '/data 전체';" in template

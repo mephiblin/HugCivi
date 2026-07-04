@@ -45,6 +45,7 @@ from .defaults import (
 from .downloader import (
     cleanup_job_local_files,
     cleanup_job_partial_files,
+    civitai_model_details,
     enqueue_job,
     folder_thumbnail_path,
     load_hitomi_listing_metadata,
@@ -957,11 +958,21 @@ def cleanup_job_files_for_row(job_id: int, job: dict[str, Any]) -> None:
 def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     cleanup_inactive_job_partial_files()
     deleted = db.clear_job_history()
+    if deleted:
+        db.clear_library_index()
     vacuumed = False
     if deleted and bool_env("SQLITE_VACUUM_AFTER_CLEAR", default=False):
         db.vacuum_database()
         vacuumed = True
-    return JSONResponse({"ok": True, "deleted": deleted, "vacuumed": vacuumed, "jobs": decorate_jobs(db.list_jobs())})
+    return JSONResponse(
+        {
+            "ok": True,
+            "deleted": deleted,
+            "vacuumed": vacuumed,
+            "library_index_reset": bool(deleted),
+            "jobs": decorate_jobs(db.list_jobs()),
+        }
+    )
 
 
 def cleanup_inactive_job_partial_files(limit: int = 5000) -> int:
@@ -1653,7 +1664,22 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["favorite"] = bool(target_path and target_path in favorite_paths)
     job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
     job["model_title"] = display_model_title_for_job(job)
+    decorate_job_media_flags(job)
     return job
+
+
+def decorate_job_media_flags(job: dict[str, Any]) -> None:
+    thumbnail_url = str(job.get("thumbnail_url") or "")
+    local_thumbnail = thumbnail_url.startswith("/api/fs/preview?path=") or thumbnail_url.startswith("/api/media/")
+    job["has_media"] = bool(job.get("has_media") or local_thumbnail)
+    if job["has_media"]:
+        try:
+            media_count = int(job.get("media_count") or 0)
+        except (TypeError, ValueError):
+            media_count = 0
+        job["media_count"] = max(1, media_count)
+        if not job.get("media_type"):
+            job["media_type"] = "image"
 
 
 def library_items(max_items: int = 1000, *, mode: str = "index") -> list[dict[str, Any]]:
@@ -2130,7 +2156,11 @@ def archive_metadata_path(path: Path) -> Path | None:
 
 
 def civitai_archive_generation_metadata(path: Path) -> dict[str, Any]:
-    return civitai_image_archive_metadata(path) or civitai_model_generation_archive_metadata(path)
+    return (
+        civitai_image_archive_metadata(path)
+        or civitai_model_generation_archive_metadata(path)
+        or civitai_model_archive_metadata(path)
+    )
 
 
 def civitai_image_archive_metadata(path: Path) -> dict[str, Any]:
@@ -2184,6 +2214,57 @@ def civitai_model_generation_archive_metadata(path: Path) -> dict[str, Any]:
         "component_downloads": payload.get("component_downloads") if isinstance(payload.get("component_downloads"), list) else [],
         "image_count": payload.get("image_count", len(images)),
         "generation_count": payload.get("generation_count"),
+    }
+
+
+def civitai_model_archive_metadata(path: Path) -> dict[str, Any]:
+    metadata_path = archive_named_metadata_path(path, "_civitai_metadata.json")
+    if metadata_path is None:
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("source") or "").lower() != "civitai":
+        return {}
+    if str(payload.get("kind") or "").lower() == "civitai_image_page":
+        return {}
+    model_id = first_metadata_text(payload.get("model_id"), payload.get("modelId"))
+    version_id = first_metadata_text(payload.get("version_id"), payload.get("model_version_id"), payload.get("modelVersionId"))
+    model_name = first_metadata_text(payload.get("model_name"), payload.get("title"))
+    model_page_url = first_metadata_text(payload.get("model_page_url"))
+    if not model_page_url and model_id:
+        model_page_url = f"https://civitai.com/models/{quote(model_id, safe='')}"
+        if version_id:
+            model_page_url = f"{model_page_url}?modelVersionId={quote(version_id, safe='')}"
+    details = payload.get("model_details") if isinstance(payload.get("model_details"), dict) else {}
+    if not details:
+        model_page_metadata = payload.get("model_page_metadata") if isinstance(payload.get("model_page_metadata"), dict) else {}
+        version_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        details = civitai_model_details(
+            model_page_metadata,
+            version_metadata,
+            model_id=model_id or None,
+            version_id=version_id,
+            model_name=model_name or None,
+        )
+    source_url = first_metadata_text(model_page_url, payload.get("source_url"), payload.get("raw_input"))
+    return {
+        "source": "civitai",
+        "kind": "civitai_model_generation_metadata",
+        "source_url": source_url,
+        "model_page_url": model_page_url or source_url,
+        "model_id": model_id,
+        "version_id": version_id,
+        "model_name": model_name,
+        "image": {},
+        "generation_data": {},
+        "model_details": details if isinstance(details, dict) else {},
+        "component_downloads": payload.get("component_downloads") if isinstance(payload.get("component_downloads"), list) else [],
+        "image_count": 0,
+        "generation_count": 0,
     }
 
 

@@ -218,6 +218,91 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
     assert rows[0]["media_count"] == 1
 
 
+def test_civitai_model_job_card_enables_media_viewer_from_local_thumbnail(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "civitai" / "loras" / "zimagebase" / "hands" / "version_3012596"
+    target.mkdir(parents=True)
+    (target / "Hands_zib_v1.safetensors").write_bytes(b"model")
+    (target / "civitai_example_100.jpeg").write_bytes(b"image")
+    parsed = ParsedDownload(
+        source="civitai",
+        raw_input="https://civitai.com/models/200255/hands-xl-sd-15-f1d-pony-illustrious-zit-zib",
+        civitai_model_id="200255",
+        civitai_version_id="3012596",
+    )
+    job_id = db.create_job(parsed)
+    db.update_job(
+        job_id,
+        status="done",
+        target_dir=str(target),
+        model_title="Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB",
+        model_category="LoRA",
+    )
+
+    row = main.decorate_jobs(db.list_jobs())[0]
+
+    assert row["thumbnail_url"].endswith("civitai_example_100.jpeg")
+    assert row["has_media"] is True
+    assert row["media_count"] == 1
+    assert row["media_type"] == "image"
+
+
+def test_media_list_falls_back_to_civitai_model_metadata_sidecar(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "civitai" / "loras" / "zimagebase" / "hands" / "version_3012596"
+    target.mkdir(parents=True)
+    (target / "Hands_zib_v1.safetensors").write_bytes(b"model")
+    (target / "civitai_example_100.jpeg").write_bytes(b"image")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/200255/hands-xl-sd-15-f1d-pony-illustrious-zit-zib",
+                "model_id": "200255",
+                "version_id": "3012596",
+                "model_name": "Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB",
+                "model_page_metadata": {
+                    "id": 200255,
+                    "name": "Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB",
+                    "type": "LORA",
+                    "description": "<p>Use hands reference prompts.</p>",
+                    "tags": ["hands", "pose"],
+                    "stats": {"downloadCount": 99},
+                },
+                "metadata": {
+                    "id": 3012596,
+                    "name": "v1",
+                    "baseModel": "Pony",
+                    "status": "Published",
+                    "trainedWords": ["hands"],
+                    "files": [
+                        {
+                            "id": 77,
+                            "name": "Hands_zib_v1.safetensors",
+                            "type": "Model",
+                            "primary": True,
+                            "metadata": {"format": "SafeTensor", "fp": "fp16"},
+                            "hashes": {"AutoV2": "ABC123"},
+                        }
+                    ],
+                },
+                "archive_info": {"model_title": "Hands XL", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = response_json(main.api_media_list("civitai/loras/zimagebase/hands/version_3012596", "_"))
+
+    assert payload["ok"] is True
+    assert payload["items"][0]["name"] == "civitai_example_100.jpeg"
+    assert payload["metadata"]["kind"] == "civitai_model_generation_metadata"
+    assert payload["metadata"]["model_page_url"] == "https://civitai.com/models/200255?modelVersionId=3012596"
+    assert payload["metadata"]["model_details"]["model"]["description"] == "Use hands reference prompts."
+    assert payload["metadata"]["model_details"]["model"]["type"] == "LORA"
+    assert payload["metadata"]["model_details"]["version"]["files"][0]["hashes"]["AutoV2"] == "ABC123"
+
+
 def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, _data_root, _config_root = app_modules
     template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")

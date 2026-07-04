@@ -2925,9 +2925,12 @@
       });
     }
 
-    async function refreshLibraryItems() {
+    async function refreshLibraryItems(options = {}) {
       try {
-        const response = await fetch('/api/library');
+        const params = new URLSearchParams();
+        if (options.mode) params.set('mode', options.mode);
+        const query = params.toString();
+        const response = await fetch(query ? `/api/library?${query}` : '/api/library');
         if (!response.ok) return;
         const data = await response.json();
         currentLibraryItems = Array.isArray(data) ? data : [];
@@ -3058,7 +3061,7 @@
         }
         const data = await response.json();
         currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
-        await refreshLibraryItems();
+        await refreshLibraryItems({mode: 'live'});
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
