@@ -172,7 +172,7 @@ Media:
 - Missing video posters create `media_poster` jobs on demand.
 - Library/job card image thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`.
 - Media cache files live under `/config/media-cache`.
-- First visit to a card page may spend CPU/I/O creating up to the visible card thumbnails; cache hits afterward are served directly.
+- First visit or first load of existing files may spend CPU/I/O creating uncached thumbnails, but the browser queues requests for cards in or near the viewport and runs at most 3 thumbnail requests at a time; it should not send 100 thumbnail generations at once.
 
 Useful media/cache settings:
 
@@ -192,6 +192,8 @@ DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
 ```
 
 `0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work.
+
+Deploy note: no new environment variables, DB migrations, or volume changes are required for the deferred thumbnail request queue. Rebuild and redeploy the web image to ship the frontend pacing behavior; existing `/config/media-cache` contents remain valid and the existing TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
 
 ## Library Index
 

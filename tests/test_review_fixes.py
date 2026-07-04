@@ -1188,6 +1188,49 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".folder-modal-row.selected" in stylesheet
 
 
+def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    render_jobs = template[
+        template.index("function renderJobs(jobs)") : template.index("function renderJobSourceFilters()")
+    ]
+    render_mobile_jobs = template[
+        template.index("function renderMobileJobs(jobs)") : template.index("function renderMobileJobCard(job)")
+    ]
+    render_mobile_job_card = template[
+        template.index("function renderMobileJobCard(job)") : template.index("function renderJobProgress(job)")
+    ]
+    render_model_info = template[
+        template.index("function renderModelInfo(job)") : template.index("function renderLibrary()")
+    ]
+    render_library = template[
+        template.index("function renderLibrary()") : template.index("function libraryCountLabel(visibleCount)")
+    ]
+
+    assert "THUMBNAIL_REQUEST_MAX_ACTIVE = 3" in template
+    assert "THUMBNAIL_REQUEST_TIMEOUT_MS = 60000" in template
+    assert "function setupDeferredThumbnails" in template
+    assert "data-thumbnail-src" in render_model_info
+    assert "data-thumbnail-src" in render_mobile_job_card
+    assert "data-thumbnail-src" in render_library
+    assert "IntersectionObserver" in template
+    assert "new IntersectionObserver" in template
+    assert "window.setTimeout(" in template
+    assert "setupDeferredThumbnails(" in render_jobs
+    assert "setupDeferredThumbnails(" in render_mobile_jobs
+    assert "setupDeferredThumbnails(" in render_library
+    assert render_jobs.rindex("renderMobileJobs(jobs);") < render_jobs.rindex("setupDeferredThumbnails(")
+    assert (
+        render_mobile_jobs.index("mobileJobsList.innerHTML = jobs.map(renderMobileJobCard).join('');")
+        < render_mobile_jobs.rindex("setupDeferredThumbnails(")
+    )
+    assert (
+        render_library.index("libraryGrid.innerHTML = matches.map(job => {")
+        < render_library.rindex("setupDeferredThumbnails(")
+    )
+
+
 def test_folder_tree_large_sibling_does_not_hide_later_route_roots(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     for name in ("asmr.one", "gallery-dl", "hitomi", "huggingface"):

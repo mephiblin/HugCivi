@@ -185,7 +185,7 @@
                   <td data-label="정보">
                     <div class="model-card {% if not job.thumbnail_url %}no-thumb{% endif %}">
                       {% if job.thumbnail_url %}
-                        <img src="{{ job.thumbnail_url }}" alt="">
+                        <img data-thumbnail-src="{{ job.thumbnail_url }}" alt="" loading="lazy" decoding="async">
                       {% endif %}
                       <div>
                         <strong>{{ job.model_title or '-' }}</strong>
@@ -863,6 +863,9 @@
     const initialLibraryPage = {{ library_page|tojson }};
     const initialStorage = {{ storage|tojson }};
     const LIBRARY_PAGE_SIZE = 50;
+    const THUMBNAIL_REQUEST_MAX_ACTIVE = 3;
+    const THUMBNAIL_OBSERVER_MARGIN = '640px 0px';
+    const THUMBNAIL_REQUEST_TIMEOUT_MS = 60000;
     const targetInput = document.getElementById('target_subdir');
     const selectedFolder = document.getElementById('selected-folder');
     const homeView = document.getElementById('home-view');
@@ -1047,6 +1050,12 @@
     let workflowDropDepth = 0;
     let workflowDropTimer = null;
     let workflowImportActive = false;
+    let thumbnailQueue = [];
+    let activeThumbnailRequests = 0;
+    const thumbnailRequests = new Map();
+    const thumbnailObserver = typeof window.IntersectionObserver === 'function'
+      ? new IntersectionObserver(handleThumbnailIntersections, {rootMargin: THUMBNAIL_OBSERVER_MARGIN})
+      : null;
 
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -1806,6 +1815,151 @@
       } catch (err) {
         // The visual state still applies even when browser storage is unavailable.
       }
+    }
+
+    function setupDeferredThumbnails(root = document) {
+      if (!root || typeof root.querySelectorAll !== 'function') return;
+      root.querySelectorAll('img[data-thumbnail-src]').forEach(registerThumbnailImage);
+    }
+
+    function registerThumbnailImage(img) {
+      const url = thumbnailImageUrl(img);
+      if (!url) return;
+      const state = thumbnailRequestState(url);
+      pruneThumbnailElements(state, url);
+      if (state.status === 'loaded') {
+        applyThumbnailResult(img, url);
+        return;
+      }
+      if (state.status === 'error') {
+        markThumbnailError(img);
+        return;
+      }
+      state.elements.add(img);
+      img.dataset.thumbnailState = state.status === 'loading' ? 'loading' : 'pending';
+      if (thumbnailObserver) {
+        thumbnailObserver.observe(img);
+      } else {
+        enqueueThumbnailUrl(url);
+      }
+    }
+
+    function handleThumbnailIntersections(entries) {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting && !(entry.intersectionRatio > 0)) return;
+        const img = entry.target;
+        thumbnailObserver?.unobserve(img);
+        const url = thumbnailImageUrl(img);
+        if (url) enqueueThumbnailUrl(url);
+      });
+    }
+
+    function thumbnailImageUrl(img) {
+      return String(img?.dataset?.thumbnailSrc || '').trim();
+    }
+
+    function thumbnailRequestState(url) {
+      let state = thumbnailRequests.get(url);
+      if (!state) {
+        state = {status: 'idle', elements: new Set(), loader: null, timeoutId: null};
+        thumbnailRequests.set(url, state);
+      }
+      return state;
+    }
+
+    function pruneThumbnailElements(state, url) {
+      state.elements = new Set(
+        Array.from(state.elements).filter(img => img.isConnected && thumbnailImageUrl(img) === url)
+      );
+    }
+
+    function enqueueThumbnailUrl(url) {
+      const state = thumbnailRequestState(url);
+      if (state.status === 'loaded') {
+        finishThumbnailElements(state, url, true);
+        return;
+      }
+      if (state.status === 'error' || state.status === 'queued' || state.status === 'loading') return;
+      state.status = 'queued';
+      thumbnailQueue.push(url);
+      processThumbnailQueue();
+    }
+
+    function processThumbnailQueue() {
+      while (activeThumbnailRequests < THUMBNAIL_REQUEST_MAX_ACTIVE && thumbnailQueue.length) {
+        const url = thumbnailQueue.shift();
+        const state = thumbnailRequests.get(url);
+        if (!state || state.status !== 'queued') continue;
+        pruneThumbnailElements(state, url);
+        if (!state.elements.size) {
+          state.status = 'idle';
+          continue;
+        }
+        startThumbnailRequest(url, state);
+      }
+    }
+
+    function startThumbnailRequest(url, state) {
+      activeThumbnailRequests += 1;
+      state.status = 'loading';
+      state.elements.forEach(img => {
+        if (img.isConnected && thumbnailImageUrl(img) === url) {
+          img.dataset.thumbnailState = 'loading';
+        }
+      });
+      const loader = new Image();
+      state.loader = loader;
+      loader.decoding = 'async';
+      loader.onload = () => settleThumbnailRequest(url, state, loader, true);
+      loader.onerror = () => settleThumbnailRequest(url, state, loader, false);
+      state.timeoutId = window.setTimeout(
+        () => settleThumbnailRequest(url, state, loader, false),
+        THUMBNAIL_REQUEST_TIMEOUT_MS
+      );
+      loader.src = url;
+    }
+
+    function settleThumbnailRequest(url, state, loader, ok) {
+      if (state.loader !== loader) return;
+      if (state.timeoutId !== null) {
+        window.clearTimeout(state.timeoutId);
+        state.timeoutId = null;
+      }
+      loader.onload = null;
+      loader.onerror = null;
+      activeThumbnailRequests = Math.max(0, activeThumbnailRequests - 1);
+      state.loader = null;
+      state.status = ok ? 'loaded' : 'error';
+      finishThumbnailElements(state, url, ok);
+      processThumbnailQueue();
+    }
+
+    function finishThumbnailElements(state, url, ok) {
+      pruneThumbnailElements(state, url);
+      const images = Array.from(state.elements);
+      state.elements.clear();
+      images.forEach(img => {
+        if (ok) {
+          applyThumbnailResult(img, url);
+        } else {
+          markThumbnailError(img);
+        }
+      });
+    }
+
+    function applyThumbnailResult(img, url) {
+      if (!img || !img.isConnected) return;
+      thumbnailObserver?.unobserve(img);
+      img.src = url;
+      img.dataset.thumbnailState = 'loaded';
+      img.removeAttribute('data-thumbnail-src');
+    }
+
+    function markThumbnailError(img) {
+      if (!img || !img.isConnected) return;
+      thumbnailObserver?.unobserve(img);
+      img.dataset.thumbnailState = 'error';
+      img.removeAttribute('data-thumbnail-src');
     }
 
     function openSettingsModal() {
@@ -3306,6 +3460,7 @@
       }).join('');
       renderMobileJobs(jobs);
       renderJobsPagination();
+      setupDeferredThumbnails(body);
     }
 
     function renderJobSourceFilters() {
@@ -3408,13 +3563,14 @@
         return;
       }
       mobileJobsList.innerHTML = jobs.map(renderMobileJobCard).join('');
+      setupDeferredThumbnails(mobileJobsList);
     }
 
     function renderMobileJobCard(job) {
       const title = job.model_title || job.filename || job.input_text || '-';
       const detail = job.filename || job.input_text || '';
       const thumb = job.thumbnail_url
-        ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
+        ? `<img data-thumbnail-src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">`
         : `<span>${escapeHtml(shortSource(job.source || 'URL'))}</span>`;
       return `<article class="mobile-job-card">
         <div class="mobile-job-main">
@@ -3536,7 +3692,7 @@
     }
 
     function renderModelInfo(job) {
-      const image = job.thumbnail_url ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">` : '';
+      const image = job.thumbnail_url ? `<img data-thumbnail-src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">` : '';
       const details = [job.base_model, job.precision, job.file_format].filter(Boolean).map(escapeHtml).join(' · ');
       return `<div class="model-card ${job.thumbnail_url ? '' : 'no-thumb'}">
         ${image}
@@ -3568,7 +3724,7 @@
         const favorite = Boolean(job.favorite);
         const hasThumbnail = Boolean(job.thumbnail_url);
         const image = hasThumbnail
-          ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">`
+          ? `<img data-thumbnail-src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">`
           : `<div class="asset-placeholder">${escapeHtml(libraryPlaceholderLabel(job))}</div>`;
         const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
@@ -3602,6 +3758,7 @@
         </article>`;
       }).join('');
       renderLibraryPagination();
+      setupDeferredThumbnails(libraryGrid);
     }
 
     function libraryCountLabel(visibleCount) {

@@ -205,6 +205,7 @@ Poster generation:
 Card thumbnail generation:
 
 - library/job cards use `/api/media/thumbnail?path=...` for image thumbnails instead of loading full-size originals
+- the frontend delays card thumbnail requests until cards are in or near the viewport and runs at most 3 thumbnail requests at a time, so first visits or existing file scans do not fan out 100 image generations at once
 - thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`
 - thumbnail cache misses use ffmpeg behind the same media transcode semaphore that protects video work
 - image thumbnails do not create internal job rows; the endpoint either serves a cache hit or generates the file during the request
