@@ -2,6 +2,8 @@
 
 Status: implemented in the follow-up library card performance commit.
 
+Implementation note: this file is now a historical planning record. Current runtime behavior is documented in `docs/architecture.md`, `docs/feature-code-map.md`, `docs/operations.md`, and `docs/patch-notes/2026-07-05.md`. The "Current Behavior" section below describes the pre-implementation baseline, not the current app.
+
 ## Purpose
 
 HugCivi library cards are becoming slow to show after refresh or startup as archive files grow. The current bottleneck is not one single slow function; it is the combined cost of preparing many library payloads, embedding them into the first page, rebuilding all card DOM nodes, and loading original-size thumbnail images.

@@ -31,7 +31,7 @@ The dated documents below are useful context, but code and current reference doc
 
 | Document | Status |
 | --- | --- |
-| [Library Card Performance Plan 2026-07-05](library-card-performance-plan-2026-07-05.md) | proposed plan for paginating library cards, gating job-poll rerenders, and adding cached card thumbnails. |
+| [Library Card Performance Plan 2026-07-05](library-card-performance-plan-2026-07-05.md) | implemented planning record. Current behavior is documented in Architecture, Feature and Code Map, Operations, and the 2026-07-05 patch notes. |
 | [Transfer Design 2026-07-02](transfer-design-2026-07-02.md) | future design, not implemented unless code later proves otherwise. |
 | [Storage Folder Search Design 2026-07-02](storage-folder-search-design-2026-07-02.md) | implemented reference for turning the sidebar `새 폴더` area into a storage folder search box, moving folder creation to the tree context menu, and replacing text-based move prompts with a tree picker. |
 | [YouTube Subscription Design 2026-07-02](youtube-subscriptions-design-2026-07-02.md) | implemented MVP reference. Current code has tables, helpers, CRUD APIs, manual/scheduled discovery, sidebar UI, independent subscription downloads, item queue/skip/retry controls, storage readouts, and the main `구독 작업 목록`. |

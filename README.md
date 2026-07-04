@@ -11,7 +11,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - `/data`: 장기 보관할 실제 archive 파일
 - `/config/jobs.sqlite3`: 작업, 설정, 즐겨찾기, 메모, 라이브러리 인덱스, 내부 작업 artifact 상태
 - `/config/downloads`: 폴더 ZIP 준비 파일
-- `/config/media-cache`: 비디오 transcode와 poster cache
+- `/config/media-cache`: 비디오 transcode, poster cache, 라이브러리/작업 카드용 작은 썸네일 cache
 
 외부 다운로드는 provider별 제한과 cooldown이 있는 다운로드 큐에서 처리하고, ZIP 생성, 비디오 transcode, poster 생성처럼 NAS CPU/I/O를 많이 쓰는 작업은 별도 internal job 큐에서 처리합니다. 라이브러리는 DB-backed 증분 index를 우선 사용하고, 필요할 때 파일시스템 scan으로 보완합니다.
 
@@ -60,6 +60,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - 폴더 트리에서 저장 위치 선택
 - 자동 폴더 분류와 사용자 지정 기본 폴더
 - 라이브러리 카드 보기
+- 라이브러리 카드는 50개 단위 페이지로 표시하고, 카드 썸네일은 작은 캐시 JPEG를 화면 근처 카드부터 최대 3개씩 요청
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
@@ -702,6 +703,7 @@ python -m pytest -q -p no:cacheprovider
 ### 2026-07-05
 
 - `.txt`, `.md`, `.markdown` 파일을 라이브러리 카드와 미디어 뷰어에서 안전한 텍스트 문서로 볼 수 있게 했습니다.
+- 라이브러리 카드를 50개 단위 페이지로 넘기고, 카드 썸네일을 `/config/media-cache/thumbnails` 캐시와 화면 근처 최대 3개 동시 요청 큐로 처리해 큰 폴더 첫 로드 부담을 줄였습니다.
 - 작업 목록을 50개 단위 숫자 페이지네이션으로 표시하고, `ALL` 및 Civitai/Hitomi/ASMR.one 같은 현재 작업 소스별 필터 버튼을 추가했습니다.
 - 저장 폴더 전용 새로고침, 우상단 버튼 순서 정리, 불필요한 전체 새로고침 아이콘 제거를 반영했습니다.
 
