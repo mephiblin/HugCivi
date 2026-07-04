@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -89,13 +89,27 @@ Internal server-local jobs use a separate limit:
 
 Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
 
+## Civitai Model Archives
+
+Civitai model/version downloads are ordinary external download jobs in the `civitai` provider bucket, so global/per-provider queue limits, cooldowns, retries, and the stall watchdog apply.
+
+Model archive outputs include the model files plus `_civitai_metadata.json`. When Civitai returns generation/example image data, HugCivi also writes `_civitai_generation_metadata.json` and local preview files named `civitai_example_<imageId>.*`. These sidecars carry model/version/file details, generation prompts, tensor summary data when available, preview local paths, and `component_downloads`, so cards and viewer metadata can recover from disk without job history.
+
+For normal model/version URLs, HugCivi downloads the primary model file plus additional Civitai files whose metadata marks them as required. These component files are downloaded in the same job and same archive folder; the job progress/filename may show `N files`. Explicit file selectors or raw Civitai download URLs keep the narrower requested-file behavior.
+
+The model-card `갱신` action queues a Civitai refresh job against the existing archive folder. Refresh requires a Civitai model folder with usable sidecar metadata and no active jobs under that folder. It keeps the existing primary file and any existing expected component files, downloads missing required components, and refreshes sidecars/previews rather than deleting and rebuilding the folder.
+
+The media viewer's Civitai health check uses `/api/civitai/resource-health`. Image-page archives check referenced model-version resources from jobs/sidecars. Model archives also send the archive path and `component_downloads`, so `Check components` verifies whether local required files are present in that folder.
+
 ## ASMR.one Downloads
 
 ASMR.one `/work/RJ...` and `/work/<id>/DLSITE/RJ...` URLs run as ordinary external download jobs in the `asmrone` provider bucket, so the global/per-provider queue limits and provider cooldown settings apply.
 
 The handler uses `ASMRONE_API_BASE` for work and track metadata, but file bodies are downloaded from each leaf track `mediaDownloadUrl` with `action=download`. `mediaStreamUrl` is intentionally ignored. Output defaults under `/data/asmr.one/...` unless the user chose a target folder, with downloaded track files plus `_asmrone_metadata.json`, redacted `_asmrone_tracks.json`, `_asmrone_manifest.json`, and `_archive_metadata.json`.
 
-Downloaded ASMR.one audio files are recognized by the media viewer and play through the browser audio element. Non-audio files with a download URL are still stored in the work folder. Audio does not use the internal video transcode/poster queue.
+Downloaded ASMR.one audio files are recognized by the media viewer and play through the browser audio element. Non-audio files with a download URL are still stored in the work folder. Japanese and other Unicode track/folder names are preserved in local paths and manifest entries.
+
+Per-file failures are nonfatal when at least one file is saved. Missing optional images, text files, or other leaves are marked with `download_status: failed` and `download_error` in `_asmrone_manifest.json`, `failed_file_count` is written to the ASMR.one sidecars, and empty failed child folders are cleaned up. If every downloadable leaf fails, the job still fails. Audio does not use the internal video transcode/poster queue.
 
 ## YouTube Subscriptions
 
@@ -194,9 +208,12 @@ Operational notes:
 
 - First indexing pass may take time on large archives.
 - `/api/library?mode=live` can force live filesystem scanning.
+- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale.
 - `/api/library/reindex` resets and scans a large batch.
+- `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.
 - App-driven rename/move/delete updates the index and path-linked state.
-- NAS-side manual file changes are picked up by later indexer passes or live fallback.
+- App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.
+- NAS-side manual file changes are picked up by later indexer passes or live fallback. The sidebar `저장 폴더` refresh button immediately reloads the folder tree from the current `/data` filesystem view when an operator deletes or creates folders outside HugCivi.
 
 ## Storage Readout
 

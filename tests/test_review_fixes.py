@@ -986,19 +986,25 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'id="folder-search-form"' in template
     assert 'id="folder_search"' in template
     assert 'id="folder-search-results"' in template
+    assert 'id="folder-refresh-button"' in template
     assert 'data-action="create-folder"' in template
     assert 'id="folder-create-modal"' in template
     assert 'id="folder-move-modal"' in template
     assert "이동할 대상 폴더를 /data 기준 경로로 입력하세요." not in template
+    assert "{% if depth == 0 %} expanded{% endif %}" in template
     assert "fetch('/api/folders'" in template
     assert "async function refreshFolders(options = {})" in template
+    assert "await refreshFolders({manual: true, preserveExpanded: true});" in template
     assert "function jobsCompletedWithTarget(previousJobs, nextJobs)" in template
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);" in template
     assert "async function refreshLibraryItems(options = {})" in template
+    assert "async function refreshLibraryForActivePath(options = {})" in template
     assert "refreshLibraryItems({mode: 'live', path: activeLibraryPath});" in template
     assert "params.set('path', normalizePath(options.path || ''))" in template
     assert "await refreshLibraryItems({mode: 'live'});" in template
+    assert "function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {})" in template
+    assert "window.location.reload();" not in template
     assert "function folderSearchScopePath()" in template
     assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template
     assert "return normalized ? `/data/${normalized} 내부` : '/data 전체';" in template
@@ -1007,6 +1013,7 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert template.count("if (folderSearchInput?.value.trim()) updateFolderSearch();") == 2
     assert "const rows = collectFolderRows();" in template
     assert ".folder-search-form" in stylesheet
+    assert ".folder-refresh-button" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet

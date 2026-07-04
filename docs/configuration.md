@@ -1,6 +1,6 @@
 # HugCivi Configuration Reference
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 This document lists the configuration knobs a developer or operator is likely to meet. Values can come from environment variables, Docker/Portainer stack settings, or the web UI settings table depending on the key.
 
@@ -117,7 +117,7 @@ The authenticated settings modal renders these credential and option values in p
 | `HF_XET_NUM_CONCURRENT_RANGE_GETS` | `4` | env | Hugging Face Xet concurrency. |
 | `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY` | `1` | env | Hugging Face Xet disk behavior. |
 | `HF_SNAPSHOT_MAX_WORKERS` | `2` | env | Hugging Face snapshot worker count. |
-| `CIVITAI_API_BASE` | `https://civitai.com/api/v1` | env | Override only for tests or compatible mirrors. |
+| `CIVITAI_API_BASE` | `https://civitai.com/api/v1` | env | Used for model/version metadata, image metadata, model-file tensor metadata, and refresh metadata. Override only for tests or compatible mirrors. |
 | `CIVITAI_IMAGE_RESOURCE_RETRY_DELAY_SECONDS` | `86400` | env/settings fallback | Delay before retrying non-permanent Civitai image resource failures. There is no current visible UI field for this value. |
 | `CIVITAI_IMAGE_MAX_RESOURCE_JOBS` | `30` | env | Max child jobs created from one Civitai image page. |
 | `ASMRONE_API_BASE` | `https://api.asmr.one/api` | env | Work and tracks metadata API base. File bodies are downloaded from each track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is ignored. Override only for tests or compatible ASMR.one API mirrors. |
@@ -128,6 +128,10 @@ The authenticated settings modal renders these credential and option values in p
 | `GALLERY_DL_SLEEP_REQUEST_SECONDS` | `1.5` | env | Passed into gallery-dl config. |
 | `YT_DLP_METADATA_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for yt-dlp metadata probing used to choose YouTube channel folders. |
 | `YT_DLP_SUBTITLE_PROBE_TIMEOUT_SECONDS` | `45` | env | Timeout for subtitle probing. |
+
+Civitai model archive sidecars, preview image saves, required component downloads, refresh reuse of existing files, and viewer local component checks do not have separate settings. They use the Civitai provider queue, `CIVITAI_API_BASE`, `CIVITAI_TOKEN` when present, and the normal download retry/throttle settings.
+
+ASMR.one Unicode local paths and nonfatal per-file failures are runtime behavior, not configurable settings. A job succeeds when at least one downloadable leaf is saved; failed leaves are recorded in ASMR.one sidecars.
 
 ## YouTube Subscriptions
 
@@ -178,6 +182,8 @@ Current implementation status:
 | `STORAGE_USAGE_SCAN_SLEEP_SECONDS` | `0.02` when unset | env | Sleep between storage scan batches. |
 | `JOB_LOG_MAX_CHARS` | `200000` | env | Stored job log trim limit. |
 | `SQLITE_VACUUM_AFTER_CLEAR` | `0` | env | If truthy, `POST /api/jobs/clear` runs `VACUUM` after deleting inactive job history. Keep disabled during normal NAS use. |
+
+`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. It is controlled by the same scan budgets as live library fallback and has no separate setting. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
 
 ## Compose Default Differences
 

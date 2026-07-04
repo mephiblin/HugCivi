@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -168,7 +168,9 @@ Restart handling is conservative. `running` jobs are requeued, `pausing` becomes
 
 Provider keys are intentionally coarse for major services and host-based for generic/gallery-dl style inputs. This favors safety and rate-limit avoidance over maximum throughput.
 
-ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json` so the library can recover the archive after DB loss.
+Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
+
+ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, creates Unicode-safe local track paths, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json`. `_asmrone_manifest.json` records per-file status and partial failures so the library can recover an archive when at least one file downloaded.
 
 ## Internal Job Flow
 
@@ -211,6 +213,7 @@ Indexer behavior:
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
+- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up
 
 The index row stores the same kind of payload the UI already expects, rather than normalizing every display field into separate columns. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
 
@@ -220,7 +223,10 @@ Filesystem operations from the app update related path state:
 
 - rename/move update job target prefixes, favorites, notes, and library index prefixes
 - delete clears affected favorites, notes, target prefixes, and library index rows
-- external filesystem edits made outside HugCivi are eventually reflected by the indexer or live fallback
+- clearing job history resets stale library index rows so filesystem-backed cards can be restored from sidecars
+- external filesystem edits made outside HugCivi are eventually reflected by the indexer or live fallback; the sidebar folder-tree refresh action rereads `/data` directly without relying on cached DB rows
+
+Civitai model cards can be restored from `_civitai_metadata.json` even after the original job row is gone. If `_civitai_generation_metadata.json` exists, media viewer metadata uses its selected example image and generation payload; otherwise it falls back to the model metadata sidecar and reconstructs the model-details panel from stored model/version fields.
 
 ## API Groups
 
@@ -236,12 +242,14 @@ Main API groups:
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
-| Civitai resource health | `/api/civitai/resource-health` |
+| Civitai health/refresh | `/api/civitai/resource-health`, `/api/civitai/refresh` |
 | Storage | `/api/storage`, `/api/storage/archive-usage` |
 | Addon package | `/api/addon/chrome-extension` |
 | DB maintenance | `/api/maintenance/db/wal`, checkpoint, optimize, compact, backup |
 
 `/api/jobs` keeps the legacy array response when called without a cursor. Cursor pagination returns a wrapper with `jobs` and `next_cursor`.
+
+Civitai resource health accepts either model-version IDs or model archive components. Model-version checks report presence from completed jobs and Civitai sidecars. Component checks require a `/data` path and compare requested component filenames against local files in that archive folder.
 
 For a feature-by-feature map from product behavior to code files and tests, see [Feature and Code Map](feature-code-map.md).
 

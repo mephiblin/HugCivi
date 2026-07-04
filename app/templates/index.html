@@ -15,8 +15,8 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  {% macro folder_node(node) %}
-    <li class="folder-node {% if node.children %}has-children expanded{% endif %}">
+  {% macro folder_node(node, depth=0) %}
+    <li class="folder-node {% if node.children %}has-children{% endif %}{% if depth == 0 %} expanded{% endif %}">
       <div class="folder-row">
         {% if node.children %}
           <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
@@ -31,7 +31,7 @@
       {% if node.children %}
         <ul class="folder-children">
           {% for child in node.children %}
-            {{ folder_node(child) }}
+            {{ folder_node(child, depth + 1) }}
           {% endfor %}
         </ul>
       {% endif %}
@@ -56,7 +56,14 @@
            data-sidebar-panel="folders">
         <section class="folder-section" aria-label="저장 폴더">
           <div class="sidebar-heading">
-            <h2>저장 폴더</h2>
+            <div class="folder-heading-title">
+              <h2>저장 폴더</h2>
+              <button type="button" class="folder-refresh-button" id="folder-refresh-button" aria-label="저장 폴더 새로고침" title="저장 폴더 새로고침">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.45 5.08 1 1 0 0 0-1.86.74A6 6 0 1 1 12 6c1.3 0 2.52.42 3.52 1.18L13 9.7V11h7V4h-1.3l-1.05 2.35Z"></path>
+                </svg>
+              </button>
+            </div>
             <span class="path-badge">/data</span>
           </div>
           <div class="folder-tree">
@@ -919,6 +926,7 @@
     const workflowDropMessage = document.getElementById('workflow-drop-message');
     const workflowDropDetail = document.getElementById('workflow-drop-detail');
     const folderTree = document.querySelector('.folder-tree');
+    const folderRefreshButton = document.getElementById('folder-refresh-button');
     const folderSearchForm = document.getElementById('folder-search-form');
     const folderSearchInput = document.getElementById('folder_search');
     const folderSearchStatus = document.getElementById('folder-search-status');
@@ -1051,6 +1059,13 @@
       const picker = event.target.closest('.folder-picker');
       if (!picker) return;
       selectFolderPath(picker.dataset.path || '');
+    });
+
+    folderRefreshButton?.addEventListener('click', async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      await refreshFolders({manual: true, preserveExpanded: true});
+      await refreshLibraryForActivePath({mode: 'live'});
     });
 
     folderTree?.addEventListener('contextmenu', event => {
@@ -1419,6 +1434,27 @@
       if (folderSearchInput?.value.trim()) updateFolderSearch();
     }
 
+    function existingFolderPath(path) {
+      let normalized = normalizePath(path);
+      while (normalized) {
+        if (folderTree?.querySelector(`.folder-picker[data-path="${cssEscape(normalized)}"]`)) return normalized;
+        const parts = normalized.split('/').filter(Boolean);
+        parts.pop();
+        normalized = parts.join('/');
+      }
+      return '';
+    }
+
+    function parentFolderPath(path) {
+      const parts = normalizePath(path).split('/').filter(Boolean);
+      parts.pop();
+      return parts.join('/');
+    }
+
+    function expandedFolderPaths() {
+      return new Set(Array.from(document.querySelectorAll('.folder-tree .folder-node.expanded > .folder-row .folder-picker')).map(button => normalizePath(button.dataset.path || '')));
+    }
+
     function expandFolderAncestors(button) {
       let node = button.closest('.folder-node');
       while (node) {
@@ -1655,7 +1691,11 @@
         path: activeFolderMoveTarget.path,
         destination: activeFolderMoveDestination,
       });
-      if (!ok) folderMoveConfirm.disabled = false;
+      if (ok) {
+        closeFolderMoveModal();
+      } else {
+        folderMoveConfirm.disabled = false;
+      }
     }
 
     function replaceFolderTree(tree, options = {}) {
@@ -1663,20 +1703,26 @@
       if (!root || !tree) return;
       const selectedPath = normalizePath(targetInput?.value || activeLibraryPath || '');
       const preserveSelection = options.preserveSelection !== false && (activeLibraryPath !== null || Boolean(selectedPath));
-      root.innerHTML = renderFolderTreeNode(tree);
+      const expandedPaths = options.preserveExpanded === false ? new Set() : expandedFolderPaths();
+      root.innerHTML = renderFolderTreeNode(tree, 0, expandedPaths);
       if (preserveSelection) {
-        selectFolderPath(selectedPath, {switchView: false, expandTree: true});
+        const nextSelectedPath = existingFolderPath(selectedPath);
+        selectFolderPath(nextSelectedPath, {
+          switchView: activeLibraryPath !== null && nextSelectedPath !== normalizePath(activeLibraryPath || ''),
+          expandTree: true,
+        });
       } else if (folderSearchInput && folderSearchInput.value.trim()) {
         updateFolderSearch();
       }
     }
 
-    function renderFolderTreeNode(node) {
+    function renderFolderTreeNode(node, depth = 0, expandedPaths = new Set()) {
       const children = Array.isArray(node.children) ? node.children : [];
       const hasChildren = children.length > 0;
       const path = normalizePath(node.path || '');
       const name = node.name || (path ? path.split('/').pop() : 'data');
-      return `<li class="folder-node ${hasChildren ? 'has-children expanded' : ''}">
+      const expanded = depth === 0 || expandedPaths.has(path);
+      return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}">
         <div class="folder-row">
           ${hasChildren
             ? '<button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>'
@@ -1686,7 +1732,7 @@
             <span class="folder-name">${escapeHtml(name)}</span>
           </button>
         </div>
-        ${hasChildren ? `<ul class="folder-children">${children.map(renderFolderTreeNode).join('')}</ul>` : ''}
+        ${hasChildren ? `<ul class="folder-children">${children.map(child => renderFolderTreeNode(child, depth + 1, expandedPaths)).join('')}</ul>` : ''}
       </li>`;
     }
 
@@ -2899,6 +2945,7 @@
     async function refreshFolders(options = {}) {
       if (!folderTree) return;
       if (folderRefreshPromise) return folderRefreshPromise;
+      if (folderRefreshButton) folderRefreshButton.disabled = true;
       folderRefreshPromise = (async () => {
         try {
           const response = await fetch('/api/folders');
@@ -2908,6 +2955,7 @@
         } catch (err) {
           console.error(err);
         } finally {
+          if (folderRefreshButton) folderRefreshButton.disabled = false;
           folderRefreshPromise = null;
         }
       })();
@@ -2940,6 +2988,17 @@
       } catch (err) {
         console.error(err);
       }
+    }
+
+    async function refreshLibraryForActivePath(options = {}) {
+      if (activeLibraryPath === null) {
+        await refreshLibraryItems();
+        return;
+      }
+      await refreshLibraryItems({
+        mode: options.mode || 'live',
+        path: activeLibraryPath,
+      });
     }
 
     async function refreshStorage() {
@@ -3398,6 +3457,13 @@
         .replace(/^\/data\/?/, '')
         .replace(/^data\/?/, '')
         .replace(/^\/+|\/+$/g, '');
+    }
+
+    function cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === 'function') {
+        return window.CSS.escape(String(value));
+      }
+      return String(value).replace(/["\\]/g, '\\$&');
     }
 
     function isMediaArchiveCard(card) {
@@ -5472,7 +5538,9 @@
       }, 5000);
     }
 
-    async function postFileAction(url, payload) {
+    async function postFileAction(url, payload, options = {}) {
+      const previousLibraryPath = activeLibraryPath;
+      const affectedPath = normalizePath(payload?.path || '');
       try {
         const response = await fetch(url, {
           method: 'POST',
@@ -5490,12 +5558,47 @@
           window.alert(message);
           return false;
         }
-        window.location.reload();
+        const data = await readJsonResponse(response);
+        if (data.folders) {
+          replaceFolderTree(data.folders, {preserveExpanded: true, preserveSelection: false});
+        } else {
+          await refreshFolders({preserveExpanded: true, preserveSelection: false});
+        }
+        const nextPath = nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options);
+        if (previousLibraryPath !== null) {
+          selectFolderPath(existingFolderPath(nextPath), {expandTree: true, scrollIntoView: true});
+        } else if (targetInput?.value) {
+          selectFolderPath(existingFolderPath(targetInput.value), {switchView: false, expandTree: true});
+        }
+        await Promise.all([
+          refreshLibraryForActivePath({mode: 'live'}),
+          refreshStorage(),
+        ]);
         return true;
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
         return false;
       }
+    }
+
+    function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {}) {
+      if (options.nextPath !== undefined) return normalizePath(options.nextPath);
+      const previous = previousLibraryPath === null ? null : normalizePath(previousLibraryPath);
+      const returnedPath = normalizePath(data?.path || '');
+      if (url.includes('/api/fs/delete')) {
+        if (previous === null) return normalizePath(targetInput?.value || '');
+        if (!affectedPath) return previous;
+        if (previous === affectedPath || previous.startsWith(`${affectedPath}/`)) return parentFolderPath(affectedPath);
+        return previous;
+      }
+      if ((url.includes('/api/fs/rename') || url.includes('/api/fs/move')) && returnedPath) {
+        if (previous === null) return normalizePath(targetInput?.value || returnedPath);
+        if (previous === affectedPath) return returnedPath;
+        if (affectedPath && previous.startsWith(`${affectedPath}/`)) {
+          return normalizePath(`${returnedPath}/${previous.slice(affectedPath.length + 1)}`);
+        }
+      }
+      return previous === null ? normalizePath(targetInput?.value || returnedPath) : previous;
     }
 
     function shortSource(source) {

@@ -44,6 +44,16 @@ Do not read every dated document at startup. Dated plans and reviews are context
 
 Codex's documented best split is: `AGENTS.md` for small always-on repo rules, `.agents/skills` for discoverable reusable workflows, and docs for durable human/LLM reference. This repository follows that split with a thin `.agents/skills/hugcivi-dev-core/` discovery pointer while keeping the browsable skill content in the user-requested `SKILL_Dev/` folder.
 
+## Current Behavior Notes
+
+Keep these recent operational behaviors in mind when touching handoff, provider, library, or viewer code:
+
+- Civitai model/version archives now preserve `_civitai_metadata.json`, optional `_civitai_generation_metadata.json`, local `civitai_example_<imageId>.*` previews, model/version/file detail, tensor metadata when available, and `component_downloads`.
+- Civitai normal model/version downloads also fetch files marked `metadata.isRequired=true` unless the input requested a specific file or raw download URL. Refresh jobs reuse existing primary/component files and refresh sidecars/previews in the same archive folder.
+- The Civitai media viewer can check both model-version resources and local component files through `/api/civitai/resource-health`; model archives send their archive path plus `component_downloads`.
+- The library view can live-scan a selected folder with `/api/library?mode=live&path=<relative-data-path>`. Clearing inactive job history resets the library index so sidecar-backed cards, including Civitai model folders, can be restored from disk.
+- ASMR.one downloads keep Unicode/Japanese local paths, record per-file status in `_asmrone_manifest.json`, and treat missing optional image/text/audio leaves as nonfatal when at least one file was saved.
+
 ## Patch Notes Policy
 
 Detailed work history belongs in `docs/patch-notes/YYYY-MM-DD.md`.

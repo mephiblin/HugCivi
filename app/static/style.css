@@ -172,6 +172,45 @@ a:hover {
   font-weight: 700;
 }
 
+.folder-heading-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.folder-refresh-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d7dde8;
+  border-radius: 6px;
+  padding: 0;
+  color: #475569;
+  background: #ffffff;
+}
+
+.folder-refresh-button:hover,
+.folder-refresh-button:focus-visible {
+  border-color: #b9c7dc;
+  background: #f6f8fb;
+  outline: 0;
+}
+
+.folder-refresh-button:disabled {
+  color: #94a3b8;
+  background: #f3f6fa;
+  cursor: default;
+  opacity: 0.75;
+}
+
+.folder-refresh-button svg {
+  width: 16px;
+  height: 16px;
+}
+
 .path-badge {
   display: inline-flex;
   min-height: 24px;

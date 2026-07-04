@@ -24,9 +24,15 @@ Use this before adding or changing URL parsing, provider classification, externa
 - Write sidecars for recoverable library cards when content is user-visible.
 - Cap child job creation for listing/image-resource expansion.
 - Keep parser behavior backward compatible for existing command aliases.
+- Preserve Civitai model archive recovery data: `_civitai_metadata.json`, optional `_civitai_generation_metadata.json`, local `civitai_example_<imageId>.*` previews, model/version/file details, tensor metadata when available, and `component_downloads`.
+- For normal Civitai model/version downloads, include files marked `metadata.isRequired=true` with the primary file unless the input requested a specific file or raw download URL. Record kept/downloaded component state in both Civitai sidecars.
+- Keep Civitai refresh jobs metadata-driven: build them from existing sidecars, target the existing folder, keep existing primary/component files, and refresh sidecars/previews without deleting the archive.
+- Keep Civitai viewer health compatible with both model-version IDs and local component checks. `/api/civitai/resource-health` accepts `model_version_ids`, and model archives may also send `path` plus `components` from `component_downloads`.
 - Keep ASMR.one work URLs (`/work/RJ...` and `/work/<id>/DLSITE/RJ...`) routed to `asmrone`, ahead of generic HTTP or gallery-dl fallback handling.
 - For ASMR.one downloads, fetch metadata through `ASMRONE_API_BASE`, save media through `mediaDownloadUrl?action=download`, and do not persist raw `mediaStreamUrl` values.
 - Preserve ASMR.one sidecars after successful file downloads: `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, and `_archive_metadata.json`.
+- Preserve ASMR.one Unicode/Japanese folder and file names in local paths and manifests.
+- Treat ASMR.one leaf download failures as nonfatal only when at least one file was saved. Record `download_status`, `download_error`, and `failed_file_count`, and keep all-files-failed jobs failing.
 
 ## Code To Read
 
@@ -34,7 +40,7 @@ Use this before adding or changing URL parsing, provider classification, externa
 sed -n '1,280p' app/parsers.py
 sed -n '1,260p' app/models.py
 rg -n "def (provider_key_for_parsed|run_job|download_huggingface|download_civitai|download_civitai_image_page|download_hitomi|download_hitomi_listing|download_asmrone|download_gallerydl|download_generic|download_comfyui)" app/downloader.py
-rg -n "ASMRONE_API_BASE|_asmrone_|source_url_for_job|is_media_file|media_kind" app/downloader.py app/main.py tests/test_asmrone_provider.py
+rg -n "civitai_required_component_files|collect_civitai_model_generation_metadata|save_civitai_model_preview_images|civitai_refresh_parsed_download|civitai_component_health_payload|ASMRONE_API_BASE|_asmrone_|source_url_for_job|is_media_file|media_kind" app/downloader.py app/main.py tests/test_asmrone_provider.py tests/test_civitai_viewer_health.py
 ```
 
 ## Test Focus

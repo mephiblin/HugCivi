@@ -11,14 +11,21 @@
 - Civitai viewer의 모델 상세 영역에 type, creator, status, published date, base model/type, model/version stats, 파일 hash/required/scan 정보를 표시하도록 보강했습니다.
 - Civitai 모델 페이지 SSR metadata를 best-effort로 병합해 v1 API의 오래된 파일명 대신 페이지에 보이는 파일명(`z_image_bf16.safetensors`, `qwen_3_4b_fp8_mixed.safetensors` 등)을 우선 보존합니다.
 - Civitai tensor metadata summary API를 조회해 primary 파일의 tensor count와 VRAM min/rec 추정치를 sidecar와 viewer 파일 badge에 저장/표시합니다.
-- Civitai 모델/이미지 연계 다운로드에서 version 파일 중 `metadata.isRequired=true`인 VAE/Text Encoder 같은 필수 구성요소를 primary 모델 파일과 함께 저장하도록 했습니다. 명시적으로 특정 file id/type을 선택한 경우에는 기존처럼 선택 파일만 받습니다.
+- Civitai 모델/이미지 연계 다운로드에서 version 파일 중 `metadata.isRequired=true`인 VAE/Text Encoder 같은 필수 구성요소를 primary 모델 파일과 함께 저장하고, `component_downloads`에 primary/required component 상태를 기록합니다. 명시적으로 특정 file id/type을 선택한 경우에는 기존처럼 선택 파일만 받습니다.
+- 모델 version metadata의 `images` 예시를 Civitai images API gallery 결과보다 먼저 썸네일 후보로 사용해, 모델 페이지 대표 예시 이미지가 카드 썸네일로 우선 저장됩니다.
 - 예시 이미지 metadata 조회가 실패해도 모델 파일 다운로드는 계속 진행합니다.
-- Civitai 모델 카드 우클릭 메뉴에 `갱신`을 추가해 기존 모델 파일은 유지하면서 누락되었거나 변경된 metadata sidecar와 대표 예시 이미지를 다시 받아올 수 있게 했습니다.
+- Civitai 모델 카드 우클릭 메뉴에 `갱신`을 추가해 기존 모델/구성요소 파일은 유지하면서 누락되었거나 변경된 metadata sidecar와 대표 예시 이미지를 다시 받아올 수 있게 했습니다.
+- 미디어 뷰어 generation panel에 `Downloaded components`와 `Check components`를 추가해 저장된 Civitai 모델 폴더 안의 primary/VAE/Text Encoder 파일 존재 여부를 바로 확인할 수 있게 했습니다.
 
 ### 저장 폴더 UI
 
 - 다운로드 완료로 새 폴더가 생겼을 때 왼쪽 저장 폴더 트리가 오래된 상태로 남지 않도록, 완료 상태 전환과 수동 새로고침에서 폴더 트리도 다시 불러오게 했습니다.
 - `hitomi`처럼 하위 폴더가 많은 항목이 폴더 트리 표시 예산을 독점해 뒤쪽 `huggingface`, `stable-diffusion` 폴더가 누락되지 않도록 트리 생성 순서와 폴더별 표시 한도를 조정했습니다.
+- 작업 내역 삭제 시 stale library index를 reset해 DB job row가 사라진 뒤에도 기존 Civitai sidecar 기반 라이브러리 카드가 복구되도록 했습니다.
+- 왼쪽 폴더에서 라이브러리 뷰를 열 때 선택 폴더를 live scan해, 오래된 index가 있어도 하위 모델 카드와 `civitai_example_*` 썸네일이 바로 보이도록 했습니다.
+- `저장 폴더` 헤더 옆에 새로고침 버튼을 추가해 NAS/로컬에서 직접 삭제한 폴더가 트리에 남을 때 즉시 filesystem 기준으로 다시 불러올 수 있게 했습니다.
+- 저장 폴더 트리는 처음 `/data`와 주요 상위 폴더만 보이도록 기본 접힘 상태로 렌더링하고, 사용자가 펼친 폴더는 수동/자동 새로고침 후에도 유지합니다.
+- 파일/폴더 이름 변경, 이동, 삭제 후 전체 페이지 reload를 하지 않고 현재 라이브러리 위치를 유지한 채 트리, 카드, 용량만 갱신하도록 바꿨습니다.
 
 ### ASMR.one
 

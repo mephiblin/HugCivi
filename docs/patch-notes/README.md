@@ -19,6 +19,8 @@ Append multiple entries to the same date file when several changes happen on one
 
 Time: HH:MM KST
 Commit: `<sha>` or `pending`
+# If one entry covers several related commits, use:
+Commits: `<sha1>`, `<sha2>`
 Status: implemented | verified | released | planning | reverted
 
 ### Summary
@@ -70,6 +72,7 @@ Do not use this folder as a scratchpad for every tiny edit. Use it for records t
 
 - Keep entries factual and command-backed.
 - Prefer absolute dates and commit SHAs over relative phrasing.
+- Use `Commits:` when a single dated entry summarizes several related commits.
 - Separate implemented behavior from planning.
 - Link current docs when a dated plan is superseded.
 - Record skipped checks and why.
