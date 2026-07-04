@@ -407,24 +407,81 @@ def test_startup_cleanup_removes_stale_archives_and_media_cache(
     old_media = media_cache / "old.play.mp4"
     fresh_media = media_cache / "fresh.play.mp4"
     temp_media = media_cache / ".stale.tmp.mp4"
-    for path in (old_zip, fresh_zip, old_media, fresh_media, temp_media):
+    old_thumbnail = media_cache / "thumbnails" / "old.jpg"
+    old_thumbnail.parent.mkdir(parents=True, exist_ok=True)
+    for path in (old_zip, fresh_zip, old_media, fresh_media, temp_media, old_thumbnail):
         path.write_bytes(b"x")
     os.utime(old_zip, (100, 100))
     os.utime(old_media, (100, 100))
     os.utime(temp_media, (100, 100))
+    os.utime(old_thumbnail, (100, 100))
     os.utime(fresh_zip, (990, 990))
     os.utime(fresh_media, (990, 990))
     monkeypatch.setenv("DOWNLOAD_ARCHIVE_TTL_SECONDS", "500")
     monkeypatch.setenv("MEDIA_CACHE_TTL_SECONDS", "500")
 
     assert main.cleanup_stale_download_archives(now=1000) == 1
-    assert main.cleanup_stale_media_cache(now=1000) == 2
+    assert main.cleanup_stale_media_cache(now=1000) == 3
 
     assert not old_zip.exists()
     assert fresh_zip.exists()
     assert not old_media.exists()
     assert fresh_media.exists()
     assert not temp_media.exists()
+    assert not old_thumbnail.exists()
+
+
+def test_media_thumbnail_endpoint_creates_and_reuses_cached_image(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, config_root = app_modules
+    source = data_root / "covers" / "cover.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"png")
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> None:
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"jpg")
+
+    monkeypatch.setattr(main.shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    first = main.api_media_thumbnail(path="covers/cover.png", _="_")
+    second = main.api_media_thumbnail(path="covers/cover.png", _="_")
+    cached = Path(first.path)
+
+    assert cached.parent == config_root / "media-cache" / "thumbnails"
+    assert cached.exists()
+    assert Path(second.path) == cached
+    assert len(calls) == 1
+    assert calls[0][-1].endswith(".tmp.jpg")
+
+
+def test_media_thumbnail_endpoint_rejects_root_and_symlink(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    source = data_root / "cover.png"
+    source.write_bytes(b"png")
+    link = data_root / "link.png"
+    link.symlink_to(source)
+    outside = data_root.parent / "outside"
+    outside.mkdir()
+    (outside / "cover.png").write_bytes(b"png")
+    link_dir = data_root / "linked-dir"
+    link_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(HTTPException) as root_error:
+        main.api_media_thumbnail(path="", _="_")
+    assert root_error.value.status_code == 400
+
+    with pytest.raises(HTTPException) as link_error:
+        main.api_media_thumbnail(path="link.png", _="_")
+    assert link_error.value.status_code == 400
+
+    with pytest.raises(HTTPException) as link_dir_error:
+        main.api_media_thumbnail(path="linked-dir", _="_")
+    assert link_dir_error.value.status_code == 400
 
 
 def test_lifespan_runs_startup_tasks_and_stops_workers(
@@ -887,6 +944,38 @@ def test_library_index_scan_populates_db_backed_library_items(app_modules: tuple
     ] == []
 
 
+def test_library_api_keeps_legacy_array_and_returns_paged_wrapper(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "stable-diffusion" / "loras"
+    for name in ("alpha", "bravo", "charlie"):
+        target = root / name
+        target.mkdir(parents=True)
+        (target / "model.safetensors").write_text("model", encoding="utf-8")
+        (target / "_civitai_metadata.json").write_text(
+            json.dumps(
+                {
+                    "source": "civitai",
+                    "archive_info": {"model_title": name.title(), "model_category": "LoRA"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    legacy = json.loads(main.api_library(_="_").body.decode("utf-8"))
+    page = json.loads(main.api_library(limit=2, page=1, sort="az", _="_").body.decode("utf-8"))
+
+    assert isinstance(legacy, list)
+    assert page["paged"] is True
+    assert page["limit"] == 2
+    assert page["page"] == 1
+    assert page["total_count"] == 3
+    assert page["total_pages"] == 2
+    assert page["has_next"] is True
+    assert [item["target_path"].rsplit("/", 1)[-1] for item in page["items"]] == ["alpha", "bravo"]
+
+
 def test_retry_failed_job_requeues_existing_job(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -1077,9 +1166,9 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "async function refreshLibraryItems(options = {})" in template
     assert "async function refreshLibraryForActivePath(options = {})" in template
-    assert "refreshLibraryItems({mode: 'live', path: activeLibraryPath});" in template
+    assert "refreshLibraryForActivePath({mode: 'live', page: 1});" in template
     assert "params.set('path', normalizePath(options.path || ''))" in template
-    assert "await refreshLibraryItems({mode: 'live'});" in template
+    assert "refreshLibraryForActivePath({mode: 'live'})," in template
     assert "function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {})" in template
     assert "window.location.reload();" not in template
     assert "function folderSearchScopePath()" in template
@@ -1093,6 +1182,7 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".folder-refresh-button" in stylesheet
     assert ".col-move" in stylesheet
     assert ".jobs-pagination" in stylesheet
+    assert ".library-pagination" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet

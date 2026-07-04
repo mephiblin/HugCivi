@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -35,7 +35,7 @@ Important paths:
 | `/data` | Long-lived archive content. This is the volume to protect if the downloaded files are the priority. |
 | `/config/jobs.sqlite3` | SQLite DB with jobs, settings, favorites, notes, library index, artifacts, and maintenance history. |
 | `/config/downloads` | Temporary ZIP artifacts prepared for folder downloads. |
-| `/config/media-cache` | Browser-playable video transcodes and poster images. |
+| `/config/media-cache` | Browser-playable video transcodes, poster images, and disposable card thumbnails. |
 | `/config/startup.env` | Startup setting overrides that must affect the next container boot, currently gallery-dl auto-update. |
 | `/config/backups` | Online SQLite backup output from the maintenance API. |
 
@@ -202,6 +202,14 @@ Poster generation:
 - `/api/media/poster-jobs` creates a `media_poster` job
 - output JPG files live in `/config/media-cache`
 
+Card thumbnail generation:
+
+- library/job cards use `/api/media/thumbnail?path=...` for image thumbnails instead of loading full-size originals
+- thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`
+- thumbnail cache misses use ffmpeg behind the same media transcode semaphore that protects video work
+- image thumbnails do not create internal job rows; the endpoint either serves a cache hit or generates the file during the request
+- `/api/fs/preview`, `/api/media/file`, and `/api/media/poster` remain available for compatibility and media-viewer/full-size use
+
 The UI polls job status and then swaps to the artifact URL when the job is done.
 
 ## Library Index
@@ -216,6 +224,9 @@ Indexer behavior:
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
 - `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up
+- `/api/library` without `limit` or `page` keeps the legacy plain-array response
+- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`
+- the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
 
 The index row stores the same kind of payload the UI already expects, rather than normalizing every display field into separate columns. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
 
@@ -239,9 +250,9 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, aggregate `/api/subscriptions/items`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `GET/POST /api/folders`, `/api/library`, `/api/library/reindex` |
+| Folders/library | `GET/POST /api/folders`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
-| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
+| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
 | Civitai health/refresh | `/api/civitai/resource-health`, `/api/civitai/refresh` |

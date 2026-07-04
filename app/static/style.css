@@ -2194,7 +2194,8 @@ a:hover {
   text-align: center;
 }
 
-.jobs-pagination {
+.jobs-pagination,
+.library-pagination {
   display: flex;
   min-height: 38px;
   align-items: center;
@@ -2205,8 +2206,13 @@ a:hover {
   font-size: 12px;
 }
 
-.jobs-pagination:empty {
+.jobs-pagination:empty,
+.library-pagination:empty {
   display: none;
+}
+
+.library-pagination {
+  margin-top: 18px;
 }
 
 .jobs-pagination-summary {
@@ -4857,13 +4863,15 @@ a:hover {
     border-color: #b8c2d2;
   }
 
-  .jobs-pagination {
+  .jobs-pagination,
+  .library-pagination {
     align-items: flex-start;
     flex-direction: column;
     margin: 10px 12px 0;
   }
 
-  .jobs-page-buttons {
+  .jobs-page-buttons,
+  .library-page-buttons {
     justify-content: flex-start;
   }
 

@@ -17,7 +17,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -108,6 +108,7 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/config/media-cache"))
+MEDIA_THUMBNAIL_CACHE_DIR = MEDIA_CACHE_DIR / "thumbnails"
 CHROME_EXTENSION_DIR = Path(os.getenv("HUGCIVI_CHROME_EXTENSION_DIR", str(BASE_DIR.parent / "chrome-extension")))
 STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PATH.parent / "startup.env")))
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -134,6 +135,10 @@ INTERNAL_JOB_ARCHIVE_ZIP = "archive_zip"
 INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
 INTERNAL_JOB_MEDIA_POSTER = "media_poster"
 JOB_LIST_PAGE_SIZE = 50
+LIBRARY_PAGE_SIZE = 50
+LIBRARY_PAGE_MAX_SIZE = 100
+MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
+MEDIA_THUMBNAIL_MAX_SIZE = 720
 DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT = 50_000
 DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT = 0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT = 0
@@ -142,6 +147,8 @@ BROWSER_MP4_VIDEO_CODECS = {"h264"}
 BROWSER_MP4_AUDIO_CODECS = {"aac", "mp3"}
 MEDIA_TRANSCODE_LOCKS: dict[str, threading.Lock] = {}
 MEDIA_TRANSCODE_LOCKS_LOCK = threading.Lock()
+MEDIA_THUMBNAIL_LOCKS: dict[str, threading.Lock] = {}
+MEDIA_THUMBNAIL_LOCKS_LOCK = threading.Lock()
 MEDIA_TRANSCODE_SEMAPHORE: threading.BoundedSemaphore | None = None
 MEDIA_TRANSCODE_SEMAPHORE_LOCK = threading.Lock()
 DOWNLOAD_ARCHIVE_SEMAPHORE: threading.BoundedSemaphore | None = None
@@ -410,6 +417,7 @@ def scan_data_root_usage(progress_callback: Callable[[dict[str, Any]], None] | N
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
     job_page = jobs_page_payload(limit=JOB_LIST_PAGE_SIZE, page=1)
+    library_page = library_items_page_payload(limit=LIBRARY_PAGE_SIZE, page=1)
     ensure_route_folders()
     return templates.TemplateResponse(
         "index.html",
@@ -417,7 +425,8 @@ def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
             "request": request,
             "jobs": job_page["jobs"],
             "jobs_page": job_page,
-            "library_items": library_items(),
+            "library_items": library_page["items"],
+            "library_page": library_page,
             "folder_tree": build_folder_tree(DATA_ROOT),
             "settings": db.settings_status(),
             "storage": storage_status(),
@@ -1102,15 +1111,32 @@ async def api_create_folder(request: Request, _: str = Depends(require_auth)) ->
 
 
 @app.get("/api/library")
-def api_library(mode: str = "index", path: str = "", _: str = Depends(require_auth)) -> JSONResponse:
+def api_library(
+    mode: str = "index",
+    path: str = "",
+    limit: int | None = None,
+    page: int | None = None,
+    sort: str = "az",
+    _: str = Depends(require_auth),
+) -> JSONResponse:
     root = existing_data_path(path) if path else None
-    return JSONResponse(library_items(mode=mode, root_path=root))
+    if limit is None and page is None:
+        return JSONResponse(library_items(mode=mode, root_path=root))
+    return JSONResponse(
+        library_items_page_payload(
+            mode=mode,
+            root_path=root,
+            limit=limit if limit is not None else LIBRARY_PAGE_SIZE,
+            page=page if page is not None else 1,
+            sort=sort,
+        )
+    )
 
 
 @app.post("/api/library/reindex")
 def api_library_reindex(_: str = Depends(require_auth)) -> JSONResponse:
     result = scan_library_index_batch(max_paths=library_reindex_batch_size(), reset=True)
-    return JSONResponse({"ok": True, **result, "items": db.list_library_index_items()})
+    return JSONResponse({"ok": True, **result, "items": library_items()})
 
 
 @app.get("/api/media/list")
@@ -1201,6 +1227,19 @@ def api_media_file(path: str, _: str = Depends(require_auth)) -> FileResponse:
     if not source.is_file() or not is_media_file(source):
         raise HTTPException(status_code=404, detail="미디어 파일을 찾지 못했습니다.")
     return FileResponse(source, media_type=media_type_for_path(source))
+
+
+@app.get("/api/media/thumbnail")
+def api_media_thumbnail(
+    path: str,
+    size: int = MEDIA_THUMBNAIL_DEFAULT_SIZE,
+    _: str = Depends(require_auth),
+) -> FileResponse:
+    source = thumbnail_source_for_request(path)
+    thumbnail = cached_image_thumbnail_path(source, size=size)
+    if not safe_cache_file(MEDIA_CACHE_DIR, thumbnail):
+        raise HTTPException(status_code=404, detail="썸네일 파일을 찾지 못했습니다.")
+    return FileResponse(thumbnail, media_type="image/jpeg", filename=f"{source.stem}.jpg")
 
 
 @app.get("/api/media/text")
@@ -1740,7 +1779,9 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
         and job.get("target_dir")
         and job.get("status") in {"done", "failed", "paused", "canceled"}
     ):
-        job["thumbnail_url"] = thumbnail_url_for_path(Path(str(job.get("target_dir"))))
+        job["thumbnail_url"] = card_thumbnail_url_for_path(Path(str(job.get("target_dir"))))
+    else:
+        job["thumbnail_url"] = card_thumbnail_url_for_url(str(job.get("thumbnail_url") or ""))
     favorite_paths = favorites if favorites is not None else db.favorite_paths()
     job["favorite"] = bool(target_path and target_path in favorite_paths)
     job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
@@ -1763,6 +1804,181 @@ def decorate_job_media_flags(job: dict[str, Any]) -> None:
             job["media_type"] = "image"
 
 
+def normalize_library_sort(sort: str | None) -> str:
+    value = str(sort or "az").strip().lower()
+    return value if value in {"az", "za", "date", "favorite"} else "az"
+
+
+def library_page_limit(limit: int | None) -> int:
+    try:
+        value = int(limit if limit is not None else LIBRARY_PAGE_SIZE)
+    except (TypeError, ValueError):
+        value = LIBRARY_PAGE_SIZE
+    return max(1, min(LIBRARY_PAGE_MAX_SIZE, value))
+
+
+def library_page_number(page: int | None) -> int:
+    try:
+        value = int(page if page is not None else 1)
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, value)
+
+
+def library_items_page_payload(
+    *,
+    limit: int | None = LIBRARY_PAGE_SIZE,
+    page: int | None = 1,
+    mode: str = "index",
+    root_path: Path | None = None,
+    sort: str = "az",
+) -> dict[str, Any]:
+    page_limit = library_page_limit(limit)
+    page_number = library_page_number(page)
+    normalized_sort = normalize_library_sort(sort)
+    offset = (page_number - 1) * page_limit
+    path_prefix = relative_data_path(root_path) if root_path is not None else ""
+
+    if root_path is None and mode != "live":
+        total_count = db.count_library_index_items(path_prefix=path_prefix)
+        if total_count > 0:
+            if offset >= total_count:
+                page_number = max(1, (total_count + page_limit - 1) // page_limit)
+                offset = (page_number - 1) * page_limit
+            favorites = db.favorite_paths()
+            items = [
+                normalize_library_item_payload(item, favorites)
+                for item in db.list_library_index_items(
+                    limit=page_limit,
+                    offset=offset,
+                    path_prefix=path_prefix,
+                    sort=normalized_sort,
+                )
+            ]
+            total_pages = max(1, (total_count + page_limit - 1) // page_limit)
+            return {
+                "ok": True,
+                "items": items,
+                "page": page_number,
+                "limit": page_limit,
+                "total_count": total_count,
+                "total_pages": total_pages,
+                "has_next": page_number < total_pages,
+                "mode": "index",
+                "path": path_prefix,
+                "sort": normalized_sort,
+                "paged": True,
+            }
+        if db.get_library_scan_state("library.indexing", "0") == "1":
+            return {
+                "ok": True,
+                "items": [],
+                "page": page_number,
+                "limit": page_limit,
+                "total_count": 0,
+                "total_pages": 1,
+                "has_next": False,
+                "mode": "index",
+                "path": path_prefix,
+                "sort": normalized_sort,
+                "paged": True,
+            }
+
+    items, has_next = live_library_items_page(
+        limit=page_limit,
+        offset=offset,
+        root_path=root_path,
+        sort=normalized_sort,
+    )
+    return {
+        "ok": True,
+        "items": items,
+        "page": page_number,
+        "limit": page_limit,
+        "total_count": None,
+        "total_pages": None,
+        "has_next": has_next,
+        "mode": "live",
+        "path": path_prefix,
+        "sort": normalized_sort,
+        "paged": True,
+    }
+
+
+def live_library_items_page(
+    *,
+    limit: int,
+    offset: int = 0,
+    root_path: Path | None = None,
+    sort: str = "az",
+) -> tuple[list[dict[str, Any]], bool]:
+    fetch_limit = max(1, offset + limit + 1)
+    items = sort_library_items(live_library_items(max_items=fetch_limit, root_path=root_path), sort)
+    page_items = items[offset : offset + limit]
+    return page_items, len(items) > offset + limit
+
+
+def sort_library_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
+    mode = normalize_library_sort(sort)
+    if mode == "date":
+        return sorted(items, key=lambda item: (-library_item_timestamp(item), library_item_sort_title(item)))
+    if mode == "za":
+        return sorted(items, key=library_item_sort_title, reverse=True)
+    if mode == "favorite":
+        return sorted(items, key=lambda item: (not bool(item.get("favorite")), library_item_sort_title(item)))
+    return sorted(items, key=library_item_sort_title)
+
+
+def library_item_sort_title(item: dict[str, Any]) -> str:
+    return str(item.get("model_title") or item.get("filename") or item.get("target_path") or "").casefold()
+
+
+def library_item_timestamp(item: dict[str, Any]) -> float:
+    for key in ("updated_at", "created_at"):
+        value = item.get(key)
+        if not value:
+            continue
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+    return 0
+
+
+def normalize_library_item_payload(item: dict[str, Any], favorites: set[str] | None = None) -> dict[str, Any]:
+    payload = dict(item)
+    target_path = str(payload.get("target_path") or "").strip("/")
+    favorite_paths = favorites if favorites is not None else db.favorite_paths()
+    payload["favorite"] = bool(target_path and target_path in favorite_paths)
+    thumbnail_url = card_thumbnail_url_for_url(str(payload.get("thumbnail_url") or ""))
+    if not thumbnail_url:
+        target = library_item_target_path(payload)
+        if target is not None:
+            thumbnail_url = card_thumbnail_url_for_path(target)
+    payload["thumbnail_url"] = thumbnail_url
+    return payload
+
+
+def library_item_target_path(item: dict[str, Any]) -> Path | None:
+    target_dir = str(item.get("target_dir") or "").strip()
+    target_path = str(item.get("target_path") or "").strip()
+    candidates: list[Path] = []
+    if target_dir:
+        candidates.append(Path(target_dir))
+    if target_path:
+        try:
+            candidates.append(data_path_from_request_path(target_path))
+        except HTTPException:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def library_items(max_items: int = 1000, *, mode: str = "index", root_path: Path | None = None) -> list[dict[str, Any]]:
     if root_path is not None:
         return live_library_items(max_items=max_items, root_path=root_path)
@@ -1770,10 +1986,7 @@ def library_items(max_items: int = 1000, *, mode: str = "index", root_path: Path
         indexed_items = db.list_library_index_items(limit=max_items)
         if indexed_items:
             favorites = db.favorite_paths()
-            for item in indexed_items:
-                target_path = str(item.get("target_path") or "")
-                item["favorite"] = bool(target_path and target_path in favorites)
-            return indexed_items
+            return [normalize_library_item_payload(item, favorites) for item in indexed_items]
         if db.get_library_scan_state("library.indexing", "0") == "1":
             return []
 
@@ -2116,7 +2329,7 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
         "base_model": str(metadata.get("base_model") or ""),
         "file_format": library_item_format(path, metadata, first_media),
         "precision": library_item_precision(path, metadata, media_count),
-        "thumbnail_url": thumbnail_url_for_media(first_media) or thumbnail_url_for_path(path),
+        "thumbnail_url": card_thumbnail_url_for_media(first_media) or card_thumbnail_url_for_path(path),
         "favorite": relative_path in favorites,
         "source_url": str(metadata.get("source_url") or source_url_from_metadata(metadata)),
         "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
@@ -2926,6 +3139,51 @@ def thumbnail_url_for_media(path: Path | None) -> str:
     return ""
 
 
+def card_thumbnail_url_for_media(path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        relative_path = relative_data_path(path)
+    except (OSError, ValueError):
+        return ""
+    if is_image_file(path):
+        return f"/api/media/thumbnail?path={quote(relative_path, safe='/')}"
+    if is_video_file(path) and video_poster_path_if_ready(path) is not None:
+        return f"/api/media/poster?path={quote(relative_path, safe='/')}"
+    return ""
+
+
+def card_thumbnail_url_for_path(path: Path) -> str:
+    try:
+        thumbnail = folder_thumbnail_path(path)
+    except OSError:
+        return ""
+    if thumbnail is None:
+        return ""
+    return card_thumbnail_url_for_media(thumbnail)
+
+
+def card_thumbnail_url_for_url(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.path == "/api/media/thumbnail":
+        return url
+    if parsed.path == "/api/media/poster":
+        return url
+    if parsed.path not in {"/api/fs/preview", "/api/media/file"}:
+        return url if parsed.scheme in {"http", "https"} else ""
+    query = parse_qs(parsed.query)
+    value = query.get("path", [""])[0]
+    if not value:
+        return ""
+    try:
+        source = existing_data_path(value)
+    except HTTPException:
+        return ""
+    return card_thumbnail_url_for_media(source)
+
+
 def media_type_for_path(path: Path) -> str:
     guessed = mimetypes.guess_type(path.name)[0]
     if guessed:
@@ -3163,6 +3421,109 @@ def media_transcode_target(source: Path) -> Path:
 def media_cache_key(source: Path) -> str:
     stat = source.stat()
     return hashlib.sha256(f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()[:24]
+
+
+def thumbnail_source_for_request(path: str) -> Path:
+    source = existing_data_path(path)
+    ensure_downloadable_path(source)
+    try:
+        unsafe_source = source.is_symlink() or has_symlink_ancestor(source)
+    except (OSError, ValueError):
+        unsafe_source = True
+    if unsafe_source:
+        raise HTTPException(status_code=400, detail="symlink 이미지는 썸네일로 사용할 수 없습니다.")
+    if source.is_dir():
+        representative = folder_thumbnail_path(source)
+        if representative is None:
+            raise HTTPException(status_code=404, detail="대표 이미지를 찾지 못했습니다.")
+        source = representative
+    if not source.is_file() or not is_image_file(source) or source.name.endswith(".part"):
+        raise HTTPException(status_code=404, detail="이미지 파일을 찾지 못했습니다.")
+    try:
+        unsafe_symlink = source.is_symlink() or has_symlink_ancestor(source)
+    except (OSError, ValueError):
+        unsafe_symlink = True
+    if unsafe_symlink:
+        raise HTTPException(status_code=400, detail="symlink 이미지는 썸네일로 사용할 수 없습니다.")
+    return source
+
+
+def thumbnail_size_value(size: int | None) -> int:
+    try:
+        value = int(size if size is not None else MEDIA_THUMBNAIL_DEFAULT_SIZE)
+    except (TypeError, ValueError):
+        value = MEDIA_THUMBNAIL_DEFAULT_SIZE
+    return max(1, min(MEDIA_THUMBNAIL_MAX_SIZE, value))
+
+
+def media_thumbnail_cache_key(source: Path, size: int) -> str:
+    stat = source.stat()
+    source_key = f"thumb-v1:{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{size}:jpg"
+    return hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:32]
+
+
+def media_thumbnail_target(source: Path, size: int) -> Path:
+    return MEDIA_THUMBNAIL_CACHE_DIR / f"{media_thumbnail_cache_key(source, size)}.jpg"
+
+
+def media_thumbnail_lock(key: str) -> threading.Lock:
+    with MEDIA_THUMBNAIL_LOCKS_LOCK:
+        lock = MEDIA_THUMBNAIL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            MEDIA_THUMBNAIL_LOCKS[key] = lock
+        return lock
+
+
+def cached_image_thumbnail_path(source: Path, *, size: int | None = None) -> Path:
+    normalized_size = thumbnail_size_value(size)
+    key = media_thumbnail_cache_key(source, normalized_size)
+    target = media_thumbnail_target(source, normalized_size)
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    lock = media_thumbnail_lock(key)
+    with lock:
+        if target.exists() and target.stat().st_size > 0:
+            return target
+        if not shutil.which("ffmpeg"):
+            raise HTTPException(status_code=500, detail="ffmpeg가 없어 이미지 썸네일을 생성할 수 없습니다.")
+        MEDIA_THUMBNAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        temp = MEDIA_THUMBNAIL_CACHE_DIR / f".{key}.tmp.jpg"
+        cleanup_file(temp)
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale=w='min(iw,{normalized_size})':h='min(ih,{normalized_size})':force_original_aspect_ratio=decrease",
+            "-q:v",
+            "4",
+            "-map_metadata",
+            "-1",
+            "-y",
+            str(temp),
+        ]
+        try:
+            with media_transcode_semaphore():
+                subprocess.run(command, check=True, timeout=30, capture_output=True)
+            os.replace(temp, target)
+        except subprocess.CalledProcessError as exc:
+            cleanup_file(temp)
+            detail = (exc.stderr or b"").decode("utf-8", "replace").strip()
+            message = f"이미지 썸네일을 생성하지 못했습니다: {detail or exc}"
+            raise HTTPException(status_code=500, detail=message[:1000]) from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            cleanup_file(temp)
+            raise HTTPException(status_code=500, detail=f"이미지 썸네일을 생성하지 못했습니다: {exc}") from exc
+    return target
 
 
 def media_transcode_lock(key: str) -> threading.Lock:

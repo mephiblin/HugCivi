@@ -1323,16 +1323,25 @@ def upsert_library_item(
         conn.commit()
 
 
-def list_library_index_items(limit: int = 1000) -> list[dict[str, Any]]:
+def list_library_index_items(
+    limit: int = 1000,
+    *,
+    offset: int = 0,
+    path_prefix: str = "",
+    sort: str = "az",
+) -> list[dict[str, Any]]:
+    where, params = library_index_where(path_prefix)
+    order = library_index_order(sort)
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT payload_json FROM library_items
-            WHERE stale = 0
-            ORDER BY lower(path) ASC
+            {where}
+            {order}
             LIMIT ?
+            OFFSET ?
             """,
-            (limit,),
+            (*params, max(0, int(limit)), max(0, int(offset))),
         ).fetchall()
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -1345,10 +1354,34 @@ def list_library_index_items(limit: int = 1000) -> list[dict[str, Any]]:
     return items
 
 
-def count_library_index_items() -> int:
+def count_library_index_items(*, path_prefix: str = "") -> int:
+    where, params = library_index_where(path_prefix)
     with _DB_LOCK, connect() as conn:
-        row = conn.execute("SELECT COUNT(*) AS count FROM library_items WHERE stale = 0").fetchone()
+        row = conn.execute(f"SELECT COUNT(*) AS count FROM library_items {where}", params).fetchone()
     return int(row["count"] or 0) if row else 0
+
+
+def library_index_where(path_prefix: str) -> tuple[str, tuple[str, ...]]:
+    prefix = path_prefix.strip("/")
+    if not prefix:
+        return "WHERE stale = 0", ()
+    return (
+        "WHERE stale = 0 AND (path = ? OR path LIKE ? ESCAPE '\\')",
+        (prefix, escape_like(prefix.rstrip("/") + "/") + "%"),
+    )
+
+
+def library_index_order(sort: str) -> str:
+    if sort == "za":
+        return "ORDER BY lower(name) DESC, lower(path) DESC"
+    if sort == "date":
+        return "ORDER BY mtime_ns DESC, lower(path) ASC"
+    if sort == "favorite":
+        return (
+            "ORDER BY CASE WHEN path IN (SELECT path FROM favorites) THEN 0 ELSE 1 END, "
+            "lower(name) ASC, lower(path) ASC"
+        )
+    return "ORDER BY lower(name) ASC, lower(path) ASC"
 
 
 def mark_library_item_stale(path: str) -> None:

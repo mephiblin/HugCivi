@@ -302,6 +302,7 @@
             </div>
           </div>
           <div class="library-grid" id="library-grid"></div>
+          <div class="library-pagination" id="library-pagination"></div>
         </section>
       </section>
     </main>
@@ -859,7 +860,9 @@
     const initialJobs = {{ jobs|tojson }};
     const initialJobsPage = {{ jobs_page|tojson }};
     const initialLibraryItems = {{ library_items|tojson }};
+    const initialLibraryPage = {{ library_page|tojson }};
     const initialStorage = {{ storage|tojson }};
+    const LIBRARY_PAGE_SIZE = 50;
     const targetInput = document.getElementById('target_subdir');
     const selectedFolder = document.getElementById('selected-folder');
     const homeView = document.getElementById('home-view');
@@ -868,6 +871,7 @@
     const libraryPath = document.getElementById('library-path');
     const libraryCount = document.getElementById('library-count');
     const librarySort = document.getElementById('library-sort');
+    const libraryPagination = document.getElementById('library-pagination');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
@@ -1021,6 +1025,8 @@
     let activeJobSource = normalizeJobSource(initialJobsPage?.active_source || '');
     let currentJobsPage = normalizeJobsPage(initialJobsPage, currentJobs.length);
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
+    let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
+    let libraryRequestId = 0;
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let storageUsagePollTimer = null;
     let activeLibraryPath = null;
@@ -1315,7 +1321,15 @@
       activeJobSource = source;
       refreshJobs({page: 1, source});
     });
-    librarySort.addEventListener('change', renderLibrary);
+    librarySort.addEventListener('change', () => {
+      refreshLibraryForActivePath({page: 1});
+    });
+    libraryPagination?.addEventListener('click', event => {
+      const button = event.target.closest('[data-library-page]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      refreshLibraryForActivePath({page: Number(button.dataset.libraryPage || 1)});
+    });
     propertiesClose.addEventListener('click', closePropertiesModal);
     propertiesModal.addEventListener('click', event => {
       if (event.target === propertiesModal) {
@@ -2763,8 +2777,8 @@
       commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
       homeView.classList.remove('active');
       libraryView.classList.add('active');
-      renderLibrary();
-      refreshLibraryItems({mode: 'live', path: activeLibraryPath});
+      showLibraryLoading(activeLibraryPath, 'live');
+      refreshLibraryForActivePath({mode: 'live', page: 1});
       if (isMobileLayout()) {
         activateMobileTab('library');
       }
@@ -2774,7 +2788,8 @@
       activeMobileTab = tab;
       if (tab === 'library' && activeLibraryPath === null) {
         activeLibraryPath = '';
-        renderLibrary();
+        showLibraryLoading(activeLibraryPath, 'live');
+        refreshLibraryForActivePath({mode: 'live', page: 1});
       }
       mobileTabs.forEach(button => {
         button.classList.toggle('active', button.dataset.mobileTab === tab);
@@ -2786,6 +2801,29 @@
 
     function isMobileLayout() {
       return window.matchMedia('(max-width: 700px)').matches;
+    }
+
+    function showLibraryLoading(path, mode = 'live') {
+      const normalized = normalizePath(path || '');
+      currentLibraryItems = [];
+      currentLibraryPage = normalizeLibraryPage(
+        {
+          page: 1,
+          limit: currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
+          total_count: null,
+          total_pages: null,
+          has_next: false,
+          mode,
+          path: normalized,
+          sort: librarySort?.value || 'az',
+          paged: true,
+        },
+        0
+      );
+      libraryPath.textContent = normalized ? `/data/${normalized}` : '/data';
+      libraryCount.textContent = '';
+      libraryGrid.innerHTML = '<div class="library-empty">불러오는 중</div>';
+      if (libraryPagination) libraryPagination.innerHTML = '';
     }
 
     function setupWorkflowDropImport() {
@@ -2913,7 +2951,7 @@
     async function replaceWorkflowJobs(jobs) {
       await refreshJobs({page: 1});
       if (activeLibraryPath !== null) {
-        renderLibrary();
+        await refreshLibraryForActivePath({mode: 'live'});
       }
     }
 
@@ -2959,11 +2997,36 @@
       };
     }
 
+    function normalizeLibraryPage(pageData, fallbackCount = 0) {
+      const page = Number(pageData?.page || 1);
+      const limit = Number(pageData?.limit || LIBRARY_PAGE_SIZE);
+      const totalCount = pageData?.total_count === null || pageData?.total_count === undefined
+        ? null
+        : Math.max(0, Number(pageData.total_count || 0));
+      const totalPages = pageData?.total_pages === null || pageData?.total_pages === undefined
+        ? null
+        : Math.max(1, Number(pageData.total_pages || 1));
+      return {
+        page: Number.isFinite(page) && page > 0 ? Math.floor(page) : 1,
+        limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : LIBRARY_PAGE_SIZE,
+        total_count: Number.isFinite(totalCount) ? Math.floor(totalCount) : null,
+        total_pages: Number.isFinite(totalPages) ? Math.floor(totalPages) : null,
+        has_next: Boolean(pageData?.has_next),
+        mode: pageData?.mode || 'index',
+        path: normalizePath(pageData?.path || ''),
+        sort: pageData?.sort || (librarySort?.value || 'az'),
+        paged: Boolean(pageData?.paged),
+        fallback_count: Math.max(0, Number(fallbackCount || 0)),
+      };
+    }
+
     async function refreshJobs(options = {}) {
       try {
         const page = Math.max(1, Number(options.page || currentJobsPage.page || 1));
         const limit = Math.max(1, Number(options.limit || currentJobsPage.limit || 50));
         const requestedSource = normalizeJobSource(Object.prototype.hasOwnProperty.call(options, 'source') ? options.source : activeJobSource);
+        const libraryFolder = activeLibraryPath === null ? null : normalizePath(activeLibraryPath || '');
+        const librarySignatureBefore = libraryFolder === null ? '' : libraryJobSignature(currentJobs, libraryFolder);
         const params = new URLSearchParams({limit: String(limit), page: String(page)});
         if (requestedSource) params.set('source', requestedSource);
         const response = await fetch(`/api/jobs?${params.toString()}`);
@@ -2971,6 +3034,8 @@
         const data = await response.json();
         const nextJobs = Array.isArray(data) ? data : (Array.isArray(data.jobs) ? data.jobs : []);
         const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);
+        const refreshActiveLibraryAfterRender = libraryFolder !== null
+          && jobsCompletedWithTarget(currentJobs, nextJobs, libraryFolder);
         const nextPage = normalizeJobsPage(data, nextJobs.length);
         const availableSources = new Set(nextPage.source_counts.map(item => item.source));
         if (requestedSource && !availableSources.has(requestedSource) && !options.retriedWithoutSource) {
@@ -2982,7 +3047,13 @@
         currentJobs = nextJobs;
         currentJobsPage = nextPage;
         renderJobs(currentJobs);
-        if (activeLibraryPath !== null) renderLibrary();
+        if (libraryFolder !== null && libraryFolder === normalizePath(activeLibraryPath || '')) {
+          if (refreshActiveLibraryAfterRender) {
+            await refreshLibraryForActivePath({mode: 'live'});
+          } else if (librarySignatureBefore !== libraryJobSignature(currentJobs, libraryFolder)) {
+            renderLibrary();
+          }
+        }
         if (refreshFoldersAfterRender) {
           refreshFolders();
         }
@@ -3012,12 +3083,14 @@
     }
 
     function jobsCompletedWithTarget(previousJobs, nextJobs) {
+      const folder = arguments.length > 2 ? arguments[2] : null;
       const previousById = new Map(
         (Array.isArray(previousJobs) ? previousJobs : []).map(job => [String(job.id), job])
       );
       return (Array.isArray(nextJobs) ? nextJobs : []).some(job => {
         const path = normalizePath(job?.target_path || job?.target_dir || '');
         if (!path || String(job?.status || '') !== 'done') return false;
+        if (folder !== null && !pathMatchesFolder(path, folder)) return false;
         const previous = previousById.get(String(job.id));
         return Boolean(previous && String(previous.status || '') !== 'done');
       });
@@ -3025,14 +3098,41 @@
 
     async function refreshLibraryItems(options = {}) {
       try {
+        const requestId = ++libraryRequestId;
         const params = new URLSearchParams();
         if (options.mode) params.set('mode', options.mode);
         if (Object.prototype.hasOwnProperty.call(options, 'path')) params.set('path', normalizePath(options.path || ''));
+        const page = Math.max(1, Number(options.page || currentLibraryPage.page || 1));
+        const limit = Math.max(1, Number(options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
+        const sort = librarySort?.value || currentLibraryPage.sort || 'az';
+        params.set('limit', String(limit));
+        params.set('page', String(page));
+        params.set('sort', sort);
         const query = params.toString();
         const response = await fetch(query ? `/api/library?${query}` : '/api/library');
         if (!response.ok) return;
         const data = await response.json();
-        currentLibraryItems = Array.isArray(data) ? data : [];
+        if (requestId !== libraryRequestId) return;
+        if (Array.isArray(data)) {
+          currentLibraryItems = data;
+          currentLibraryPage = normalizeLibraryPage(
+            {
+              page: 1,
+              limit: Math.max(1, data.length || limit),
+              total_count: data.length,
+              total_pages: 1,
+              has_next: false,
+              mode: options.mode || 'index',
+              path: Object.prototype.hasOwnProperty.call(options, 'path') ? options.path : '',
+              sort,
+              paged: false,
+            },
+            data.length
+          );
+        } else {
+          currentLibraryItems = Array.isArray(data?.items) ? data.items : [];
+          currentLibraryPage = normalizeLibraryPage(data, currentLibraryItems.length);
+        }
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
         console.error(err);
@@ -3041,12 +3141,18 @@
 
     async function refreshLibraryForActivePath(options = {}) {
       if (activeLibraryPath === null) {
-        await refreshLibraryItems();
+        await refreshLibraryItems({
+          mode: options.mode || 'index',
+          page: options.page || currentLibraryPage.page || 1,
+          limit: options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
+        });
         return;
       }
       await refreshLibraryItems({
         mode: options.mode || 'live',
         path: activeLibraryPath,
+        page: options.page || currentLibraryPage.page || 1,
+        limit: options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
       });
     }
 
@@ -3165,8 +3271,7 @@
           window.alert('지울 완료 기록이 없습니다.');
         }
         await refreshJobs({page: currentJobsPage.page});
-        await refreshLibraryItems({mode: 'live'});
-        if (activeLibraryPath !== null) renderLibrary();
+        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
@@ -3400,8 +3505,7 @@
         }
         await readJsonResponse(response);
         await refreshJobs({page: currentJobsPage.page});
-        await refreshLibraryItems();
-        if (activeLibraryPath !== null) renderLibrary();
+        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
@@ -3432,7 +3536,7 @@
     }
 
     function renderModelInfo(job) {
-      const image = job.thumbnail_url ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">` : '';
+      const image = job.thumbnail_url ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">` : '';
       const details = [job.base_model, job.precision, job.file_format].filter(Boolean).map(escapeHtml).join(' · ');
       return `<div class="model-card ${job.thumbnail_url ? '' : 'no-thumb'}">
         ${image}
@@ -3446,11 +3550,14 @@
 
     function renderLibrary() {
       const folder = activeLibraryPath || '';
-      const matches = sortLibraryJobs(libraryCards().filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder)));
+      const cards = currentLibraryPage.paged ? currentLibraryItems : libraryCards();
+      const filtered = cards.filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder));
+      const matches = currentLibraryPage.paged ? filtered : sortLibraryJobs(filtered);
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
-      libraryCount.textContent = `${matches.length}개`;
+      libraryCount.textContent = libraryCountLabel(matches.length);
       if (!matches.length) {
         libraryGrid.innerHTML = '<div class="library-empty">이 폴더에 표시할 모델 카드가 없습니다.</div>';
+        renderLibraryPagination();
         return;
       }
       libraryGrid.innerHTML = matches.map(job => {
@@ -3461,7 +3568,7 @@
         const favorite = Boolean(job.favorite);
         const hasThumbnail = Boolean(job.thumbnail_url);
         const image = hasThumbnail
-          ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="">`
+          ? `<img src="${escapeHtml(job.thumbnail_url)}" alt="" loading="lazy" decoding="async">`
           : `<div class="asset-placeholder">${escapeHtml(libraryPlaceholderLabel(job))}</div>`;
         const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
@@ -3494,6 +3601,51 @@
           </div>
         </article>`;
       }).join('');
+      renderLibraryPagination();
+    }
+
+    function libraryCountLabel(visibleCount) {
+      const total = currentLibraryPage.total_count;
+      if (Number.isFinite(total)) return `${formatCount(total)}개`;
+      if (!currentLibraryPage.paged) return `${formatCount(visibleCount)}개`;
+      const page = Math.max(1, Number(currentLibraryPage.page || 1));
+      const limit = Math.max(1, Number(currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
+      const seen = (page - 1) * limit + visibleCount;
+      if (currentLibraryPage.has_next) return `${formatCount(page * limit)}개 이상`;
+      return `${formatCount(seen)}개`;
+    }
+
+    function renderLibraryPagination() {
+      if (!libraryPagination) return;
+      const page = Math.max(1, Number(currentLibraryPage.page || 1));
+      const totalPages = Number.isFinite(currentLibraryPage.total_pages)
+        ? Math.max(1, Number(currentLibraryPage.total_pages || 1))
+        : null;
+      const hasNext = Boolean(currentLibraryPage.has_next);
+      if ((!totalPages || totalPages <= 1) && page <= 1 && !hasNext) {
+        libraryPagination.innerHTML = '';
+        return;
+      }
+      const nextDisabled = totalPages ? page >= totalPages : !hasNext;
+      const summary = totalPages
+        ? `총 ${formatCount(currentLibraryPage.total_count || 0)}개 · ${formatCount(page)} / ${formatCount(totalPages)}`
+        : `${formatCount(page)}페이지`;
+      const pages = totalPages
+        ? visibleJobPages(page, totalPages)
+        : [Math.max(1, page - 1), page, hasNext ? page + 1 : null].filter(Boolean);
+      const buttons = pages.map(item => {
+        if (item === 'gap') return '<span class="jobs-page-gap" aria-hidden="true">...</span>';
+        const active = item === page;
+        return `<button type="button" data-library-page="${item}" class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''}>${item}</button>`;
+      }).join('');
+      libraryPagination.innerHTML = `
+        <span class="jobs-pagination-summary">${escapeHtml(summary)}</span>
+        <div class="jobs-page-buttons library-page-buttons">
+          <button type="button" data-library-page="${Math.max(1, page - 1)}" ${page <= 1 ? 'disabled' : ''}>이전</button>
+          ${buttons}
+          <button type="button" data-library-page="${page + 1}" ${nextDisabled ? 'disabled' : ''}>다음</button>
+        </div>
+      `;
     }
 
     function libraryPlaceholderLabel(job) {
@@ -3603,16 +3755,51 @@
           const target = libraryJobPath(item);
           return target === normalized ? {...item, favorite: Boolean(data.favorite)} : item;
         });
-        renderLibrary();
+        if ((librarySort?.value || 'az') === 'favorite') {
+          await refreshLibraryForActivePath({page: currentLibraryPage.page});
+        } else {
+          renderLibrary();
+        }
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
     }
 
     function jobMatchesFolder(job, folder) {
-      if (!folder) return true;
-      const target = libraryJobPath(job);
-      return target === folder || target.startsWith(`${folder}/`);
+      return pathMatchesFolder(libraryJobPath(job), folder);
+    }
+
+    function pathMatchesFolder(path, folder) {
+      const target = normalizePath(path || '');
+      const normalizedFolder = normalizePath(folder || '');
+      if (!normalizedFolder) return true;
+      return target === normalizedFolder || target.startsWith(`${normalizedFolder}/`);
+    }
+
+    function libraryJobSignature(jobs, folder) {
+      return (Array.isArray(jobs) ? jobs : [])
+        .filter(job => isLibraryJob(job) && jobMatchesFolder(job, folder))
+        .map(job => [
+          libraryJobPath(job),
+          job.id || '',
+          job.status || '',
+          job.model_title || '',
+          job.filename || '',
+          job.thumbnail_url || '',
+          job.source_url || '',
+          job.source || '',
+          job.model_category || '',
+          job.model_type || '',
+          job.base_model || '',
+          job.precision || '',
+          job.file_format || '',
+          job.has_media ? '1' : '0',
+          job.media_count || 0,
+          job.media_type || '',
+          job.favorite ? '1' : '0',
+        ].map(value => String(value).replace(/\|/g, '%7C')).join('|'))
+        .sort()
+        .join('\n');
     }
 
     function isLibraryJob(job) {
@@ -3769,7 +3956,7 @@
         }
         await readJsonResponse(response);
         await refreshJobs({page: 1});
-        await refreshLibraryItems();
+        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }

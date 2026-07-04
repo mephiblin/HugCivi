@@ -29,7 +29,7 @@ Path and startup settings are usually read from environment variables at import 
 | `DATA_ROOT` | `/data` | env | Durable archive root. Do not point multiple containers at the same root and DB concurrently. |
 | `DB_PATH` | `/config/jobs.sqlite3` | env | SQLite state DB. |
 | `DOWNLOAD_ARCHIVE_DIR` | `/config/downloads` | env | Temporary folder ZIP artifacts. |
-| `MEDIA_CACHE_DIR` | `/config/media-cache` | env | Browser transcodes and poster cache. |
+| `MEDIA_CACHE_DIR` | `/config/media-cache` | env | Browser transcodes, poster cache, and lazy card thumbnails under `thumbnails/`. |
 | `HUGCIVI_CHROME_EXTENSION_DIR` | app parent `chrome-extension` | env | Source folder zipped by `/api/addon/chrome-extension`. |
 | `HUGCIVI_STARTUP_CONFIG_FILE` | `/config/startup.env` | env | Startup file used by the entrypoint for gallery-dl auto-update. |
 | `HUGCIVI_DATA_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/data`. |
@@ -164,13 +164,13 @@ Current implementation status:
 | `DOWNLOAD_ARCHIVE_MAX_FILES` | `50000` | env | ZIP preflight file cap. |
 | `DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES` | `0` | env | `0` means no source size cap. |
 | `DOWNLOAD_ARCHIVE_MIN_FREE_BYTES` | `0` | env | Extra free-space requirement before ZIP. |
-| `MEDIA_TRANSCODE_MAX_CONCURRENT` | `1` | env | ffmpeg transcode semaphore. |
+| `MEDIA_TRANSCODE_MAX_CONCURRENT` | `1` | env | ffmpeg transcode semaphore, also shared by lazy card thumbnail generation. |
 | `MEDIA_TRANSCODE_TIMEOUT_SECONDS` | `1800` | env | ffmpeg timeout. |
 | `MEDIA_TRANSCODE_PRESET` | `veryfast` | env | ffmpeg x264 preset. |
 | `MEDIA_TRANSCODE_CRF` | `23` | env | ffmpeg quality. |
 | `MEDIA_TRANSCODE_AUDIO_BITRATE` | `160k` | env | ffmpeg audio bitrate. |
-| `MEDIA_CACHE_TTL_SECONDS` | `2592000` | env | Media cache cleanup age. |
-| `MEDIA_CACHE_MAX_BYTES` | `0` | env | `0` means no media cache size cap. |
+| `MEDIA_CACHE_TTL_SECONDS` | `2592000` | env | Media cache cleanup age for transcodes, posters, and card thumbnails. |
+| `MEDIA_CACHE_MAX_BYTES` | `0` | env | `0` means no media cache size cap. Applies to all files under `MEDIA_CACHE_DIR`. |
 | `MEDIA_FILE_SCAN_MAX_FILES` | `5000` | env | Limits media scans. |
 | `WORKFLOW_IMPORT_MAX_BYTES` | `104857600` | env | Max uploaded ComfyUI workflow PNG/JSON size. Minimum enforced value is 1 MiB. |
 | `LIBRARY_ITEM_SIZE_SCAN_MAX_FILES` | `2000` | env | Limits library item size scans. |
@@ -183,7 +183,7 @@ Current implementation status:
 | `JOB_LOG_MAX_CHARS` | `200000` | env | Stored job log trim limit. |
 | `SQLITE_VACUUM_AFTER_CLEAR` | `0` | env | If truthy, `POST /api/jobs/clear` runs `VACUUM` after deleting inactive job history. Keep disabled during normal NAS use. |
 
-`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. It is controlled by the same scan budgets as live library fallback and has no separate setting. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
+`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. The browser requests 50-card pages with `limit=50&page=<n>` and no separate page-size setting. Live scans are controlled by the same scan budgets as live library fallback. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
 
 ## Compose Default Differences
 

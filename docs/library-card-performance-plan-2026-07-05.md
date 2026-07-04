@@ -1,6 +1,6 @@
 # Library Card Performance Plan 2026-07-05
 
-Status: proposed plan, not implemented.
+Status: implemented in the follow-up library card performance commit.
 
 ## Purpose
 

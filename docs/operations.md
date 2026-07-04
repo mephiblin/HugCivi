@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -170,7 +170,9 @@ Media:
 - Audio files are served directly in the media viewer.
 - Unplayable videos create `media_transcode` jobs on demand.
 - Missing video posters create `media_poster` jobs on demand.
+- Library/job card image thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`.
 - Media cache files live under `/config/media-cache`.
+- First visit to a card page may spend CPU/I/O creating up to the visible card thumbnails; cache hits afterward are served directly.
 
 Useful media/cache settings:
 
@@ -189,7 +191,7 @@ DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES=0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
 ```
 
-`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight.
+`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work.
 
 ## Library Index
 
@@ -207,8 +209,10 @@ LIBRARY_REINDEX_BATCH_SIZE=5000
 Operational notes:
 
 - First indexing pass may take time on large archives.
+- The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>`.
 - `/api/library?mode=live` can force live filesystem scanning.
 - `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale.
+- Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
 - `/api/library/reindex` resets and scans a large batch.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.
 - App-driven rename/move/delete updates the index and path-linked state.
