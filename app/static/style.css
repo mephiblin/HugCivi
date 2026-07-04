@@ -3376,6 +3376,19 @@ a:hover {
   min-width: 0;
 }
 
+.generation-subsection {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.generation-subsection > strong {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 17px;
+}
+
 .generation-section-head {
   display: flex;
   min-width: 0;
@@ -3469,6 +3482,52 @@ a:hover {
   font-size: 11px;
   font-weight: 800;
   line-height: 14px;
+}
+
+.generation-chip-list,
+.generation-file > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.generation-chip-list span,
+.generation-file > span span {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 4px;
+  padding: 3px 7px;
+  color: #cbd5e1;
+  background: rgba(30, 41, 59, 0.72);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 14px;
+}
+
+.generation-files {
+  display: grid;
+  gap: 8px;
+}
+
+.generation-file {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.generation-file > strong {
+  min-width: 0;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .generation-metadata {

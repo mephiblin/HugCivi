@@ -695,6 +695,7 @@
     <button type="button" data-action="create-folder" data-folder-only role="menuitem" hidden>새 폴더</button>
     <button type="button" data-action="media" data-media-only role="menuitem" hidden>미디어 보기</button>
     <button type="button" data-action="workflow" data-workflow-only role="menuitem" hidden>워크플로 보기</button>
+    <button type="button" data-action="civitai-refresh" data-civitai-refresh-only role="menuitem" hidden>갱신</button>
     <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
@@ -1007,6 +1008,7 @@
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let storageUsagePollTimer = null;
     let activeLibraryPath = null;
+    let folderRefreshPromise = null;
     let activeMobileTab = 'download';
     let thumbnailBlurEnabled = readThumbnailBlurPreference();
     let mediaRequestId = 0;
@@ -1348,6 +1350,7 @@
         name: card.dataset.name || card.dataset.path || 'model',
         isMediaArchive: card.dataset.mediaArchive === 'true',
         isWorkflow: card.dataset.workflow === 'true',
+        canCivitaiRefresh: card.dataset.civitaiRefresh === 'true',
       });
     });
     libraryGrid.addEventListener('click', event => {
@@ -1655,10 +1658,17 @@
       if (!ok) folderMoveConfirm.disabled = false;
     }
 
-    function replaceFolderTree(tree) {
+    function replaceFolderTree(tree, options = {}) {
       const root = folderTree?.querySelector(':scope > ul');
       if (!root || !tree) return;
+      const selectedPath = normalizePath(targetInput?.value || activeLibraryPath || '');
+      const preserveSelection = options.preserveSelection !== false && (activeLibraryPath !== null || Boolean(selectedPath));
       root.innerHTML = renderFolderTreeNode(tree);
+      if (preserveSelection) {
+        selectFolderPath(selectedPath, {switchView: false, expandTree: true});
+      } else if (folderSearchInput && folderSearchInput.value.trim()) {
+        updateFolderSearch();
+      }
     }
 
     function renderFolderTreeNode(node) {
@@ -2872,12 +2882,47 @@
       try {
         const response = await fetch('/api/jobs');
         if (!response.ok) return;
-        currentJobs = await response.json();
+        const nextJobs = await response.json();
+        const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);
+        currentJobs = nextJobs;
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
+        if (refreshFoldersAfterRender) {
+          refreshFolders();
+        }
       } catch (err) {
         console.error(err);
       }
+    }
+
+    async function refreshFolders(options = {}) {
+      if (!folderTree) return;
+      if (folderRefreshPromise) return folderRefreshPromise;
+      folderRefreshPromise = (async () => {
+        try {
+          const response = await fetch('/api/folders');
+          if (!response.ok) return;
+          const data = await response.json();
+          replaceFolderTree(data, options);
+        } catch (err) {
+          console.error(err);
+        } finally {
+          folderRefreshPromise = null;
+        }
+      })();
+      return folderRefreshPromise;
+    }
+
+    function jobsCompletedWithTarget(previousJobs, nextJobs) {
+      const previousById = new Map(
+        (Array.isArray(previousJobs) ? previousJobs : []).map(job => [String(job.id), job])
+      );
+      return (Array.isArray(nextJobs) ? nextJobs : []).some(job => {
+        const path = normalizePath(job?.target_path || job?.target_dir || '');
+        if (!path || String(job?.status || '') !== 'done') return false;
+        const previous = previousById.get(String(job.id));
+        return Boolean(previous && String(previous.status || '') !== 'done');
+      });
     }
 
     async function refreshLibraryItems() {
@@ -2904,7 +2949,7 @@
     }
 
     async function refreshData() {
-      await Promise.all([refreshJobs(), refreshLibraryItems(), refreshStorage(), refreshSubscriptions()]);
+      await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);
     }
 
     function renderStorage(storage) {
@@ -3185,8 +3230,9 @@
         const targetPath = libraryJobPath(job);
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
         const mediaArchive = isMediaArchiveJob(job);
+        const civitaiRefresh = isCivitaiRefreshableJob(job);
         const classes = ['asset-card', hasThumbnail ? '' : 'no-thumb', mediaArchive ? 'media-archive' : ''].filter(Boolean).join(' ');
-        return `<article class="${classes}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" data-has-thumbnail="${hasThumbnail ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
+        return `<article class="${classes}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" data-civitai-refresh="${civitaiRefresh ? 'true' : 'false'}" data-has-thumbnail="${hasThumbnail ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
           ${image}
           <div class="asset-topline">
             <span class="asset-source-badge">${escapeHtml(shortSource(job.source))}</span>
@@ -3385,6 +3431,11 @@
         button.hidden = !visible;
         button.disabled = disabled || !visible;
       });
+      contextMenu.querySelectorAll('[data-civitai-refresh-only]').forEach(button => {
+        const visible = Boolean(target.canCivitaiRefresh);
+        button.hidden = !visible;
+        button.disabled = disabled || !visible;
+      });
       const rect = contextMenu.getBoundingClientRect();
       const left = Math.min(x, window.innerWidth - rect.width - 8);
       const top = Math.min(y, window.innerHeight - rect.height - 8);
@@ -3425,6 +3476,11 @@
         return;
       }
 
+      if (action === 'civitai-refresh') {
+        await refreshCivitaiArchive(target);
+        return;
+      }
+
       if (action === 'download') {
         enqueueLocalDownload(target);
         return;
@@ -3447,6 +3503,37 @@
         const label = target.path ? `/data/${target.path}` : '/data';
         if (!window.confirm(`${label}\n\n이 폴더와 내부 파일을 삭제할까요?`)) return;
         await postFileAction('/api/fs/delete', {path: target.path});
+      }
+    }
+
+    async function refreshCivitaiArchive(target) {
+      try {
+        const response = await fetch('/api/civitai/refresh', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: target.path}),
+        });
+        if (!response.ok) {
+          let message = 'Civitai 갱신 작업을 만들지 못했습니다.';
+          try {
+            const data = await response.json();
+            message = data.detail || message;
+          } catch (err) {
+            // Keep the generic message.
+          }
+          window.alert(message);
+          return;
+        }
+        const data = await response.json();
+        if (Array.isArray(data.jobs)) {
+          currentJobs = data.jobs;
+          renderJobs(currentJobs);
+        } else {
+          await refreshJobs();
+        }
+        await refreshLibraryItems();
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
     }
 
@@ -3704,7 +3791,9 @@
       mediaResourceHealthError = '';
       mediaModal.classList.toggle('has-generation-panel', Boolean(mediaArchiveMetadata));
       if (mediaKicker) {
-        mediaKicker.textContent = mediaArchiveMetadata ? 'Civitai Image' : 'Media Archive';
+        mediaKicker.textContent = mediaArchiveMetadata
+          ? (mediaArchiveMetadata.kind === 'civitai_model_generation_metadata' ? 'Civitai Model' : 'Civitai Image')
+          : 'Media Archive';
       }
       mediaTitle.textContent = data?.name || data?.title || target.name || '미디어';
       mediaPath.textContent = data?.path ? `/data/${normalizePath(data.path)}` : (target.path ? `/data/${target.path}` : '/data');
@@ -3815,13 +3904,17 @@
 
     function normalizeCivitaiImageMetadata(metadata) {
       if (!metadata || typeof metadata !== 'object') return null;
-      if (String(metadata.kind || '').toLowerCase() !== 'civitai_image_page') return null;
+      const kind = String(metadata.kind || '').toLowerCase();
+      if (!['civitai_image_page', 'civitai_model_generation_metadata'].includes(kind)) return null;
       const generation = metadata.generation_data || metadata.generationData || {};
       return {
-        kind: 'civitai_image_page',
+        kind,
         sourceUrl: metadata.source_url || metadata.sourceUrl || metadata.raw_input || '',
+        modelUrl: metadata.model_page_url || metadata.modelPageUrl || '',
+        modelName: metadata.model_name || metadata.modelName || '',
         image: metadata.image && typeof metadata.image === 'object' ? metadata.image : {},
         generationData: generation && typeof generation === 'object' ? generation : {},
+        modelDetails: metadata.model_details && typeof metadata.model_details === 'object' ? metadata.model_details : {},
         resourceDownloads: Array.isArray(metadata.resource_downloads) ? metadata.resource_downloads : [],
       };
     }
@@ -3833,10 +3926,14 @@
       const copyAllText = generationCopyAllText(metadata);
       const resources = generationResources(generation);
       const metadataRows = generationMetadataRows(generation);
+      const modelDetails = renderCivitaiModelDetails(metadata.modelDetails || {});
       const sourceUrl = metadata.sourceUrl || '';
       const sourceLink = isHttpUrl(sourceUrl)
         ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(sourceUrl)}</a>`
         : '<span>-</span>';
+      const modelLink = metadata.kind === 'civitai_model_generation_metadata' && isHttpUrl(metadata.modelUrl || '')
+        ? `<p><a href="${escapeHtml(metadata.modelUrl)}" target="_blank" rel="noopener">${escapeHtml(metadata.modelName || metadata.modelUrl)}</a></p>`
+        : '';
       const resourceIds = generationModelVersionIds(metadata);
       const healthButton = resourceIds.length
         ? `<button type="button" class="generation-small-button" data-resource-health-check ${mediaResourceHealthLoading ? 'disabled' : ''}>${mediaResourceHealthLoading ? 'Checking' : 'Check resources'}</button>`
@@ -3849,9 +3946,11 @@
           <div>
             <h3>Generation data</h3>
             <p>${sourceLink}</p>
+            ${modelLink}
           </div>
           <button type="button" class="generation-copy-all" data-generation-copy="all" ${copyAllText ? '' : 'disabled'}>COPY ALL</button>
         </header>
+        ${modelDetails}
         <section class="generation-section">
           <div class="generation-section-head">
             <h4>Resources used</h4>
@@ -3879,6 +3978,69 @@
           ${renderGenerationMetadata(metadataRows)}
         </section>
       </section>`;
+    }
+
+    function renderCivitaiModelDetails(details) {
+      if (!details || typeof details !== 'object') return '';
+      const model = details.model && typeof details.model === 'object' ? details.model : {};
+      const version = details.version && typeof details.version === 'object' ? details.version : {};
+      const modelDescription = generationText(model.description || model.description_text || model.descriptionText);
+      const versionDescription = generationText(version.description || version.description_text || version.descriptionText);
+      const tags = normalizeTextList(model.tags);
+      const trainedWords = normalizeTextList(version.trained_words || version.trainedWords);
+      const files = Array.isArray(version.files) ? version.files.filter(file => file && typeof file === 'object') : [];
+      const rows = [
+        {label: 'Type', value: generationScalar(model.type)},
+        {label: 'Creator', value: generationScalar(model.creator)},
+        {label: 'Version', value: generationScalar(version.name || version.id)},
+        {label: 'Base model', value: generationScalar(version.base_model || version.baseModel)},
+      ].filter(row => row.value);
+      if (!modelDescription && !versionDescription && !tags.length && !trainedWords.length && !files.length && !rows.length) {
+        return '';
+      }
+      return `<section class="generation-section">
+        <h4>Model details</h4>
+        ${rows.length ? renderGenerationMetadata(rows) : ''}
+        ${modelDescription ? `<div class="generation-subsection"><strong>Model page body</strong><pre class="generation-text">${escapeHtml(modelDescription)}</pre></div>` : ''}
+        ${versionDescription ? `<div class="generation-subsection"><strong>Version notes</strong><pre class="generation-text">${escapeHtml(versionDescription)}</pre></div>` : ''}
+        ${trainedWords.length ? `<div class="generation-subsection"><strong>Trigger words</strong>${renderGenerationChips(trainedWords)}</div>` : ''}
+        ${tags.length ? `<div class="generation-subsection"><strong>Tags</strong>${renderGenerationChips(tags)}</div>` : ''}
+        ${files.length ? `<div class="generation-subsection"><strong>Files</strong>${renderCivitaiModelFiles(files)}</div>` : ''}
+      </section>`;
+    }
+
+    function normalizeTextList(value) {
+      if (!Array.isArray(value)) {
+        const text = generationScalar(value);
+        return text ? [text] : [];
+      }
+      const result = [];
+      value.forEach(item => {
+        const text = generationScalar(item && typeof item === 'object' ? (item.name ?? item.value ?? item.text) : item);
+        if (text && !result.includes(text)) result.push(text);
+      });
+      return result;
+    }
+
+    function renderGenerationChips(values) {
+      return `<div class="generation-chip-list">${values.map(value => `<span>${escapeHtml(value)}</span>`).join('')}</div>`;
+    }
+
+    function renderCivitaiModelFiles(files) {
+      return `<div class="generation-files">${files.map(file => {
+        const name = file.name || file.filename || file.id || 'file';
+        const badges = [
+          file.type,
+          file.format,
+          file.fp,
+          file.size,
+          file.primary ? 'primary' : '',
+        ].filter(value => value != null && String(value).trim()).map(value => `<span>${escapeHtml(value)}</span>`).join('');
+        return `<article class="generation-file">
+          <strong>${escapeHtml(name)}</strong>
+          ${badges ? `<span>${badges}</span>` : ''}
+        </article>`;
+      }).join('')}</div>`;
     }
 
     function renderGenerationResources(resources) {
@@ -4860,6 +5022,12 @@
       if (job.has_media || Number(job.media_count || 0) > 0) return true;
       if (isCivitaiImagePageJob(job)) return true;
       return false;
+    }
+
+    function isCivitaiRefreshableJob(job) {
+      if (!libraryJobPath(job)) return false;
+      if (String(job.source || '').toLowerCase() !== 'civitai') return false;
+      return !isCivitaiImagePageJob(job);
     }
 
     function isCivitaiImagePageJob(job) {

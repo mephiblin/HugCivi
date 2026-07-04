@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import queue
@@ -15,6 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse, unquote
@@ -90,6 +92,9 @@ THUMBNAIL_MEDIA_TYPES = {
     ".bmp": "image/bmp",
 }
 CIVITAI_IMAGE_METADATA_FILENAME = "_civitai_image_metadata.json"
+CIVITAI_MODEL_GENERATION_METADATA_FILENAME = "_civitai_generation_metadata.json"
+CIVITAI_MODEL_GENERATION_METADATA_LIMIT = 100
+CIVITAI_MODEL_PREVIEW_IMAGE_LIMIT = 1
 CIVITAI_IMAGE_CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/jpg": ".jpg",
@@ -1605,11 +1610,321 @@ def fetch_civitai_image_item(session: requests.Session, image_id: str, job_id: i
     raise ValueError(f"Civitai image API did not return requested imageId={image_id}.")
 
 
+def civitai_image_page_url(image_id: str) -> str:
+    return f"https://civitai.com/images/{quote(image_id, safe='')}"
+
+
+def civitai_model_generation_metadata_url(
+    version_id: str,
+    *,
+    limit: int = CIVITAI_MODEL_GENERATION_METADATA_LIMIT,
+) -> str:
+    query = urlencode(
+        {
+            "modelVersionId": version_id,
+            "limit": str(limit),
+            "sort": "Newest",
+            "withMeta": "true",
+        }
+    )
+    return f"{CIVITAI_API_BASE}/images?{query}"
+
+
+def civitai_model_generation_entry(item: dict[str, Any], raw_input: str) -> dict[str, Any]:
+    image_id = id_value(item.get("id")) or "unknown"
+    original_url = civitai_image_original_url(item)
+    record = normalize_civitai_image_record(item, source_url=civitai_image_page_url(image_id), raw_input=raw_input)
+    return {
+        "source_url": record.get("source_url"),
+        "download_url": original_url,
+        "image": record.get("image"),
+        "generation_data": record.get("generation_data"),
+        "raw_generation_meta": civitai_image_meta(item),
+    }
+
+
+def civitai_model_generation_metadata_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    return {
+        "sidecar": CIVITAI_MODEL_GENERATION_METADATA_FILENAME,
+        "image_count": payload.get("image_count", 0),
+        "generation_count": payload.get("generation_count", 0),
+        "api_url": payload.get("api_url"),
+        "api_metadata": payload.get("api_metadata") or {},
+    }
+
+
+class _HtmlTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"br", "p", "div", "li", "h1", "h2", "h3", "h4", "blockquote"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"p", "div", "li", "h1", "h2", "h3", "h4", "blockquote"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        lines = [" ".join(line.split()) for line in "".join(self.parts).splitlines()]
+        return "\n".join(line for line in lines if line).strip()
+
+
+def html_to_text(value: Any) -> str:
+    text = text_value(value) or ""
+    if not text:
+        return ""
+    parser = _HtmlTextExtractor()
+    try:
+        parser.feed(text)
+    except Exception:
+        return html.unescape(re.sub(r"<[^>]+>", " ", text)).strip()
+    parsed = parser.text()
+    return parsed or html.unescape(re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+def civitai_model_id_from_metadata(parsed: ParsedDownload, metadata: dict[str, Any]) -> str | None:
+    model_id = id_value(parsed.civitai_model_id)
+    if model_id:
+        return model_id
+    raw_model = metadata.get("model")
+    model_info = raw_model if isinstance(raw_model, dict) else {}
+    return id_value(metadata.get("modelId") or metadata.get("model_id") or model_info.get("id"))
+
+
+def fetch_civitai_model_page_metadata(
+    session: requests.Session,
+    job_id: int,
+    model_id: str | None,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if existing and existing.get("modelVersions") is not None:
+        return existing
+    if not model_id:
+        return existing
+    meta_url = f"{CIVITAI_API_BASE}/models/{quote(model_id, safe='')}"
+    try:
+        db.append_log(job_id, f"civitai.model.page_metadata: {meta_url}")
+        return fetch_json(session, meta_url, job_id=job_id)
+    except Exception as exc:
+        db.append_log(job_id, f"civitai.model.page_metadata.warning modelId={model_id}: {redact_sensitive_text(str(exc))}")
+        return existing
+
+
+def civitai_text_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                text = text_value(item.get("name") or item.get("tag") or item.get("value"))
+            else:
+                text = text_value(item)
+            if text and text not in result:
+                result.append(text)
+        return result
+    text = text_value(value)
+    return [text] if text else []
+
+
+def civitai_creator_name(model_page_metadata: dict[str, Any]) -> str:
+    for key in ("creator", "user"):
+        raw = model_page_metadata.get(key)
+        if isinstance(raw, dict):
+            name = text_value(raw.get("username") or raw.get("name"))
+            if name:
+                return name
+    return text_value(model_page_metadata.get("creatorName") or model_page_metadata.get("username")) or ""
+
+
+def civitai_file_details(files: list[Any]) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        raw_metadata = item.get("metadata")
+        file_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        detail = {
+            "id": id_value(item.get("id")),
+            "name": text_value(item.get("name")),
+            "type": text_value(item.get("type")),
+            "primary": bool(item.get("primary")),
+            "size_kb": item.get("sizeKB"),
+            "format": text_value(file_metadata.get("format")),
+            "fp": text_value(file_metadata.get("fp")),
+            "size": text_value(file_metadata.get("size")),
+        }
+        details.append({key: value for key, value in detail.items() if value not in (None, "")})
+    return details
+
+
+def civitai_model_details(
+    model_page_metadata: dict[str, Any] | None,
+    version_metadata: dict[str, Any],
+    *,
+    model_id: str | None,
+    version_id: str,
+    model_name: str | None,
+) -> dict[str, Any]:
+    model_page = model_page_metadata if isinstance(model_page_metadata, dict) else {}
+    raw_model = version_metadata.get("model")
+    version_model = raw_model if isinstance(raw_model, dict) else {}
+    raw_files = version_metadata.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    model_description_html = text_value(model_page.get("description"))
+    version_description_html = text_value(version_metadata.get("description"))
+    details = {
+        "model": {
+            "id": model_id,
+            "name": text_value(model_page.get("name") or model_name or version_model.get("name")),
+            "type": text_value(model_page.get("type") or version_model.get("type") or version_metadata.get("type")),
+            "creator": civitai_creator_name(model_page),
+            "description": html_to_text(model_description_html),
+            "description_html": model_description_html,
+            "tags": civitai_text_list(model_page.get("tags")),
+            "stats": model_page.get("stats") if isinstance(model_page.get("stats"), dict) else {},
+            "nsfw": model_page.get("nsfw"),
+            "poi": model_page.get("poi"),
+        },
+        "version": {
+            "id": version_id,
+            "name": text_value(version_metadata.get("name")),
+            "base_model": text_value(version_metadata.get("baseModel")),
+            "description": html_to_text(version_description_html),
+            "description_html": version_description_html,
+            "trained_words": civitai_text_list(version_metadata.get("trainedWords") or version_metadata.get("trained_words")),
+            "stats": version_metadata.get("stats") if isinstance(version_metadata.get("stats"), dict) else {},
+            "files": civitai_file_details(files),
+        },
+        "model_page_url": civitai_model_page_url(model_id, version_id) if model_id else "",
+    }
+    return redact_metadata(details)
+
+
+def collect_civitai_model_generation_metadata(
+    session: requests.Session,
+    job_id: int,
+    *,
+    model_id: str | None,
+    version_id: str,
+    model_name: str | None,
+    raw_input: str,
+    model_details: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    api_url = civitai_model_generation_metadata_url(version_id)
+    db.append_log(job_id, f"civitai.model.generation_metadata.start modelVersionId={version_id}")
+    try:
+        data = fetch_json(session, api_url, job_id=job_id)
+    except Exception as exc:
+        db.append_log(
+            job_id,
+            f"civitai.model.generation_metadata.warning modelVersionId={version_id}: "
+            f"{redact_sensitive_text(str(exc))}",
+        )
+        return None
+
+    raw_items = data.get("items")
+    items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+    images = [civitai_model_generation_entry(item, raw_input) for item in items]
+    generation_count = sum(
+        1
+        for image in images
+        if isinstance(image.get("generation_data"), dict) and image["generation_data"].get("available")
+    )
+    raw_api_metadata = data.get("metadata")
+    api_metadata = raw_api_metadata if isinstance(raw_api_metadata, dict) else {}
+    payload = {
+        **metadata_stamp(),
+        "source": "civitai",
+        "kind": "civitai_model_generation_metadata",
+        "model_id": model_id,
+        "version_id": version_id,
+        "model_name": model_name,
+        "model_page_url": civitai_model_page_url(model_id, version_id) if model_id else None,
+        "raw_input": raw_input,
+        "api_url": api_url,
+        "api_metadata": api_metadata,
+        "image_count": len(images),
+        "generation_count": generation_count,
+        "model_details": model_details or {},
+        "images": images,
+    }
+    db.append_log(
+        job_id,
+        f"civitai.model.generation_metadata.ok modelVersionId={version_id} "
+        f"images={len(images)} generation={generation_count}",
+    )
+    return payload
+
+
+def save_civitai_model_preview_images(
+    session: requests.Session,
+    job_id: int,
+    target: Path,
+    generation_metadata: dict[str, Any] | None,
+) -> list[Path]:
+    if not generation_metadata:
+        return []
+    raw_images = generation_metadata.get("images")
+    images = raw_images if isinstance(raw_images, list) else []
+    saved_paths: list[Path] = []
+    saved_count = 0
+    for entry in images:
+        if saved_count >= CIVITAI_MODEL_PREVIEW_IMAGE_LIMIT:
+            break
+        if not isinstance(entry, dict):
+            continue
+        image = entry.get("image") if isinstance(entry.get("image"), dict) else {}
+        image_id = id_value(image.get("id")) or str(saved_count + 1)
+        image_url = text_value(entry.get("download_url") or image.get("original_url"))
+        if not image_url:
+            continue
+        try:
+            extension = civitai_image_extension(session, image_url, job_id)
+            filename = sanitize_segment(
+                f"civitai_example_{image_id}{extension}",
+                f"civitai_example_{saved_count + 1}.jpg",
+            )
+            check_job_control(job_id)
+            saved = stream_download(job_id, session, image_url, target, filename_override=filename)
+        except JobControlStop:
+            raise
+        except Exception as exc:
+            db.append_log(
+                job_id,
+                f"civitai.model.preview.warning image_id={image_id}: {redact_sensitive_text(str(exc))}",
+            )
+            continue
+
+        saved_paths.append(saved)
+        saved_count += 1
+        relative = data_root_relative_path(saved)
+        entry["local_file"] = saved.name
+        if relative:
+            entry["local_path"] = relative
+        if isinstance(image, dict):
+            image["local_file"] = saved.name
+            if relative:
+                image["local_path"] = relative
+            entry["image"] = image
+        db.append_log(job_id, f"civitai.model.preview.saved image_id={image_id} file={saved.name}")
+    if saved_paths:
+        generation_metadata["local_files"] = {"preview_images": [path.name for path in saved_paths]}
+    return saved_paths
+
+
 def civitai_image_source_url(parsed: ParsedDownload, image_id: str) -> str:
     parsed_url = getattr(parsed, "civitai_image_url", None)
     if isinstance(parsed_url, str) and parsed_url.strip():
         return parsed_url.strip()
-    return f"https://civitai.com/images/{quote(image_id, safe='')}"
+    return civitai_image_page_url(image_id)
 
 
 def civitai_image_meta(item: dict[str, Any]) -> dict[str, Any]:
@@ -2162,19 +2477,24 @@ def is_civitai_model_file(path: Path) -> bool:
 
 
 def civitai_target_has_model_file(path: Path, limit: int = 10000) -> bool:
+    return civitai_existing_model_file(path, limit=limit) is not None
+
+
+def civitai_existing_model_file(path: Path, limit: int = 10000) -> Path | None:
     try:
         if path.is_file():
-            return is_civitai_model_file(path)
+            return path if is_civitai_model_file(path) else None
         if not path.is_dir():
-            return False
+            return None
+        candidates: list[Path] = []
         for index, item in enumerate(path.rglob("*")):
             if index >= limit:
-                return False
+                break
             if item.is_file() and not item.is_symlink() and is_civitai_model_file(item):
-                return True
+                candidates.append(item)
     except OSError:
-        return False
-    return False
+        return None
+    return sorted(candidates, key=natural_path_sort_key)[0] if candidates else None
 
 
 def civitai_health_target_path(path: Path) -> str:
@@ -2531,6 +2851,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     session.headers.update({"User-Agent": USER_AGENT, **headers})
 
     metadata: dict[str, Any] = {}
+    model_page_metadata: dict[str, Any] | None = None
     model_name = None
     version_id = parsed.civitai_version_id
     file_selector = civitai_file_selector(parsed)
@@ -2554,6 +2875,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
         meta_url = f"{CIVITAI_API_BASE}/models/{parsed.civitai_model_id}"
         db.append_log(job_id, f"Civitai metadata: {meta_url}")
         metadata = fetch_json(session, meta_url, job_id=job_id)
+        model_page_metadata = metadata
         model_name = metadata.get("name")
         model_type = metadata.get("type")
         versions = metadata.get("modelVersions") or []
@@ -2580,6 +2902,37 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
     target.mkdir(parents=True, exist_ok=True)
     update_job_archive_info(job_id, target, archive_info, metadata)
 
+    model_id = civitai_model_id_from_metadata(parsed, metadata)
+    model_page_metadata = fetch_civitai_model_page_metadata(
+        session,
+        job_id,
+        model_id,
+        existing=model_page_metadata,
+    )
+    model_details = civitai_model_details(
+        model_page_metadata,
+        metadata,
+        model_id=model_id,
+        version_id=version_id,
+        model_name=model_name,
+    )
+    generation_metadata = collect_civitai_model_generation_metadata(
+        session,
+        job_id,
+        model_id=model_id,
+        version_id=version_id,
+        model_name=model_name,
+        raw_input=parsed.raw_input,
+        model_details=model_details,
+    )
+    generation_metadata_summary = civitai_model_generation_metadata_summary(generation_metadata)
+    if generation_metadata is not None:
+        preview_images = save_civitai_model_preview_images(session, job_id, target, generation_metadata)
+        if preview_images:
+            archive_info["thumbnail_url"] = thumbnail_url_for_path(preview_images[0]) or archive_info.get("thumbnail_url")
+            update_job_archive_info(job_id, target, archive_info, metadata)
+        write_metadata(target, CIVITAI_MODEL_GENERATION_METADATA_FILENAME, generation_metadata)
+
     write_metadata(
         target,
         "_civitai_metadata.json",
@@ -2587,15 +2940,28 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
             **metadata_stamp(),
             "source": "civitai",
             "model_name": model_name,
-            "model_id": parsed.civitai_model_id,
+            "model_id": model_id,
             "version_id": version_id,
             "hash": parsed.civitai_hash,
             "file_selector": file_selector,
+            "generation_metadata": generation_metadata_summary,
+            "model_details": model_details,
             "raw_input": parsed.raw_input,
             "archive_info": archive_info,
             "metadata": metadata,
+            "model_page_metadata": model_page_metadata,
         },
     )
+
+    existing_model = civitai_existing_model_file(target) if parsed.civitai_refresh else None
+    if existing_model is not None:
+        db.append_log(job_id, f"Civitai refresh: existing model file kept: {existing_model.name}")
+        try:
+            size = existing_model.stat().st_size
+        except OSError:
+            size = 0
+        db.update_job(job_id, filename=existing_model.name, progress_bytes=size, total_bytes=size or None)
+        return
 
     if not download_urls:
         raise ValueError("Civitai download URL을 찾지 못했습니다.")

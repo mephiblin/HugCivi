@@ -104,6 +104,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="hugcivi", version="0.1.0", lifespan=lifespan)
 BASE_DIR = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
+CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 DOWNLOAD_ARCHIVE_DIR = Path(os.getenv("DOWNLOAD_ARCHIVE_DIR", "/config/downloads"))
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/config/media-cache"))
 CHROME_EXTENSION_DIR = Path(os.getenv("HUGCIVI_CHROME_EXTENSION_DIR", str(BASE_DIR.parent / "chrome-extension")))
@@ -160,6 +161,7 @@ MODEL_EXTENSIONS = {
 SIDECAR_FILENAMES = (
     "_archive_metadata.json",
     "_civitai_metadata.json",
+    "_civitai_generation_metadata.json",
     "_civitai_image_metadata.json",
     "_generic_metadata.json",
     "_hitomi_metadata.json",
@@ -1076,7 +1078,7 @@ def api_media_list(path: str, _: str = Depends(require_auth)) -> JSONResponse:
         "name": source.name,
         "items": [media_item_payload(item, index) for index, item in enumerate(files)],
     }
-    metadata = civitai_image_archive_metadata(source)
+    metadata = civitai_archive_generation_metadata(source)
     if metadata:
         payload["metadata"] = metadata
     return JSONResponse(payload)
@@ -1094,6 +1096,38 @@ async def api_civitai_resource_health(request: Request, _: str = Depends(require
         raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
     ids = requested_model_version_ids(payload)
     return JSONResponse({"ok": True, "resources": civitai_resource_health_payload(ids)})
+
+
+@app.post("/api/civitai/refresh")
+async def api_civitai_refresh(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
+    source = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(source)
+    if not source.is_dir():
+        raise HTTPException(status_code=400, detail="Civitai 모델 폴더를 선택하세요.")
+    ensure_no_active_jobs(source)
+
+    metadata = archive_metadata(source)
+    parsed = civitai_refresh_parsed_download(source, metadata)
+    job_id = db.create_job(parsed)
+    db.update_job(
+        job_id,
+        target_dir=str(source),
+        metadata_json=json.dumps(
+            {
+                "source": "civitai",
+                "refresh": True,
+                "target_path": relative_data_path(source),
+                "model_id": parsed.civitai_model_id,
+                "version_id": parsed.civitai_version_id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    enqueue_job(job_id)
+    return JSONResponse({"ok": True, "job_id": job_id, "jobs": decorate_jobs(db.list_jobs())})
 
 
 @app.get("/api/media/file")
@@ -2095,6 +2129,10 @@ def archive_metadata_path(path: Path) -> Path | None:
     return None
 
 
+def civitai_archive_generation_metadata(path: Path) -> dict[str, Any]:
+    return civitai_image_archive_metadata(path) or civitai_model_generation_archive_metadata(path)
+
+
 def civitai_image_archive_metadata(path: Path) -> dict[str, Any]:
     metadata_path = archive_named_metadata_path(path, "_civitai_image_metadata.json")
     if metadata_path is None:
@@ -2112,6 +2150,40 @@ def civitai_image_archive_metadata(path: Path) -> dict[str, Any]:
         if source_url:
             metadata["source_url"] = source_url
     return metadata
+
+
+def civitai_model_generation_archive_metadata(path: Path) -> dict[str, Any]:
+    metadata_path = archive_named_metadata_path(path, "_civitai_generation_metadata.json")
+    if metadata_path is None:
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    raw_images = payload.get("images")
+    images = raw_images if isinstance(raw_images, list) else []
+    selected = next((image for image in images if isinstance(image, dict)), None)
+    if selected is None:
+        return {}
+    generation = selected.get("generation_data") if isinstance(selected.get("generation_data"), dict) else {}
+    image = selected.get("image") if isinstance(selected.get("image"), dict) else {}
+    source_url = selected.get("source_url") or image.get("source_url") or payload.get("model_page_url") or payload.get("raw_input")
+    return {
+        "source": "civitai",
+        "kind": "civitai_model_generation_metadata",
+        "source_url": source_url,
+        "model_page_url": payload.get("model_page_url"),
+        "model_id": payload.get("model_id"),
+        "version_id": payload.get("version_id"),
+        "model_name": payload.get("model_name"),
+        "image": image,
+        "generation_data": generation,
+        "model_details": payload.get("model_details") if isinstance(payload.get("model_details"), dict) else {},
+        "image_count": payload.get("image_count", len(images)),
+        "generation_count": payload.get("generation_count"),
+    }
 
 
 def archive_named_metadata_path(path: Path, filename: str) -> Path | None:
@@ -2172,6 +2244,73 @@ def source_url_from_metadata(metadata: dict[str, Any]) -> str:
             return f"https://huggingface.co/spaces/{repo}"
         return f"https://huggingface.co/{repo}"
     return ""
+
+
+def metadata_text_value(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text and text.lower() not in {"none", "null"} else ""
+
+
+def first_metadata_text(*values: Any) -> str:
+    for value in values:
+        text = metadata_text_value(value)
+        if text:
+            return text
+    return ""
+
+
+def civitai_refresh_parsed_download(path: Path, metadata: dict[str, Any]) -> ParsedDownload:
+    if not metadata or str(metadata.get("source") or "").lower() != "civitai":
+        raise HTTPException(status_code=400, detail="Civitai 모델 archive metadata를 찾지 못했습니다.")
+    if str(metadata.get("kind") or "").lower() == "civitai_image_page":
+        raise HTTPException(status_code=400, detail="Civitai image page archive는 이 갱신 작업 대상이 아닙니다.")
+
+    nested = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+    nested_model = nested.get("model") if isinstance(nested.get("model"), dict) else {}
+    details = metadata.get("model_details") if isinstance(metadata.get("model_details"), dict) else {}
+    detail_model = details.get("model") if isinstance(details.get("model"), dict) else {}
+    detail_version = details.get("version") if isinstance(details.get("version"), dict) else {}
+
+    version_id = first_metadata_text(
+        metadata.get("version_id"),
+        metadata.get("model_version_id"),
+        metadata.get("modelVersionId"),
+        nested.get("id"),
+        nested.get("modelVersionId"),
+        detail_version.get("id"),
+    )
+    model_id = first_metadata_text(
+        metadata.get("model_id"),
+        metadata.get("modelId"),
+        nested.get("modelId"),
+        nested_model.get("id"),
+        detail_model.get("id"),
+    )
+    if not version_id:
+        raise HTTPException(status_code=400, detail="Civitai modelVersionId를 찾지 못했습니다.")
+
+    raw_input = metadata_text_value(metadata.get("raw_input"))
+    if not is_http_url(raw_input):
+        if model_id:
+            raw_input = f"https://civitai.com/models/{quote(model_id)}?modelVersionId={quote(version_id)}"
+        else:
+            raw_input = f"{CIVITAI_API_BASE}/model-versions/{quote(version_id)}"
+
+    selector = metadata.get("file_selector") if isinstance(metadata.get("file_selector"), dict) else {}
+    return ParsedDownload(
+        source="civitai",
+        raw_input=raw_input,
+        target_subdir=relative_data_path(path),
+        civitai_model_id=model_id or None,
+        civitai_version_id=version_id,
+        civitai_file_id=metadata_text_value(selector.get("file_id")) or None,
+        civitai_file_type=metadata_text_value(selector.get("type")) or None,
+        civitai_file_format=metadata_text_value(selector.get("format")) or None,
+        civitai_file_size=metadata_text_value(selector.get("size")) or None,
+        civitai_file_fp=metadata_text_value(selector.get("fp")) or None,
+        civitai_file_primary=bool(selector.get("primary")),
+        civitai_refresh=True,
+    )
 
 
 def requested_model_version_ids(payload: dict[str, Any]) -> list[str]:

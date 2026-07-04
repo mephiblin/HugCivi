@@ -888,6 +888,10 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'id="folder-move-modal"' in template
     assert "이동할 대상 폴더를 /data 기준 경로로 입력하세요." not in template
     assert "fetch('/api/folders'" in template
+    assert "async function refreshFolders(options = {})" in template
+    assert "function jobsCompletedWithTarget(previousJobs, nextJobs)" in template
+    assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
+    assert "await Promise.all([refreshJobs(), refreshLibraryItems(), refreshFolders(), refreshStorage(), refreshSubscriptions()]);" in template
     assert "function folderSearchScopePath()" in template
     assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template
     assert "return normalized ? `/data/${normalized} 내부` : '/data 전체';" in template

@@ -1,5 +1,20 @@
 # 패치내역
 
+## 2026-07-04
+
+### Civitai
+
+- Civitai 모델 다운로드가 모델 파일과 `_civitai_metadata.json`만 저장하던 흐름에 `_civitai_generation_metadata.json` sidecar를 추가했습니다.
+- 모델 버전의 예시 이미지 metadata를 Civitai images API에서 best-effort로 가져와 prompt, negative prompt, seed, steps, sampler, CFG scale 같은 generation 정보를 보존합니다.
+- 모델 폴더에 대표 예시 이미지 1장을 저장해 라이브러리 카드 썸네일과 미디어 뷰어 generation panel에서 사용합니다.
+- 체크포인트, LoRA, VAE 같은 Civitai 모델의 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보를 저장하고 미디어 뷰어에서 함께 표시합니다.
+- 예시 이미지 metadata 조회가 실패해도 모델 파일 다운로드는 계속 진행합니다.
+- Civitai 모델 카드 우클릭 메뉴에 `갱신`을 추가해 기존 모델 파일은 유지하면서 누락되었거나 변경된 metadata sidecar와 대표 예시 이미지를 다시 받아올 수 있게 했습니다.
+
+### 저장 폴더 UI
+
+- 다운로드 완료로 새 폴더가 생겼을 때 왼쪽 저장 폴더 트리가 오래된 상태로 남지 않도록, 완료 상태 전환과 수동 새로고침에서 폴더 트리도 다시 불러오게 했습니다.
+
 ## 2026-07-03
 
 ### 배포

@@ -43,7 +43,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 ## 주요 기능
 
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
-- Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드
+- Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드와 대표 예시 이미지/generation metadata 보존
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - Hitomi artist, language, search, index listing URL discovery와 선택 queue confirm UI
 - ASMR.one work URL 파일 다운로드
@@ -55,7 +55,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - ComfyUI 워크플로우가 내장된 `.png` URL 다운로드
 - 홈 화면 드래그 앤 드롭으로 ComfyUI 워크플로우 PNG/JSON 저장
 - ComfyUI 워크플로우 노드 그래프 뷰어, 모델 목록, 원본 JSON 보기
-- Civitai 썸네일, 모델 타입, 베이스 모델, 포맷, 정밀도 표시
+- Civitai 썸네일, 모델 타입, 베이스 모델, 포맷, 정밀도 표시와 기존 모델 카드 갱신
 - Hugging Face 메타데이터 기반 LLM, Embedding, Image 모델 분류
 - 폴더 트리에서 저장 위치 선택
 - 자동 폴더 분류와 사용자 지정 기본 폴더
@@ -307,7 +307,7 @@ https://civitai.com/images/135240496
 456789
 ```
 
-숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai image URL은 이미지와 generation metadata를 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
+숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai 모델 다운로드는 모델 폴더에 대표 예시 이미지 1장과 prompt, negative prompt, seed, steps 같은 generation metadata sidecar를 저장합니다. 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보도 함께 보존합니다. 대표 예시 이미지는 라이브러리 카드 썸네일로 쓰이며, 카드의 미디어 뷰어에서 모델 본문과 generation metadata를 확인할 수 있습니다. 기존 Civitai 모델 카드는 우클릭 메뉴의 `갱신`으로 모델 파일은 유지하면서 누락된 sidecar, 대표 예시 이미지, 변경된 모델 페이지 metadata를 다시 받아올 수 있습니다. Civitai image URL은 이미지와 generation metadata를 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
 
 ### Hitomi
 

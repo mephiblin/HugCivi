@@ -64,6 +64,9 @@ class FakeDb:
             return self.listed_jobs[:limit]
         return [dict(self.job)]
 
+    def library_route_settings(self) -> dict[str, str]:
+        return {}
+
 
 class DownloaderRuntimeTests(unittest.TestCase):
     def test_partial_download_path_includes_job_id_and_url_hash(self) -> None:
@@ -267,6 +270,290 @@ class DownloaderRuntimeTests(unittest.TestCase):
                     "/api/fs/preview?path=hitomi/123%20Gallery/001%20page.jpg",
                 )
                 self.assertEqual(downloader.thumbnail_media_type(first_page), "image/jpeg")
+
+    def test_civitai_model_download_writes_generation_metadata_sidecar(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/123?modelVersionId=456",
+            civitai_model_id="123",
+            civitai_version_id="456",
+        )
+        version_metadata = {
+            "id": 456,
+            "name": "v1",
+            "baseModel": "SDXL",
+            "description": "<p>Version notes</p>",
+            "trainedWords": ["trigger words", "style token"],
+            "model": {"id": 123, "name": "Example Model", "type": "LORA"},
+            "files": [
+                {
+                    "id": 77,
+                    "name": "example.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "metadata": {"format": "SafeTensor", "fp": "fp16"},
+                    "downloadUrl": "https://download.civitai.com/example.safetensors?token=file-secret",
+                }
+            ],
+        }
+        model_page_metadata = {
+            "id": 123,
+            "name": "Example Model",
+            "type": "LORA",
+            "description": "<p>Main body</p><p>Use this LoRA with trigger words.</p>",
+            "tags": ["style", "character"],
+            "creator": {"username": "Creator"},
+            "stats": {"downloadCount": 10},
+            "modelVersions": [{"id": 456, "name": "v1"}],
+        }
+        images_response = {
+            "items": [
+                {
+                    "id": 999,
+                    "url": "https://image.civitai.com/example/original=true/sample.jpeg?token=image-secret",
+                    "width": 1024,
+                    "height": 1024,
+                    "username": "Artist",
+                    "meta": {
+                        "prompt": "sunset city",
+                        "negativePrompt": "low quality",
+                        "seed": 12345,
+                        "steps": 30,
+                        "sampler": "Euler a",
+                        "cfgScale": 7,
+                    },
+                }
+            ],
+            "metadata": {"totalItems": 1, "currentPage": 1},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "example.safetensors")
+                saved.write_bytes(b"model")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(
+                    downloader,
+                    "fetch_json",
+                    side_effect=[version_metadata, model_page_metadata, images_response],
+                ) as fetch_json,
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "loras" / "sdxl" / "example-model" / "version_456"
+            generation_sidecar = target / "_civitai_generation_metadata.json"
+            model_sidecar = target / "_civitai_metadata.json"
+            preview = target / "civitai_example_999.jpeg"
+            self.assertTrue(generation_sidecar.exists())
+            self.assertTrue(model_sidecar.exists())
+            self.assertTrue(preview.exists())
+
+            generation_payload = json.loads(generation_sidecar.read_text(encoding="utf-8"))
+            model_payload = json.loads(model_sidecar.read_text(encoding="utf-8"))
+            image = generation_payload["images"][0]
+
+            self.assertEqual(fetch_json.call_count, 3)
+            self.assertEqual(
+                fetch_json.call_args_list[1].args[1],
+                f"{downloader.CIVITAI_API_BASE}/models/123",
+            )
+            self.assertEqual(
+                fetch_json.call_args_list[2].args[1],
+                f"{downloader.CIVITAI_API_BASE}/images?modelVersionId=456&limit=100&sort=Newest&withMeta=true",
+            )
+            self.assertEqual(generation_payload["kind"], "civitai_model_generation_metadata")
+            self.assertEqual(generation_payload["model_id"], "123")
+            self.assertEqual(generation_payload["version_id"], "456")
+            self.assertEqual(generation_payload["image_count"], 1)
+            self.assertEqual(generation_payload["generation_count"], 1)
+            self.assertEqual(image["source_url"], "https://civitai.com/images/999")
+            self.assertEqual(image["generation_data"]["prompt"]["text"], "sunset city")
+            self.assertEqual(image["generation_data"]["negative_prompt"]["text"], "low quality")
+            self.assertIn("Steps: 30", image["generation_data"]["copy_all_text"])
+            self.assertEqual(image["raw_generation_meta"]["seed"], 12345)
+            self.assertEqual(image["local_file"], "civitai_example_999.jpeg")
+            self.assertEqual(generation_payload["local_files"]["preview_images"], ["civitai_example_999.jpeg"])
+            self.assertEqual(generation_payload["model_details"]["model"]["description"], "Main body\nUse this LoRA with trigger words.")
+            self.assertEqual(generation_payload["model_details"]["model"]["tags"], ["style", "character"])
+            self.assertEqual(generation_payload["model_details"]["version"]["description"], "Version notes")
+            self.assertEqual(generation_payload["model_details"]["version"]["trained_words"], ["trigger words", "style token"])
+            self.assertEqual(generation_payload["model_details"]["version"]["files"][0]["format"], "SafeTensor")
+            self.assertEqual(model_payload["model_details"]["model"]["creator"], "Creator")
+            self.assertEqual(model_payload["model_page_metadata"]["description"], model_page_metadata["description"])
+            self.assertEqual(model_payload["generation_metadata"]["sidecar"], "_civitai_generation_metadata.json")
+            self.assertEqual(model_payload["generation_metadata"]["image_count"], 1)
+            self.assertEqual(
+                model_payload["archive_info"]["thumbnail_url"],
+                "/api/fs/preview?path=civitai/loras/sdxl/example-model/version_456/civitai_example_999.jpeg",
+            )
+            self.assertEqual(fake_db.job["filename"], "example.safetensors")
+            self.assertEqual(
+                fake_db.job["thumbnail_url"],
+                "/api/fs/preview?path=civitai/loras/sdxl/example-model/version_456/civitai_example_999.jpeg",
+            )
+
+            sidecar_text = generation_sidecar.read_text(encoding="utf-8")
+            self.assertNotIn("image-secret", sidecar_text)
+            self.assertNotIn("file-secret", model_sidecar.read_text(encoding="utf-8"))
+
+    def test_civitai_model_generation_metadata_failure_does_not_block_model_file(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/123?modelVersionId=456",
+            civitai_model_id="123",
+            civitai_version_id="456",
+        )
+        version_metadata = {
+            "id": 456,
+            "name": "v1",
+            "baseModel": "SDXL",
+            "model": {"id": 123, "name": "Example Model", "type": "LORA"},
+            "files": [
+                {
+                    "name": "example.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "downloadUrl": "https://download.civitai.com/example.safetensors",
+                }
+            ],
+        }
+        model_page_metadata = {
+            "id": 123,
+            "name": "Example Model",
+            "type": "LORA",
+            "description": "<p>Main body</p>",
+            "modelVersions": [{"id": 456, "name": "v1"}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "example.safetensors")
+                saved.write_bytes(b"model")
+                return saved
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, http_error(500)]),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "loras" / "sdxl" / "example-model" / "version_456"
+            self.assertFalse((target / "_civitai_generation_metadata.json").exists())
+            self.assertTrue((target / "example.safetensors").exists())
+            self.assertEqual(fake_db.job["filename"], "example.safetensors")
+            self.assertTrue(any("civitai.model.generation_metadata.warning" in message for message in fake_db.logs))
+
+    def test_civitai_refresh_keeps_existing_model_file_and_updates_sidecars(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/123?modelVersionId=456",
+            target_subdir="civitai/loras/sdxl/refresh-model/version_456",
+            civitai_model_id="123",
+            civitai_version_id="456",
+            civitai_refresh=True,
+        )
+        version_metadata = {
+            "id": 456,
+            "name": "v2",
+            "baseModel": "SDXL",
+            "model": {"id": 123, "name": "Refresh Model", "type": "LORA"},
+            "files": [
+                {
+                    "name": "remote.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "downloadUrl": "https://download.civitai.com/remote.safetensors",
+                }
+            ],
+        }
+        model_page_metadata = {
+            "id": 123,
+            "name": "Refresh Model",
+            "type": "LORA",
+            "description": "<p>Updated body</p>",
+            "modelVersions": [{"id": 456, "name": "v2"}],
+        }
+        images_response = {
+            "items": [
+                {
+                    "id": 999,
+                    "url": "https://image.civitai.com/example/sample.jpeg",
+                    "width": 512,
+                    "height": 512,
+                    "meta": {"prompt": "updated prompt"},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            target = root / "civitai" / "loras" / "sdxl" / "refresh-model" / "version_456"
+            target.mkdir(parents=True)
+            existing = target / "existing.safetensors"
+            existing.write_bytes(b"existing model")
+            fake_db = FakeDb({"status": "running"})
+            downloaded_urls: list[str] = []
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                downloaded_urls.append(url)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "downloaded.bin")
+                saved.write_bytes(b"preview")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, images_response]),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            self.assertEqual(downloaded_urls, ["https://image.civitai.com/example/sample.jpeg"])
+            self.assertEqual(existing.read_bytes(), b"existing model")
+            self.assertTrue((target / "civitai_example_999.jpeg").exists())
+            generation_payload = json.loads((target / "_civitai_generation_metadata.json").read_text(encoding="utf-8"))
+            model_payload = json.loads((target / "_civitai_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(generation_payload["model_details"]["model"]["description"], "Updated body")
+            self.assertEqual(generation_payload["images"][0]["generation_data"]["prompt"]["text"], "updated prompt")
+            self.assertTrue(model_payload["generation_metadata"]["sidecar"])
+            self.assertEqual(fake_db.job["filename"], "existing.safetensors")
+            self.assertTrue(any("existing model file kept" in message for message in fake_db.logs))
 
     def test_civitai_image_page_archives_image_and_queues_unique_resources(self) -> None:
         raw_input = "https://civitai.com/images/135240496?token=secret-token"

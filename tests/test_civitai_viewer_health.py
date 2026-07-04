@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 from pathlib import Path
@@ -7,6 +8,14 @@ from pathlib import Path
 import pytest
 
 from app.models import ParsedDownload
+
+
+class JsonRequest:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+    async def json(self) -> object:
+        return self.payload
 
 
 @pytest.fixture()
@@ -96,6 +105,102 @@ def test_media_list_includes_civitai_image_generation_metadata(app_modules: tupl
     assert rows[0]["has_media"] is True
 
 
+def test_media_list_includes_civitai_model_generation_metadata(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "civitai" / "loras" / "sdxl" / "example-model" / "version_456"
+    target.mkdir(parents=True)
+    (target / "example.safetensors").write_bytes(b"model")
+    (target / "civitai_example_999.jpeg").write_bytes(b"image")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/123?modelVersionId=456",
+                "model_id": "123",
+                "version_id": "456",
+                "archive_info": {
+                    "model_title": "Example Model",
+                    "model_category": "LoRA",
+                    "thumbnail_url": "/api/fs/preview?path=civitai/loras/sdxl/example-model/version_456/civitai_example_999.jpeg",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (target / "_civitai_generation_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "kind": "civitai_model_generation_metadata",
+                "model_id": "123",
+                "version_id": "456",
+                "model_name": "Example Model",
+                "model_page_url": "https://civitai.com/models/123?modelVersionId=456",
+                "image_count": 1,
+                "generation_count": 1,
+                "model_details": {
+                    "model": {
+                        "id": "123",
+                        "name": "Example Model",
+                        "type": "LORA",
+                        "creator": "Creator",
+                        "description": "Main body\nUse with trigger.",
+                        "tags": ["style", "anime"],
+                    },
+                    "version": {
+                        "id": "456",
+                        "name": "v1",
+                        "base_model": "SDXL",
+                        "description": "Version notes",
+                        "trained_words": ["trigger", "style token"],
+                        "files": [{"name": "example.safetensors", "type": "Model", "format": "SafeTensor"}],
+                    },
+                },
+                "images": [
+                    {
+                        "source_url": "https://civitai.com/images/999",
+                        "local_file": "civitai_example_999.jpeg",
+                        "image": {"id": "999", "width": 1024, "height": 1024},
+                        "generation_data": {
+                            "available": True,
+                            "prompt": {"text": "model prompt"},
+                            "negative_prompt": {"text": "bad anatomy"},
+                            "metadata": [{"label": "Seed", "value": "12345"}],
+                            "resources": [],
+                            "model_version_ids": ["456"],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert main.archive_metadata_path(target).name == "_civitai_metadata.json"
+
+    payload = response_json(main.api_media_list("civitai/loras/sdxl/example-model/version_456", "_"))
+
+    assert payload["ok"] is True
+    assert payload["metadata"]["kind"] == "civitai_model_generation_metadata"
+    assert payload["metadata"]["source_url"] == "https://civitai.com/images/999"
+    assert payload["metadata"]["model_page_url"] == "https://civitai.com/models/123?modelVersionId=456"
+    assert payload["metadata"]["model_details"]["model"]["description"] == "Main body\nUse with trigger."
+    assert payload["metadata"]["model_details"]["model"]["tags"] == ["style", "anime"]
+    assert payload["metadata"]["model_details"]["version"]["trained_words"] == ["trigger", "style token"]
+    assert payload["metadata"]["generation_data"]["prompt"]["text"] == "model prompt"
+    assert payload["metadata"]["generation_data"]["metadata"][0]["value"] == "12345"
+    assert payload["items"][0]["name"] == "civitai_example_999.jpeg"
+    assert payload["items"][0]["thumbnail_url"].endswith("civitai_example_999.jpeg")
+
+    rows = [row for row in main.library_items(mode="live") if row.get("target_path") == "civitai/loras/sdxl/example-model/version_456"]
+    assert len(rows) == 1
+    assert rows[0]["source"] == "civitai"
+    assert rows[0]["model_category"] == "LoRA"
+    assert rows[0]["thumbnail_url"].endswith("civitai_example_999.jpeg")
+    assert rows[0]["has_media"] is True
+    assert rows[0]["media_count"] == 1
+
+
 def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, _data_root, _config_root = app_modules
     template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
@@ -103,9 +208,58 @@ def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules:
     assert "function isCivitaiImagePageJob(job)" in template
     assert "if (isCivitaiImagePageJob(job)) return true;" in template
     assert "value === 'civitai image page'" in template
+    assert "civitai_model_generation_metadata" in template
+    assert "function renderCivitaiModelDetails(details)" in template
+    assert "Model page body" in template
+    assert "Trigger words" in template
     assert "function openMediaViewerForCard(card)" in template
     assert "if (!isMediaArchiveCard(card)" in template
     assert ".asset-card[data-media-archive=\"true\"]" in template
+    assert 'data-action="civitai-refresh"' in template
+    assert "data-civitai-refresh=" in template
+    assert "async function refreshCivitaiArchive(target)" in template
+
+
+def test_civitai_refresh_api_queues_existing_model_folder(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "civitai" / "loras" / "sdxl" / "old-model" / "version_456"
+    target.mkdir(parents=True)
+    (target / "old.safetensors").write_bytes(b"model")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/123?modelVersionId=456",
+                "model_id": "123",
+                "version_id": "456",
+                "file_selector": {"format": "SafeTensor", "primary": True},
+                "archive_info": {"model_title": "Old Model", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    enqueued: list[int] = []
+    monkeypatch.setattr(main, "enqueue_job", lambda job_id: enqueued.append(job_id))
+
+    payload = response_json(
+        asyncio.run(main.api_civitai_refresh(JsonRequest({"path": "civitai/loras/sdxl/old-model/version_456"}), "_"))
+    )
+
+    assert payload["ok"] is True
+    job_id = payload["job_id"]
+    assert enqueued == [job_id]
+    job = db.get_job(job_id)
+    assert job is not None
+    assert job["status"] == "queued"
+    assert job["target_dir"] == str(target)
+    parsed = ParsedDownload.from_dict(json.loads(job["parsed_json"]))
+    assert parsed.source == "civitai"
+    assert parsed.civitai_model_id == "123"
+    assert parsed.civitai_version_id == "456"
+    assert parsed.civitai_file_format == "SafeTensor"
+    assert parsed.civitai_file_primary is True
+    assert parsed.civitai_refresh is True
+    assert parsed.target_subdir == "civitai/loras/sdxl/old-model/version_456"
 
 
 def test_media_list_omits_metadata_for_plain_media_folder(app_modules: tuple) -> None:

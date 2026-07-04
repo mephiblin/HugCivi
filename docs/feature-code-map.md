@@ -1,6 +1,6 @@
 # HugCivi Feature and Code Map
 
-Last updated: 2026-07-03
+Last updated: 2026-07-04
 
 This document is the first stop for a human or LLM developer who needs to change HugCivi. It maps the product surface to the files, functions, state, and tests that usually need to move together.
 
@@ -61,7 +61,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | External download scheduler | In-process background queue | `app/downloader.py::start_workers`, `scheduler_loop`, `pick_next_schedulable_job_locked`, `run_job`, `provider_key_for_job` | UI only polls job state | in-memory scheduler plus `jobs` table | `tests/test_downloader_runtime.py`, `test_internal_job_rows_are_separate_from_download_resume_list` |
 | Queue limits and cooldown | Settings modal queue pane | `queue_global_limit`, `queue_per_provider_limit`, `queue_provider_cooldown_range_seconds`, `notify_queue_settings_changed` | settings queue fields in `index.html` | `settings` table and env defaults | downloader runtime queue tests |
 | Hugging Face downloads | HF URL, repo shorthand, `hf download`, `hf://` | `parse_huggingface_url`, `parse_hf_cli`, `parse_hf_uri`, `download_huggingface`, `huggingface_download_worker_main`, `metadata.classify_huggingface` | job list/library display | `/data/huggingface/...`, sidecar metadata, HF CLI subprocess | parser tests and downloader runtime tests |
-| Civitai model downloads | Civitai model/version/download/hash/image URLs, numeric version ID | `parse_civitai_url`, `download_civitai`, `civitai_download_urls`, `metadata.classify_civitai`, `pick_civitai_file` | model cards, health resource panel | `/data/stable-diffusion/...`, `_civitai_metadata.json` | `tests/test_civitai_image_parser.py`, `tests/test_civitai_viewer_health.py`, downloader runtime tests |
+| Civitai model downloads | Civitai model/version/download/hash/image URLs, numeric version ID, model-card `갱신` action through `POST /api/civitai/refresh` | `parse_civitai_url`, `download_civitai`, `civitai_download_urls`, `fetch_civitai_model_page_metadata`, `civitai_model_details`, `collect_civitai_model_generation_metadata`, `save_civitai_model_preview_images`, `civitai_refresh_parsed_download`, `api_civitai_refresh`, `metadata.classify_civitai`, `pick_civitai_file` | model cards, `refreshCivitaiArchive`, local preview thumbnail, media viewer generation/model-details panel, health resource panel | `/data/stable-diffusion/...`, `_civitai_metadata.json` with model body/version details, optional `_civitai_generation_metadata.json`, representative `civitai_example_<imageId>.*` preview image; refresh keeps existing model files when present | `tests/test_civitai_image_parser.py`, `tests/test_civitai_viewer_health.py`, downloader runtime tests |
 | Civitai image archive and resource jobs | Civitai image page URL, media viewer generation panel, resource health | `download_civitai_image_page`, `normalize_civitai_image_record`, `create_civitai_image_resource_jobs`, `api_civitai_resource_health` | `normalizeCivitaiImageMetadata`, `renderGenerationPanel`, `checkCivitaiResourceHealth` | `_civitai_image_metadata.json`, child Civitai jobs, health from jobs/sidecars | `tests/test_civitai_viewer_health.py`, downloader runtime Civitai resource tests |
 | Hitomi single gallery | Hitomi URL or `hitomi <id>` | `parse_hitomi_url`, `maybe_parse_hitomi_cli`, `download_hitomi`, `download_hitomi_gallery_dl`, native Hitomi helpers | library/media archive display | `/data/hitomi/...`, `_hitomi_metadata.json` | `tests/test_hitomi_listing.py`, downloader runtime tests |
 | Hitomi listing discovery | artist/language/search/index URL, confirm modal | `parse_hitomi_url`, `download_hitomi_listing`, `discover_hitomi_listing_gallery_urls`, `queue_hitomi_listing_galleries`, listing API routes | `openHitomiListingModal`, `renderHitomiListing`, `queueHitomiListing` | parent listing job metadata and child Hitomi gallery jobs | `tests/test_hitomi_listing.py` |
@@ -99,7 +99,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | Media | `/api/media/list`, archive, file, play, subtitle, poster, transcode/poster jobs | media helpers and internal job handlers |
 | Workflows | `/api/workflows/import`, view, preview | workflow helpers and `app/workflows.py` |
 | Hitomi listing | `/api/hitomi/listing/{id}`, `/queue` | listing metadata and queue helpers from downloader |
-| Civitai health | `POST /api/civitai/resource-health` | Civitai health helpers in `app/main.py` and downloader state helpers |
+| Civitai health/refresh | `POST /api/civitai/resource-health`, `POST /api/civitai/refresh` | Civitai health and refresh helpers in `app/main.py` and downloader state helpers |
 | Storage | `GET /api/storage`, `POST /api/storage/archive-usage` | storage readout helpers |
 | Addon | `GET /api/addon/chrome-extension` | Chrome extension zip helpers |
 | Maintenance | `/api/maintenance/db/*` | DB maintenance API functions |

@@ -33,6 +33,7 @@ class ParsedDownload:
     civitai_file_size: str | None = None
     civitai_file_fp: str | None = None
     civitai_file_primary: bool = False
+    civitai_refresh: bool = False
 
     # Generic URL
     url: str | None = None
