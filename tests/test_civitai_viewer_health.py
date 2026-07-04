@@ -146,14 +146,27 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
                         "creator": "Creator",
                         "description": "Main body\nUse with trigger.",
                         "tags": ["style", "anime"],
+                        "stats": {"downloadCount": 123, "thumbsUpCount": 45},
                     },
                     "version": {
                         "id": "456",
                         "name": "v1",
                         "base_model": "SDXL",
+                        "base_model_type": "Standard",
+                        "status": "Published",
+                        "published_at": "2026-01-27T19:01:33.766Z",
                         "description": "Version notes",
                         "trained_words": ["trigger", "style token"],
-                        "files": [{"name": "example.safetensors", "type": "Model", "format": "SafeTensor"}],
+                        "files": [
+                            {
+                                "name": "example.safetensors",
+                                "type": "Model",
+                                "format": "SafeTensor",
+                                "fp": "bf16",
+                                "is_required": True,
+                                "hashes": {"AutoV2": "ABC123"},
+                            }
+                        ],
                     },
                 },
                 "images": [
@@ -186,7 +199,11 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
     assert payload["metadata"]["model_page_url"] == "https://civitai.com/models/123?modelVersionId=456"
     assert payload["metadata"]["model_details"]["model"]["description"] == "Main body\nUse with trigger."
     assert payload["metadata"]["model_details"]["model"]["tags"] == ["style", "anime"]
+    assert payload["metadata"]["model_details"]["model"]["stats"]["downloadCount"] == 123
+    assert payload["metadata"]["model_details"]["version"]["status"] == "Published"
+    assert payload["metadata"]["model_details"]["version"]["base_model_type"] == "Standard"
     assert payload["metadata"]["model_details"]["version"]["trained_words"] == ["trigger", "style token"]
+    assert payload["metadata"]["model_details"]["version"]["files"][0]["hashes"]["AutoV2"] == "ABC123"
     assert payload["metadata"]["generation_data"]["prompt"]["text"] == "model prompt"
     assert payload["metadata"]["generation_data"]["metadata"][0]["value"] == "12345"
     assert payload["items"][0]["name"] == "civitai_example_999.jpeg"
@@ -211,6 +228,10 @@ def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules:
     assert "civitai_model_generation_metadata" in template
     assert "function renderCivitaiModelDetails(details)" in template
     assert "Model page body" in template
+    assert "Model stats" in template
+    assert "Published" in template
+    assert "function civitaiStatsText" in template
+    assert "function civitaiHashText" in template
     assert "Trigger words" in template
     assert "function openMediaViewerForCard(card)" in template
     assert "if (!isMediaArchiveCard(card)" in template

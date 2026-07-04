@@ -6,7 +6,7 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse, unquote
 
-SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._()\-가-힣]+")
+SAFE_FILENAME_CHARS = set("._()-")
 SENSITIVE_QUERY_KEYS = {
     "access_token",
     "api_key",
@@ -41,8 +41,18 @@ BEARER_RE = re.compile(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=-]+)")
 def sanitize_segment(value: str, default: str = "item") -> str:
     value = unicodedata.normalize("NFKC", value or "")
     value = unquote(value).strip().replace("/", "_").replace("\\", "_")
-    value = SAFE_CHARS_RE.sub("_", value).strip("._ ")
-    return value[:180] or default
+    cleaned: list[str] = []
+    replacing = False
+    for char in value:
+        category = unicodedata.category(char)
+        if char in SAFE_FILENAME_CHARS or category[0] in {"L", "M", "N"}:
+            cleaned.append(char)
+            replacing = False
+        elif not replacing:
+            cleaned.append("_")
+            replacing = True
+    result = "".join(cleaned).strip("._ ")
+    return result[:180] or default
 
 
 def safe_join(root: str | Path, *parts: str) -> Path:

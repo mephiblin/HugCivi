@@ -2181,6 +2181,7 @@ def civitai_model_generation_archive_metadata(path: Path) -> dict[str, Any]:
         "image": image,
         "generation_data": generation,
         "model_details": payload.get("model_details") if isinstance(payload.get("model_details"), dict) else {},
+        "component_downloads": payload.get("component_downloads") if isinstance(payload.get("component_downloads"), list) else [],
         "image_count": payload.get("image_count", len(images)),
         "generation_count": payload.get("generation_count"),
     }

@@ -3993,7 +3993,12 @@
         {label: 'Type', value: generationScalar(model.type)},
         {label: 'Creator', value: generationScalar(model.creator)},
         {label: 'Version', value: generationScalar(version.name || version.id)},
+        {label: 'Status', value: generationScalar(version.status || version.availability || model.availability)},
+        {label: 'Published', value: civitaiDateText(version.published_at || version.publishedAt || version.created_at || version.createdAt)},
         {label: 'Base model', value: generationScalar(version.base_model || version.baseModel)},
+        {label: 'Base model type', value: generationScalar(version.base_model_type || version.baseModelType)},
+        {label: 'Model stats', value: civitaiStatsText(model.stats)},
+        {label: 'Version stats', value: civitaiStatsText(version.stats)},
       ].filter(row => row.value);
       if (!modelDescription && !versionDescription && !tags.length && !trainedWords.length && !files.length && !rows.length) {
         return '';
@@ -4029,18 +4034,87 @@
     function renderCivitaiModelFiles(files) {
       return `<div class="generation-files">${files.map(file => {
         const name = file.name || file.filename || file.id || 'file';
+        const hashes = file.hashes && typeof file.hashes === 'object' ? file.hashes : {};
+        const hashText = civitaiHashText(hashes);
+        const tensorText = civitaiTensorMetadataText(file.tensor_metadata || file.tensorMetadata);
+        const scanText = [
+          file.pickle_scan_result || file.pickleScanResult,
+          file.virus_scan_result || file.virusScanResult,
+        ].filter(value => value != null && String(value).trim()).join(' / ');
         const badges = [
           file.type,
           file.format,
           file.fp,
           file.size,
           file.primary ? 'primary' : '',
+          file.is_required || file.isRequired ? 'required' : '',
+          hashText,
+          tensorText,
+          scanText,
         ].filter(value => value != null && String(value).trim()).map(value => `<span>${escapeHtml(value)}</span>`).join('');
         return `<article class="generation-file">
           <strong>${escapeHtml(name)}</strong>
           ${badges ? `<span>${badges}</span>` : ''}
         </article>`;
       }).join('')}</div>`;
+    }
+
+    function civitaiDateText(value) {
+      const text = generationScalar(value);
+      if (!text) return '';
+      const date = new Date(text);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
+      }
+      return text;
+    }
+
+    function civitaiStatsText(stats) {
+      if (!stats || typeof stats !== 'object') return '';
+      const rows = [
+        ['downloads', stats.downloadCount ?? stats.downloads],
+        ['likes', stats.thumbsUpCount ?? stats.likeCount ?? stats.likes],
+        ['dislikes', stats.thumbsDownCount],
+        ['comments', stats.commentCount],
+        ['tipped', stats.tippedAmountCount],
+      ].filter(([, value]) => value != null && String(value).trim());
+      return rows.map(([label, value]) => `${label}: ${generationScalar(value)}`).join(' · ');
+    }
+
+    function civitaiHashText(hashes) {
+      if (!hashes || typeof hashes !== 'object') return '';
+      const preferred = hashes.AutoV2 || hashes.AutoV3 || hashes.SHA256 || hashes.CRC32 || hashes.BLAKE3 || hashes.AutoV1;
+      if (!preferred) return '';
+      const label = hashes.AutoV2 ? 'AutoV2' : hashes.AutoV3 ? 'AutoV3' : hashes.SHA256 ? 'SHA256' : hashes.CRC32 ? 'CRC32' : hashes.BLAKE3 ? 'BLAKE3' : 'AutoV1';
+      return `${label}: ${generationScalar(preferred)}`;
+    }
+
+    function civitaiTensorMetadataText(tensor) {
+      if (!tensor || typeof tensor !== 'object') return '';
+      const parts = [];
+      const tensorCount = tensor.tensorCount ?? tensor.tensor_count;
+      if (tensorCount != null) parts.push(`Tensors: ${generationScalar(tensorCount)}`);
+      const estimate = tensor.vramEstimate || tensor.vram_estimate;
+      if (estimate && typeof estimate === 'object') {
+        const minimum = estimate.estimatedMinimumVramBytes ?? estimate.estimated_minimum_vram_bytes;
+        const recommended = estimate.recommendedVramBytes ?? estimate.recommended_vram_bytes;
+        if (minimum != null) parts.push(`VRAM min ${civitaiBytesText(minimum)}`);
+        if (recommended != null) parts.push(`rec ${civitaiBytesText(recommended)}`);
+      }
+      return parts.join(' · ');
+    }
+
+    function civitaiBytesText(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return generationScalar(value);
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let amount = number;
+      let index = 0;
+      while (Math.abs(amount) >= 1024 && index < units.length - 1) {
+        amount /= 1024;
+        index += 1;
+      }
+      return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
     }
 
     function renderGenerationResources(resources) {

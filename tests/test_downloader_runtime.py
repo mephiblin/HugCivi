@@ -326,6 +326,14 @@ class DownloaderRuntimeTests(unittest.TestCase):
             ],
             "metadata": {"totalItems": 1, "currentPage": 1},
         }
+        tensor_summary = {
+            "format": "SafeTensor",
+            "tensorCount": 453,
+            "vramEstimate": {
+                "estimatedMinimumVramBytes": 1647522611,
+                "recommendedVramBytes": 13592900403,
+            },
+        }
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "data"
@@ -350,8 +358,9 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 mock.patch.object(
                     downloader,
                     "fetch_json",
-                    side_effect=[version_metadata, model_page_metadata, images_response],
+                    side_effect=[version_metadata, model_page_metadata, tensor_summary, images_response],
                 ) as fetch_json,
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
                 mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
             ):
                 downloader.download_civitai(99, parsed)
@@ -368,13 +377,17 @@ class DownloaderRuntimeTests(unittest.TestCase):
             model_payload = json.loads(model_sidecar.read_text(encoding="utf-8"))
             image = generation_payload["images"][0]
 
-            self.assertEqual(fetch_json.call_count, 3)
+            self.assertEqual(fetch_json.call_count, 4)
             self.assertEqual(
                 fetch_json.call_args_list[1].args[1],
                 f"{downloader.CIVITAI_API_BASE}/models/123",
             )
             self.assertEqual(
                 fetch_json.call_args_list[2].args[1],
+                f"{downloader.CIVITAI_API_BASE}/model-files/77/tensor-metadata?summaryOnly=true",
+            )
+            self.assertEqual(
+                fetch_json.call_args_list[3].args[1],
                 f"{downloader.CIVITAI_API_BASE}/images?modelVersionId=456&limit=100&sort=Newest&withMeta=true",
             )
             self.assertEqual(generation_payload["kind"], "civitai_model_generation_metadata")
@@ -394,6 +407,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertEqual(generation_payload["model_details"]["version"]["description"], "Version notes")
             self.assertEqual(generation_payload["model_details"]["version"]["trained_words"], ["trigger words", "style token"])
             self.assertEqual(generation_payload["model_details"]["version"]["files"][0]["format"], "SafeTensor")
+            self.assertEqual(generation_payload["model_details"]["version"]["files"][0]["tensor_metadata"]["tensorCount"], 453)
+            self.assertEqual(model_payload["tensor_metadata"]["vramEstimate"]["recommendedVramBytes"], 13592900403)
             self.assertEqual(model_payload["model_details"]["model"]["creator"], "Creator")
             self.assertEqual(model_payload["model_page_metadata"]["description"], model_page_metadata["description"])
             self.assertEqual(model_payload["generation_metadata"]["sidecar"], "_civitai_generation_metadata.json")
@@ -411,6 +426,124 @@ class DownloaderRuntimeTests(unittest.TestCase):
             sidecar_text = generation_sidecar.read_text(encoding="utf-8")
             self.assertNotIn("image-secret", sidecar_text)
             self.assertNotIn("file-secret", model_sidecar.read_text(encoding="utf-8"))
+
+    def test_civitai_model_downloads_required_component_files(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/2342797?modelVersionId=2635223",
+            civitai_model_id="2342797",
+            civitai_version_id="2635223",
+        )
+        version_metadata = {
+            "id": 2635223,
+            "name": "Base",
+            "baseModel": "ZImageBase",
+            "model": {"id": 2342797, "name": "Z Image Base", "type": "Checkpoint"},
+            "files": [
+                {
+                    "id": 1,
+                    "name": "ae.safetensors",
+                    "type": "VAE",
+                    "sizeKB": 1,
+                    "metadata": {"format": "SafeTensor", "isRequired": True},
+                    "downloadUrl": "https://download.civitai.com/ae.safetensors",
+                },
+                {
+                    "id": 2,
+                    "name": "zImageBase_base_txt_nf4.safetensors",
+                    "type": "Text Encoder",
+                    "sizeKB": 1,
+                    "metadata": {"format": "SafeTensor", "fp": "nf4", "isRequired": False},
+                    "downloadUrl": "https://download.civitai.com/optional-text-encoder.safetensors",
+                },
+                {
+                    "id": 3,
+                    "name": "zImageBase_base_txt.safetensors",
+                    "type": "Text Encoder",
+                    "sizeKB": 1,
+                    "metadata": {"format": "SafeTensor", "fp": "fp8", "isRequired": True},
+                    "downloadUrl": "https://download.civitai.com/text-encoder.safetensors",
+                },
+                {
+                    "id": 4,
+                    "name": "zImageBase_base.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "sizeKB": 1,
+                    "metadata": {"format": "SafeTensor", "fp": "bf16"},
+                    "downloadUrl": "https://download.civitai.com/model.safetensors",
+                },
+            ],
+        }
+        model_page_metadata = {
+            "id": 2342797,
+            "name": "Z Image Base",
+            "type": "Checkpoint",
+            "description": "<p>Z-Image body</p>",
+            "modelVersions": [{"id": 2635223, "name": "Base"}],
+        }
+        images_response = {"items": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+            downloaded_urls: list[str] = []
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+                **_kwargs: object,
+            ) -> Path:
+                downloaded_urls.append(url)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "download.bin")
+                saved.write_bytes(b"file")
+                return saved
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, images_response]),
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
+                mock.patch.object(downloader, "attach_civitai_tensor_metadata_summary", return_value=None),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "checkpoints" / "zimagebase" / "z-image-base" / "version_2635223"
+            model_payload = json.loads((target / "_civitai_metadata.json").read_text(encoding="utf-8"))
+            generation_payload = json.loads((target / "_civitai_generation_metadata.json").read_text(encoding="utf-8"))
+            model_exists = (target / "zImageBase_base.safetensors").exists()
+            vae_exists = (target / "ae.safetensors").exists()
+            text_encoder_exists = (target / "zImageBase_base_txt.safetensors").exists()
+            optional_text_encoder_exists = (target / "zImageBase_base_txt_nf4.safetensors").exists()
+
+        self.assertEqual(
+            downloaded_urls,
+            [
+                "https://download.civitai.com/model.safetensors",
+                "https://download.civitai.com/ae.safetensors",
+                "https://download.civitai.com/text-encoder.safetensors",
+            ],
+        )
+        self.assertTrue(model_exists)
+        self.assertTrue(vae_exists)
+        self.assertTrue(text_encoder_exists)
+        self.assertFalse(optional_text_encoder_exists)
+        self.assertEqual(fake_db.job["filename"], "3 files")
+        self.assertEqual(fake_db.job["precision"], "3 files")
+        self.assertEqual(
+            [(item["role"], item["name"], item["status"]) for item in model_payload["component_downloads"]],
+            [
+                ("primary", "zImageBase_base.safetensors", "downloaded"),
+                ("required_component", "ae.safetensors", "downloaded"),
+                ("required_component", "zImageBase_base_txt.safetensors", "downloaded"),
+            ],
+        )
+        self.assertEqual(generation_payload["component_downloads"][1]["type"], "VAE")
 
     def test_civitai_model_generation_metadata_failure_does_not_block_model_file(self) -> None:
         parsed = ParsedDownload(
@@ -461,6 +594,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 mock.patch.object(downloader, "DATA_ROOT", root),
                 mock.patch.object(downloader, "db", fake_db),
                 mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, http_error(500)]),
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
+                mock.patch.object(downloader, "attach_civitai_tensor_metadata_summary", return_value=None),
                 mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
             ):
                 downloader.download_civitai(99, parsed)
@@ -484,12 +619,22 @@ class DownloaderRuntimeTests(unittest.TestCase):
             "id": 456,
             "name": "v2",
             "baseModel": "SDXL",
+            "baseModelType": "Standard",
+            "status": "Published",
+            "publishedAt": "2026-01-27T19:01:33.766Z",
+            "stats": {"downloadCount": 42, "thumbsUpCount": 9},
             "model": {"id": 123, "name": "Refresh Model", "type": "LORA"},
             "files": [
                 {
+                    "id": 700,
                     "name": "remote.safetensors",
                     "type": "Model",
                     "primary": True,
+                    "sizeKB": 1024,
+                    "metadata": {"format": "SafeTensor", "fp": "bf16", "size": "full", "isRequired": True},
+                    "hashes": {"AutoV2": "ABC123", "SHA256": "ABC123DEF456"},
+                    "pickleScanResult": "Success",
+                    "virusScanResult": "Success",
                     "downloadUrl": "https://download.civitai.com/remote.safetensors",
                 }
             ],
@@ -499,6 +644,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
             "name": "Refresh Model",
             "type": "LORA",
             "description": "<p>Updated body</p>",
+            "availability": "Public",
+            "stats": {"downloadCount": 100, "thumbsUpCount": 20},
             "modelVersions": [{"id": 456, "name": "v2"}],
         }
         images_response = {
@@ -540,6 +687,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 mock.patch.object(downloader, "DATA_ROOT", root),
                 mock.patch.object(downloader, "db", fake_db),
                 mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, images_response]),
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
+                mock.patch.object(downloader, "attach_civitai_tensor_metadata_summary", return_value=None),
                 mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
             ):
                 downloader.download_civitai(99, parsed)
@@ -550,6 +699,13 @@ class DownloaderRuntimeTests(unittest.TestCase):
             generation_payload = json.loads((target / "_civitai_generation_metadata.json").read_text(encoding="utf-8"))
             model_payload = json.loads((target / "_civitai_metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(generation_payload["model_details"]["model"]["description"], "Updated body")
+            self.assertEqual(generation_payload["model_details"]["model"]["stats"]["downloadCount"], 100)
+            self.assertEqual(generation_payload["model_details"]["version"]["status"], "Published")
+            self.assertEqual(generation_payload["model_details"]["version"]["published_at"], "2026-01-27T19:01:33.766Z")
+            self.assertEqual(generation_payload["model_details"]["version"]["base_model_type"], "Standard")
+            self.assertEqual(generation_payload["model_details"]["version"]["files"][0]["hashes"]["AutoV2"], "ABC123")
+            self.assertTrue(generation_payload["model_details"]["version"]["files"][0]["is_required"])
+            self.assertEqual(generation_payload["model_details"]["version"]["files"][0]["pickle_scan_result"], "Success")
             self.assertEqual(generation_payload["images"][0]["generation_data"]["prompt"]["text"], "updated prompt")
             self.assertTrue(model_payload["generation_metadata"]["sidecar"])
             self.assertEqual(fake_db.job["filename"], "existing.safetensors")

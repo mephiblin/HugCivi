@@ -8,6 +8,10 @@
 - 모델 버전의 예시 이미지 metadata를 Civitai images API에서 best-effort로 가져와 prompt, negative prompt, seed, steps, sampler, CFG scale 같은 generation 정보를 보존합니다.
 - 모델 폴더에 대표 예시 이미지 1장을 저장해 라이브러리 카드 썸네일과 미디어 뷰어 generation panel에서 사용합니다.
 - 체크포인트, LoRA, VAE 같은 Civitai 모델의 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보를 저장하고 미디어 뷰어에서 함께 표시합니다.
+- Civitai viewer의 모델 상세 영역에 type, creator, status, published date, base model/type, model/version stats, 파일 hash/required/scan 정보를 표시하도록 보강했습니다.
+- Civitai 모델 페이지 SSR metadata를 best-effort로 병합해 v1 API의 오래된 파일명 대신 페이지에 보이는 파일명(`z_image_bf16.safetensors`, `qwen_3_4b_fp8_mixed.safetensors` 등)을 우선 보존합니다.
+- Civitai tensor metadata summary API를 조회해 primary 파일의 tensor count와 VRAM min/rec 추정치를 sidecar와 viewer 파일 badge에 저장/표시합니다.
+- Civitai 모델/이미지 연계 다운로드에서 version 파일 중 `metadata.isRequired=true`인 VAE/Text Encoder 같은 필수 구성요소를 primary 모델 파일과 함께 저장하도록 했습니다. 명시적으로 특정 file id/type을 선택한 경우에는 기존처럼 선택 파일만 받습니다.
 - 예시 이미지 metadata 조회가 실패해도 모델 파일 다운로드는 계속 진행합니다.
 - Civitai 모델 카드 우클릭 메뉴에 `갱신`을 추가해 기존 모델 파일은 유지하면서 누락되었거나 변경된 metadata sidecar와 대표 예시 이미지를 다시 받아올 수 있게 했습니다.
 
@@ -15,6 +19,12 @@
 
 - 다운로드 완료로 새 폴더가 생겼을 때 왼쪽 저장 폴더 트리가 오래된 상태로 남지 않도록, 완료 상태 전환과 수동 새로고침에서 폴더 트리도 다시 불러오게 했습니다.
 - `hitomi`처럼 하위 폴더가 많은 항목이 폴더 트리 표시 예산을 독점해 뒤쪽 `huggingface`, `stable-diffusion` 폴더가 누락되지 않도록 트리 생성 순서와 폴더별 표시 한도를 조정했습니다.
+
+### ASMR.one
+
+- Civitai, HuggingFace, ASMR.one 등 모든 다운로드 source가 공유하는 파일명 정리 규칙에서 일본어, 중국어를 포함한 국제 문자 폴더명과 파일명을 보존하도록 고쳤습니다. 예: `イラスト`, `readme_ろまあぽ.txt`.
+- ASMR.one work의 일부 트랙/이미지/부가 항목 다운로드가 실패해도 성공한 파일이 하나 이상 있으면 작업을 완료 처리하고, 실패 항목은 `_asmrone_manifest.json`에 `download_status=failed`와 오류 메시지로 기록하도록 했습니다.
+- 실패한 하위 항목 때문에 생긴 빈 폴더는 제거해, 받지 못한 이미지 폴더가 빈 상태로 남지 않게 했습니다.
 
 ## 2026-07-03
 

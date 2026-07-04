@@ -1557,7 +1557,19 @@ def civitai_download_urls(
     raw_files = metadata.get("files")
     files = raw_files if isinstance(raw_files, list) else []
     selected_file = primary_file or pick_civitai_file(files, civitai_file_selector(parsed))
-    raw_mirrors = selected_file.get("mirrors")
+    urls.extend(civitai_file_download_urls(selected_file))
+    metadata_download_url = metadata.get("downloadUrl")
+    if isinstance(metadata_download_url, str) and not has_selector:
+        urls.append(metadata_download_url)
+    if not has_selector:
+        urls.append(f"https://civitai.com/api/download/models/{version_id}")
+
+    return unique_normalized_urls(urls)
+
+
+def civitai_file_download_urls(file: dict[str, Any]) -> list[str]:
+    urls: list[str] = []
+    raw_mirrors = file.get("mirrors")
     mirrors = raw_mirrors if isinstance(raw_mirrors, list) else []
     for mirror in mirrors:
         if not isinstance(mirror, dict) or mirror.get("deletedAt"):
@@ -1566,15 +1578,13 @@ def civitai_download_urls(
         if isinstance(mirror_url, str):
             urls.append(mirror_url)
 
-    file_download_url = selected_file.get("downloadUrl")
+    file_download_url = file.get("downloadUrl")
     if isinstance(file_download_url, str):
         urls.append(file_download_url)
-    metadata_download_url = metadata.get("downloadUrl")
-    if isinstance(metadata_download_url, str) and not has_selector:
-        urls.append(metadata_download_url)
-    if not has_selector:
-        urls.append(f"https://civitai.com/api/download/models/{version_id}")
+    return unique_normalized_urls(urls)
 
+
+def unique_normalized_urls(urls: list[str]) -> list[str]:
     seen: set[str] = set()
     normalized: list[str] = []
     for url in urls:
@@ -1583,6 +1593,64 @@ def civitai_download_urls(
             normalized.append(clean_url)
             seen.add(clean_url)
     return normalized
+
+
+def civitai_file_metadata(file: dict[str, Any]) -> dict[str, Any]:
+    raw_metadata = file.get("metadata")
+    return raw_metadata if isinstance(raw_metadata, dict) else {}
+
+
+def civitai_file_required(file: dict[str, Any]) -> bool:
+    return civitai_file_metadata(file).get("isRequired") is True
+
+
+def civitai_file_identity(file: dict[str, Any]) -> str:
+    file_id = id_value(file.get("id"))
+    if file_id:
+        return f"id:{file_id}"
+    metadata = civitai_file_metadata(file)
+    return "|".join(
+        [
+            text_value(file.get("name")) or "",
+            text_value(file.get("type")) or "",
+            text_value(metadata.get("format")) or "",
+            text_value(metadata.get("fp")) or "",
+            text_value(metadata.get("size")) or "",
+            text_value(file.get("sizeKB")) or "",
+        ]
+    ).lower()
+
+
+def civitai_required_component_files(
+    parsed: ParsedDownload,
+    files: list[Any],
+    primary_file: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if parsed.civitai_download_url or has_civitai_file_selector(parsed):
+        return []
+    primary_identity = civitai_file_identity(primary_file)
+    components: list[dict[str, Any]] = []
+    seen: set[str] = {primary_identity}
+    for item in files:
+        if not isinstance(item, dict) or not civitai_file_required(item):
+            continue
+        identity = civitai_file_identity(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        components.append(item)
+    return components
+
+
+def civitai_expected_filename(file: dict[str, Any], fallback: str) -> str:
+    return sanitize_segment(text_value(file.get("name")), fallback)
+
+
+def civitai_file_size_bytes(file: dict[str, Any]) -> int:
+    try:
+        return max(0, int(float(file.get("sizeKB") or 0) * 1024))
+    except (TypeError, ValueError):
+        return 0
 
 
 def normalize_civitai_download_url(url: str) -> str:
@@ -1719,6 +1787,184 @@ def fetch_civitai_model_page_metadata(
         return existing
 
 
+def fetch_civitai_rendered_model_page_metadata(
+    session: requests.Session,
+    job_id: int,
+    model_id: str | None,
+) -> dict[str, Any] | None:
+    if not model_id:
+        return None
+    page_url = f"https://civitai.com/models/{quote(model_id, safe='')}"
+    try:
+        db.append_log(job_id, f"civitai.model.rendered_page_metadata: {page_url}")
+        response = request_with_safety(session, "GET", page_url, job_id=job_id, timeout=(20, 60))
+        response.raise_for_status()
+        return extract_civitai_next_model_data(response.text, model_id)
+    except Exception as exc:
+        db.append_log(job_id, f"civitai.model.rendered_page_metadata.warning modelId={model_id}: {redact_sensitive_text(str(exc))}")
+        return None
+
+
+def extract_civitai_next_model_data(html_text: str, model_id: str | None) -> dict[str, Any] | None:
+    match = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html_text, re.S)
+    if not match:
+        return None
+    try:
+        payload = json.loads(html.unescape(match.group(1)))
+    except json.JSONDecodeError:
+        return None
+    queries = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("trpcState", {})
+        .get("json", {})
+        .get("queries", [])
+    )
+    if not isinstance(queries, list):
+        return None
+    for query in queries:
+        if not isinstance(query, dict):
+            continue
+        data = query.get("state", {}).get("data") if isinstance(query.get("state"), dict) else None
+        if not isinstance(data, dict):
+            continue
+        if model_id and id_value(data.get("id")) != id_value(model_id):
+            continue
+        if isinstance(data.get("modelVersions"), list):
+            return data
+    return None
+
+
+def civitai_hashes_map(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): text_value(item) or "" for key, item in value.items() if text_value(item)}
+    if isinstance(value, list):
+        result: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            key = text_value(item.get("type"))
+            hash_value = text_value(item.get("hash"))
+            if key and hash_value:
+                result[key] = hash_value
+        return result
+    return {}
+
+
+def merge_civitai_model_page_metadata(
+    api_model: dict[str, Any] | None,
+    rendered_model: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not rendered_model:
+        return api_model
+    if not api_model:
+        return rendered_model
+    merged = {**api_model, **rendered_model}
+    if api_model.get("modelVersions") and rendered_model.get("modelVersions"):
+        merged["modelVersions"] = merge_civitai_model_versions(
+            api_model.get("modelVersions"),
+            rendered_model.get("modelVersions"),
+        )
+    return merged
+
+
+def merge_civitai_model_versions(api_versions: Any, rendered_versions: Any) -> list[Any]:
+    api_items = api_versions if isinstance(api_versions, list) else []
+    rendered_items = [item for item in rendered_versions if isinstance(item, dict)] if isinstance(rendered_versions, list) else []
+    rendered_by_id = {id_value(item.get("id")): item for item in rendered_items if id_value(item.get("id"))}
+    merged_versions: list[Any] = []
+    seen: set[str] = set()
+    for item in api_items:
+        if not isinstance(item, dict):
+            merged_versions.append(item)
+            continue
+        version_id = id_value(item.get("id"))
+        rendered = rendered_by_id.get(version_id or "")
+        merged = merge_civitai_version_metadata(item, rendered)
+        merged_versions.append(merged)
+        if version_id:
+            seen.add(version_id)
+    for item in rendered_items:
+        version_id = id_value(item.get("id"))
+        if version_id not in seen:
+            merged_versions.append(item)
+    return merged_versions
+
+
+def merge_civitai_version_metadata(
+    api_version: dict[str, Any],
+    rendered_version: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not rendered_version:
+        return api_version
+    merged = {**api_version, **rendered_version}
+    merged["files"] = merge_civitai_files(api_version.get("files"), rendered_version.get("files"))
+    if api_version.get("downloadUrl") and not rendered_version.get("downloadUrl"):
+        merged["downloadUrl"] = api_version.get("downloadUrl")
+    return merged
+
+
+def merge_civitai_files(api_files: Any, rendered_files: Any) -> list[Any]:
+    api_items = [item for item in api_files if isinstance(item, dict)] if isinstance(api_files, list) else []
+    rendered_items = [item for item in rendered_files if isinstance(item, dict)] if isinstance(rendered_files, list) else []
+    rendered_by_id = {id_value(item.get("id")): item for item in rendered_items if id_value(item.get("id"))}
+    rendered_by_sha = {
+        civitai_hashes_map(item.get("hashes")).get("SHA256", "").lower(): item
+        for item in rendered_items
+        if civitai_hashes_map(item.get("hashes")).get("SHA256")
+    }
+    merged_files: list[Any] = []
+    seen: set[str] = set()
+    for item in api_items:
+        file_id = id_value(item.get("id"))
+        sha = civitai_hashes_map(item.get("hashes")).get("SHA256", "").lower()
+        rendered = rendered_by_id.get(file_id or "") or rendered_by_sha.get(sha)
+        merged = {**item, **rendered} if rendered else dict(item)
+        if item.get("downloadUrl"):
+            merged["downloadUrl"] = item.get("downloadUrl")
+        if item.get("mirrors"):
+            merged["mirrors"] = item.get("mirrors")
+        merged["hashes"] = civitai_hashes_map(merged.get("hashes"))
+        merged_files.append(merged)
+        if file_id:
+            seen.add(file_id)
+    for item in rendered_items:
+        file_id = id_value(item.get("id"))
+        if file_id not in seen:
+            merged = dict(item)
+            merged["hashes"] = civitai_hashes_map(merged.get("hashes"))
+            merged_files.append(merged)
+    return merged_files
+
+
+def attach_civitai_tensor_metadata_summary(
+    session: requests.Session,
+    job_id: int,
+    metadata: dict[str, Any],
+    primary_file: dict[str, Any],
+) -> dict[str, Any] | None:
+    file_id = id_value(primary_file.get("id"))
+    if not file_id:
+        return None
+    api_url = f"{CIVITAI_API_BASE}/model-files/{quote(file_id, safe='')}/tensor-metadata?summaryOnly=true"
+    try:
+        db.append_log(job_id, f"civitai.model.tensor_metadata: fileId={file_id}")
+        summary = fetch_json(session, api_url, job_id=job_id)
+    except Exception as exc:
+        db.append_log(job_id, f"civitai.model.tensor_metadata.warning fileId={file_id}: {redact_sensitive_text(str(exc))}")
+        return None
+    if not isinstance(summary, dict):
+        return None
+    primary_file["tensor_metadata"] = summary
+    raw_files = metadata.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    for item in files:
+        if isinstance(item, dict) and id_value(item.get("id")) == file_id:
+            item["tensor_metadata"] = summary
+            break
+    return summary
+
+
 def civitai_text_list(value: Any) -> list[str]:
     if isinstance(value, list):
         result: list[str] = []
@@ -1751,6 +1997,9 @@ def civitai_file_details(files: list[Any]) -> list[dict[str, Any]]:
             continue
         raw_metadata = item.get("metadata")
         file_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+        hashes = civitai_hashes_map(item.get("hashes"))
+        raw_tensor_metadata = item.get("tensor_metadata")
+        tensor_metadata = raw_tensor_metadata if isinstance(raw_tensor_metadata, dict) else {}
         detail = {
             "id": id_value(item.get("id")),
             "name": text_value(item.get("name")),
@@ -1760,8 +2009,14 @@ def civitai_file_details(files: list[Any]) -> list[dict[str, Any]]:
             "format": text_value(file_metadata.get("format")),
             "fp": text_value(file_metadata.get("fp")),
             "size": text_value(file_metadata.get("size")),
+            "is_required": file_metadata.get("isRequired") if isinstance(file_metadata.get("isRequired"), bool) else None,
+            "hashes": {str(key): text_value(value) for key, value in hashes.items() if text_value(value)},
+            "scanned_at": text_value(item.get("scannedAt")),
+            "pickle_scan_result": text_value(item.get("pickleScanResult")),
+            "virus_scan_result": text_value(item.get("virusScanResult")),
+            "tensor_metadata": tensor_metadata,
         }
-        details.append({key: value for key, value in detail.items() if value not in (None, "")})
+        details.append({key: value for key, value in detail.items() if value not in (None, "", {})})
     return details
 
 
@@ -1790,6 +2045,12 @@ def civitai_model_details(
             "description_html": model_description_html,
             "tags": civitai_text_list(model_page.get("tags")),
             "stats": model_page.get("stats") if isinstance(model_page.get("stats"), dict) else {},
+            "availability": text_value(model_page.get("availability")),
+            "base_models": civitai_text_list(model_page.get("baseModels")),
+            "supports_generation": (
+                model_page.get("supportsGeneration") if isinstance(model_page.get("supportsGeneration"), bool) else None
+            ),
+            "nsfw_level": model_page.get("nsfwLevel"),
             "nsfw": model_page.get("nsfw"),
             "poi": model_page.get("poi"),
         },
@@ -1797,6 +2058,13 @@ def civitai_model_details(
             "id": version_id,
             "name": text_value(version_metadata.get("name")),
             "base_model": text_value(version_metadata.get("baseModel")),
+            "base_model_type": text_value(version_metadata.get("baseModelType")),
+            "status": text_value(version_metadata.get("status")),
+            "availability": text_value(version_metadata.get("availability")),
+            "created_at": text_value(version_metadata.get("createdAt")),
+            "published_at": text_value(version_metadata.get("publishedAt")),
+            "nsfw_level": version_metadata.get("nsfwLevel"),
+            "covered": version_metadata.get("covered") if isinstance(version_metadata.get("covered"), bool) else None,
             "description": html_to_text(version_description_html),
             "description_html": version_description_html,
             "trained_words": civitai_text_list(version_metadata.get("trainedWords") or version_metadata.get("trained_words")),
@@ -2892,23 +3160,39 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
         raise ValueError("Civitai modelVersionId를 결정하지 못했습니다.")
 
     check_job_control(job_id)
+    model_id = civitai_model_id_from_metadata(parsed, metadata)
+    rendered_model_page_metadata = fetch_civitai_rendered_model_page_metadata(session, job_id, model_id)
+    model_page_metadata = merge_civitai_model_page_metadata(model_page_metadata, rendered_model_page_metadata)
+    if rendered_model_page_metadata:
+        metadata = merge_civitai_version_metadata(
+            metadata,
+            next(
+                (
+                    item
+                    for item in rendered_model_page_metadata.get("modelVersions", [])
+                    if isinstance(item, dict) and id_value(item.get("id")) == id_value(version_id)
+                ),
+                None,
+            ),
+        )
     archive_info = classify_civitai(metadata, version_id, model_name, file_selector)
     raw_primary_file = archive_info.get("primary_file")
     primary_file = raw_primary_file if isinstance(raw_primary_file, dict) else {}
-
-    download_urls = civitai_download_urls(parsed, metadata, primary_file, version_id)
+    raw_files = metadata.get("files")
+    files = raw_files if isinstance(raw_files, list) else []
+    required_component_files = civitai_required_component_files(parsed, files, primary_file)
 
     target = base_target(parsed, *archive_info["target_parts"], archive_info=archive_info)
     target.mkdir(parents=True, exist_ok=True)
     update_job_archive_info(job_id, target, archive_info, metadata)
 
-    model_id = civitai_model_id_from_metadata(parsed, metadata)
     model_page_metadata = fetch_civitai_model_page_metadata(
         session,
         job_id,
         model_id,
         existing=model_page_metadata,
     )
+    tensor_metadata_summary = attach_civitai_tensor_metadata_summary(session, job_id, metadata, primary_file)
     model_details = civitai_model_details(
         model_page_metadata,
         metadata,
@@ -2933,58 +3217,162 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
             update_job_archive_info(job_id, target, archive_info, metadata)
         write_metadata(target, CIVITAI_MODEL_GENERATION_METADATA_FILENAME, generation_metadata)
 
-    write_metadata(
-        target,
-        "_civitai_metadata.json",
-        {
-            **metadata_stamp(),
-            "source": "civitai",
-            "model_name": model_name,
-            "model_id": model_id,
-            "version_id": version_id,
-            "hash": parsed.civitai_hash,
-            "file_selector": file_selector,
-            "generation_metadata": generation_metadata_summary,
-            "model_details": model_details,
-            "raw_input": parsed.raw_input,
-            "archive_info": archive_info,
-            "metadata": metadata,
-            "model_page_metadata": model_page_metadata,
-        },
-    )
+    metadata_sidecar = {
+        **metadata_stamp(),
+        "source": "civitai",
+        "model_name": model_name,
+        "model_id": model_id,
+        "version_id": version_id,
+        "hash": parsed.civitai_hash,
+        "file_selector": file_selector,
+        "generation_metadata": generation_metadata_summary,
+        "tensor_metadata": tensor_metadata_summary,
+        "model_details": model_details,
+        "component_downloads": [],
+        "raw_input": parsed.raw_input,
+        "archive_info": archive_info,
+        "metadata": metadata,
+        "model_page_metadata": model_page_metadata,
+    }
+    write_metadata(target, "_civitai_metadata.json", metadata_sidecar)
 
     existing_model = civitai_existing_model_file(target) if parsed.civitai_refresh else None
-    if existing_model is not None:
-        db.append_log(job_id, f"Civitai refresh: existing model file kept: {existing_model.name}")
-        try:
-            size = existing_model.stat().st_size
-        except OSError:
-            size = 0
-        db.update_job(job_id, filename=existing_model.name, progress_bytes=size, total_bytes=size or None)
-        return
+    download_entries: list[dict[str, Any]] = [
+        {
+            "role": "primary",
+            "file": primary_file,
+            "urls": civitai_download_urls(parsed, metadata, primary_file, version_id),
+            "filename": civitai_expected_filename(primary_file, f"model_{version_id}.bin"),
+            "required": True,
+        }
+    ]
+    for index, component_file in enumerate(required_component_files, start=1):
+        download_entries.append(
+            {
+                "role": "required_component",
+                "file": component_file,
+                "urls": civitai_file_download_urls(component_file),
+                "filename": civitai_expected_filename(component_file, f"component_{index}.bin"),
+                "required": True,
+            }
+        )
 
-    if not download_urls:
-        raise ValueError("Civitai download URL을 찾지 못했습니다.")
-
-    saved = None
-    last_error: Exception | None = None
-    for index, download_url in enumerate(download_urls, start=1):
-        try:
-            check_job_control(job_id)
-            db.append_log(
-                job_id,
-                f"Civitai file download: version={version_id} url={redact_sensitive_text(download_url)}",
+    total_planned_bytes = sum(civitai_file_size_bytes(entry["file"]) for entry in download_entries)
+    downloaded_bytes = 0
+    saved_paths: list[Path] = []
+    component_downloads: list[dict[str, Any]] = []
+    for entry_index, entry in enumerate(download_entries, start=1):
+        file = entry["file"]
+        filename = str(entry["filename"])
+        role = str(entry["role"])
+        urls = [str(url) for url in entry["urls"] if str(url)]
+        record = {
+            "role": role,
+            "name": text_value(file.get("name")),
+            "type": text_value(file.get("type")),
+            "filename": filename,
+            "required": bool(entry.get("required")),
+            "metadata": civitai_file_metadata(file),
+        }
+        expected_path = target / filename
+        existing_path = None
+        if parsed.civitai_refresh and role == "primary" and existing_model is not None:
+            existing_path = existing_model
+        elif parsed.civitai_refresh and expected_path.exists() and expected_path.is_file():
+            existing_path = expected_path
+        if existing_path is not None:
+            try:
+                existing_size = existing_path.stat().st_size
+            except OSError:
+                existing_size = 0
+            downloaded_bytes += existing_size
+            saved_paths.append(existing_path)
+            record.update(
+                {
+                    "status": "kept",
+                    "local_file": existing_path.name,
+                    "downloaded_size": existing_size,
+                    "downloaded_size_human": human_bytes(existing_size),
+                }
             )
-            saved = stream_download(job_id, session, download_url, target)
-            break
-        except requests.RequestException as exc:
-            last_error = exc
-            db.append_log(job_id, f"Civitai download failed ({index}/{len(download_urls)}): {exc}")
+            component_downloads.append(record)
+            log_role = "model" if role == "primary" else role
+            db.append_log(job_id, f"Civitai refresh: existing {log_role} file kept: {existing_path.name}")
+            db.update_job(
+                job_id,
+                filename=f"{entry_index}/{len(download_entries)} files",
+                progress_bytes=downloaded_bytes,
+                total_bytes=total_planned_bytes or downloaded_bytes or None,
+            )
+            continue
 
-    if saved is None:
-        raise RuntimeError(f"Civitai download failed: {last_error}")
+        if not urls:
+            raise ValueError(f"Civitai download URL을 찾지 못했습니다: {filename}")
 
-    db.update_job(job_id, filename=saved.name)
+        saved = None
+        last_error: Exception | None = None
+        for url_index, download_url in enumerate(urls, start=1):
+            try:
+                check_job_control(job_id)
+                db.append_log(
+                    job_id,
+                    f"Civitai file download: version={version_id} file={filename} "
+                    f"({entry_index}/{len(download_entries)}) url={redact_sensitive_text(download_url)}",
+                )
+                stream_kwargs: dict[str, Any] = {"filename_override": filename}
+                if len(download_entries) > 1:
+                    stream_kwargs.update(
+                        {
+                            "progress_base": downloaded_bytes,
+                            "progress_total": total_planned_bytes or None,
+                        }
+                    )
+                saved = stream_download(job_id, session, download_url, target, **stream_kwargs)
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                db.append_log(job_id, f"Civitai download failed ({url_index}/{len(urls)}): {exc}")
+
+        if saved is None:
+            raise RuntimeError(f"Civitai download failed: {filename}: {last_error}")
+
+        saved_size = saved.stat().st_size
+        downloaded_bytes += saved_size
+        saved_paths.append(saved)
+        record.update(
+            {
+                "status": "downloaded",
+                "local_file": saved.name,
+                "downloaded_size": saved_size,
+                "downloaded_size_human": human_bytes(saved_size),
+            }
+        )
+        component_downloads.append(record)
+        db.update_job(
+            job_id,
+            filename=f"{entry_index}/{len(download_entries)} files",
+            progress_bytes=downloaded_bytes,
+            total_bytes=total_planned_bytes or downloaded_bytes,
+        )
+
+    metadata_sidecar["component_downloads"] = component_downloads
+    write_metadata(target, "_civitai_metadata.json", metadata_sidecar)
+    if generation_metadata is not None:
+        generation_metadata["component_downloads"] = component_downloads
+        write_metadata(target, CIVITAI_MODEL_GENERATION_METADATA_FILENAME, generation_metadata)
+
+    if saved_paths:
+        primary_saved = saved_paths[0]
+        if len(saved_paths) == 1:
+            db.update_job(job_id, filename=primary_saved.name, progress_bytes=downloaded_bytes, total_bytes=total_planned_bytes or downloaded_bytes)
+        else:
+            db.update_job(
+                job_id,
+                filename=f"{len(saved_paths)} files",
+                progress_bytes=downloaded_bytes,
+                total_bytes=total_planned_bytes or downloaded_bytes,
+                precision=f"{len(saved_paths)} files",
+            )
 
 
 def download_generic(job_id: int, parsed: ParsedDownload) -> None:
@@ -3051,6 +3439,7 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
 
     saved_files: list[Path] = []
     downloaded_bytes = 0
+    failed_file_count = 0
     for entry_index, entry in enumerate(entries, start=1):
         media_download_url = str(entry.pop("_media_download_url", "") or "")
         local_parts = [str(part) for part in entry.pop("_local_parts", []) if str(part)]
@@ -3064,15 +3453,29 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
         file_target = safe_join(target, *local_parts[:-1]) if len(local_parts) > 1 else target
         filename = local_parts[-1]
         db.append_log(job_id, f"ASMR.one file {len(saved_files) + 1}/{downloadable_count}: {entry.get('local_path') or filename}")
-        saved = stream_download(
-            job_id,
-            session,
-            download_url,
-            file_target,
-            filename_override=filename,
-            progress_base=downloaded_bytes,
-            progress_total=total_size or None,
-        )
+        try:
+            saved = stream_download(
+                job_id,
+                session,
+                download_url,
+                file_target,
+                filename_override=filename,
+                progress_base=downloaded_bytes,
+                progress_total=total_size or None,
+            )
+        except JobControlStop:
+            raise
+        except Exception as exc:
+            failed_file_count += 1
+            entry["download_status"] = "failed"
+            entry["download_error"] = redact_sensitive_text(str(exc))
+            cleanup_empty_child_dirs(file_target, target)
+            db.append_log(
+                job_id,
+                f"ASMR.one file warning {entry_index}/{downloadable_count}: "
+                f"{entry.get('local_path') or filename}: {redact_sensitive_text(str(exc))}",
+            )
+            continue
         saved_files.append(saved)
         saved_size = saved.stat().st_size
         downloaded_bytes += saved_size
@@ -3088,6 +3491,8 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
 
     if downloadable_count == 0:
         raise RuntimeError("ASMR.one tracks API did not include downloadable media URLs.")
+    if not saved_files:
+        raise RuntimeError(f"ASMR.one file downloads failed: {failed_file_count}/{downloadable_count}")
 
     manifest = {
         **metadata_stamp(),
@@ -3098,6 +3503,7 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
         "title": title,
         "file_count": len(entries),
         "downloaded_file_count": len(saved_files),
+        "failed_file_count": failed_file_count,
         "total_size": total_size,
         "total_size_human": human_bytes(total_size),
         "download_url_strategy": "Use mediaDownloadUrl with action=download; ignore mediaStreamUrl.",
@@ -3123,6 +3529,7 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
             "nsfw": work.get("nsfw"),
             "file_count": len(entries),
             "downloaded_file_count": len(saved_files),
+            "failed_file_count": failed_file_count,
             "total_size": total_size,
             "downloaded_size": downloaded_bytes,
             "model_category": "ASMR.one Work",
@@ -3143,7 +3550,8 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
             "model_category": "ASMR.one Work",
             "file_count": len(entries),
             "downloaded_file_count": len(saved_files),
-            "precision": f"{len(saved_files)} files",
+            "failed_file_count": failed_file_count,
+            "precision": f"{len(saved_files)} files" if not failed_file_count else f"{len(saved_files)} files, {failed_file_count} failed",
         },
     )
     write_metadata(target, "_asmrone_tracks.json", {"source": "asmrone", "tracks": asmrone_redacted_tracks(tracks)})
@@ -3154,15 +3562,31 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
         filename=f"{len(saved_files)} files",
         progress_bytes=final_size,
         total_bytes=final_size,
-        precision=f"{len(saved_files)} files",
+        precision=f"{len(saved_files)} files" if not failed_file_count else f"{len(saved_files)} files, {failed_file_count} failed",
         model_category="ASMR.one Work",
         file_format="audio",
         thumbnail_url=thumbnail_url_for_path(target) or None,
     )
     db.append_log(
         job_id,
-        f"ASMR.one work saved: {target} ({len(saved_files)} files, {human_bytes(final_size)})",
+        f"ASMR.one work saved: {target} "
+        f"({len(saved_files)} files, failed={failed_file_count}, {human_bytes(final_size)})",
     )
+
+
+def cleanup_empty_child_dirs(path: Path, stop_at: Path) -> None:
+    stop = stop_at.resolve()
+    current = path
+    while current.resolve() != stop:
+        try:
+            current.resolve().relative_to(stop)
+        except ValueError:
+            break
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
 
 
 def fetch_json_value(session: requests.Session, url: str, job_id: int | None = None) -> Any:
