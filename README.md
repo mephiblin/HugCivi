@@ -102,9 +102,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 ## 설치 A: Portainer + Repository
 
-Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GHCR에 배포된 `ghcr.io/mephiblin/hugcivi:latest`입니다.
-
-배포 상태(2026-07-03): GHCR `latest`는 현재 `sha-625957b`와 같은 이미지입니다. 이 공개 이미지는 YouTube/라이브러리 수정까지 포함하지만, 소스에 추가된 ASMR.one work 다운로드는 아직 새 이미지로 빌드/푸시되지 않았습니다. Portainer/Synology에서 ASMR.one 기능을 쓰려면 ASMR.one 커밋 이후 이미지를 빌드/푸시한 뒤 `HUGCIVI_IMAGE`에 해당 태그를 지정하세요.
+Portainer의 Repository stack은 Git 저장소 내부의 `build:` 컨텍스트를 환경에 따라 빌드하지 못할 수 있습니다. Repository 방식에서는 미리 빌드된 컨테이너 이미지를 `image:`로 참조합니다. 기본 이미지는 GHCR에 배포된 `ghcr.io/mephiblin/hugcivi:latest`입니다. 새 기능을 배포한 뒤에는 Portainer에서 이미지를 다시 pull하거나 stack을 재배포하세요.
 
 1. NAS에 모델 저장 폴더를 만듭니다.
 
@@ -338,7 +336,7 @@ ASMR.one work URL은 `/data/asmr.one/{source_id} - {title}` 아래에 API track 
 
 작업 폴더에는 `_asmrone_metadata.json`, `_asmrone_tracks.json`, `_asmrone_manifest.json`, `_archive_metadata.json` sidecar가 함께 저장됩니다.
 
-저장된 MP3, M4A, FLAC, WAV 같은 오디오 파일은 라이브러리 미디어 뷰어에서 바로 재생할 수 있습니다.
+저장된 MP3, M4A, FLAC, WAV 같은 오디오 파일은 라이브러리 미디어 뷰어에서 바로 재생할 수 있습니다. `.txt`, `.md`, `.markdown` 파일은 같은 뷰어에서 안전한 텍스트 문서로 읽을 수 있으며, Markdown은 HTML로 실행하지 않고 텍스트로 표시합니다.
 
 ### gallery-dl 범용 다운로드
 

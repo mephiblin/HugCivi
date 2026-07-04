@@ -505,6 +505,8 @@ def test_job_summary_query_omits_heavy_fields_and_supports_cursor(app_modules: t
     first_page = db.list_job_summaries(limit=2)
     response = main.api_jobs(limit=2, cursor=ids[-1], _="_")
     payload = json.loads(response.body.decode("utf-8"))
+    page_response = main.api_jobs(limit=2, page=2, _="_")
+    page_payload = json.loads(page_response.body.decode("utf-8"))
 
     assert len(first_page) == 2
     assert "log" not in first_page[0]
@@ -512,6 +514,12 @@ def test_job_summary_query_omits_heavy_fields_and_supports_cursor(app_modules: t
     assert payload["ok"] is True
     assert [job["id"] for job in payload["jobs"]] == [ids[1], ids[0]]
     assert payload["next_cursor"] == ids[0]
+    assert page_payload["ok"] is True
+    assert page_payload["page"] == 2
+    assert page_payload["limit"] == 2
+    assert page_payload["total_count"] == 3
+    assert page_payload["total_pages"] == 2
+    assert [job["id"] for job in page_payload["jobs"]] == [ids[0]]
 
 
 def test_database_backup_uses_sqlite_backup_api(app_modules: tuple) -> None:
@@ -991,6 +999,18 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'data-job-action="goto-folder"' in template
     assert 'function goToJobFolder(jobId)' in template
     assert 'body.innerHTML = \'<tr><td colspan="10" class="empty-row">아직 작업이 없습니다.</td></tr>\';' in template
+    assert 'id="jobs-pagination"' in template
+    assert "const initialJobsPage =" in template
+    assert "function renderJobsPagination()" in template
+    assert "data-jobs-page" in template
+    assert "fetch(`/api/jobs?${params.toString()}`)" in template
+    assert "coverUrl:" in template
+    assert "media-audio-cover" in template
+    assert ".media-audio-cover" in stylesheet
+    assert "'document'" in template
+    assert "setupMediaDocument(item)" in template
+    assert "media-document-text" in template
+    assert ".media-document-panel" in stylesheet
     assert 'data-action="create-folder"' in template
     assert 'id="folder-create-modal"' in template
     assert 'id="folder-move-modal"' in template
@@ -1019,6 +1039,7 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".folder-search-form" in stylesheet
     assert ".folder-refresh-button" in stylesheet
     assert ".col-move" in stylesheet
+    assert ".jobs-pagination" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet
@@ -1343,6 +1364,76 @@ def test_media_item_payload_exposes_sidecar_subtitles(app_modules: tuple) -> Non
     assert payload["subtitles"][0]["label"] == "한국어"
     assert payload["subtitles"][1]["label"] == "English"
     assert payload["subtitles"][0]["url"].startswith("/api/media/subtitle?path=gallery-dl/youtube.com/video-abc123/")
+
+
+def test_audio_archive_uses_folder_cover_for_card_and_media_items(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "asmr.one" / "RJ123456 - Sample"
+    target.mkdir(parents=True)
+    (target / "cover.jpg").write_bytes(b"\xff\xd8\xff\xe0cover")
+    (target / "01_sample.mp3").write_bytes(b"audio")
+    (target / "_archive_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "asmrone",
+                "title": "Sample ASMR",
+                "model_category": "ASMR.one Work",
+                "file_format": "audio",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = main.library_item_for_path(target, set())
+    response = main.api_media_list(path="asmr.one/RJ123456 - Sample", _="_")
+    payload = json.loads(response.body.decode("utf-8"))
+    audio_item = next(item for item in payload["items"] if item["type"] == "audio")
+
+    assert row["thumbnail_url"].endswith("cover.jpg")
+    assert payload["cover_url"].endswith("cover.jpg")
+    assert audio_item["thumbnail_url"].endswith("cover.jpg")
+    assert audio_item["cover_url"].endswith("cover.jpg")
+
+
+def test_text_and_markdown_files_are_readable_media_cards(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "asmr.one" / "RJ123456 - Notes"
+    target.mkdir(parents=True)
+    text_file = target / "00_readme_ろまあぽ.txt"
+    markdown_file = target / "notes.md"
+    text_file.write_text("こんにちは\n<script>alert(1)</script>", encoding="utf-8")
+    markdown_file.write_text("# Title\n\n**bold**", encoding="utf-8")
+
+    row = main.library_item_for_path(target, set())
+    media_response = main.api_media_list(path="asmr.one/RJ123456 - Notes", _="_")
+    media_payload = json.loads(media_response.body.decode("utf-8"))
+    text_response = main.api_media_text(path="asmr.one/RJ123456 - Notes/00_readme_ろまあぽ.txt", _="_")
+    text_payload = json.loads(text_response.body.decode("utf-8"))
+
+    document_items = [item for item in media_payload["items"] if item["type"] == "document"]
+    assert row["has_media"] is True
+    assert row["model_category"] == "Document Archive"
+    assert row["file_format"] == "text"
+    assert len(document_items) == 2
+    assert document_items[0]["text_url"].startswith("/api/media/text?path=asmr.one/RJ123456%20-%20Notes/")
+    by_name = {item["name"]: item for item in document_items}
+    assert by_name["notes.md"]["mime_type"].startswith("text/markdown")
+    assert text_payload["text"] == "こんにちは\n<script>alert(1)</script>"
+    assert text_payload["encoding"] == "utf-8-sig"
+    assert text_payload["truncated"] is False
+
+
+def test_media_text_endpoint_limits_large_documents(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    note = data_root / "notes.txt"
+    note.write_text("x" * (main.DOCUMENT_TEXT_MAX_BYTES + 32), encoding="utf-8")
+
+    response = main.api_media_text(path="notes.txt", _="_")
+    payload = json.loads(response.body.decode("utf-8"))
+
+    assert payload["truncated"] is True
+    assert payload["read_bytes"] == main.DOCUMENT_TEXT_MAX_BYTES
+    assert len(payload["text"]) == main.DOCUMENT_TEXT_MAX_BYTES
 
 
 def test_media_subtitle_endpoint_converts_srt_to_vtt(app_modules: tuple) -> None:

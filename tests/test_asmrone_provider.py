@@ -232,6 +232,86 @@ def test_asmrone_keeps_successful_files_when_optional_entry_fails() -> None:
     assert any("ASMR.one file warning" in message for message in fake_db.logs)
 
 
+def test_asmrone_downloads_cover_and_discards_cloudflare_image_response() -> None:
+    parsed = ParsedDownload(
+        source="asmrone",
+        raw_input="https://asmr.one/work/RJ01589746",
+        asmrone_url="https://asmr.one/work/RJ01589746",
+        asmrone_work_id="01589746",
+        asmrone_source_id="RJ01589746",
+    )
+    work = {
+        "id": 1589746,
+        "source_id": "RJ01589746",
+        "title": "Sample Work",
+        "mainCoverUrl": "https://api.asmr.one/api/cover/1589746.jpg?type=main",
+    }
+    tracks = [
+        {
+            "type": "audio",
+            "title": "01_sample.mp3",
+            "size": 4,
+            "mediaDownloadUrl": "https://download.example/audio.mp3",
+        },
+        {
+            "type": "folder",
+            "title": "イラスト",
+            "children": [
+                {
+                    "type": "image",
+                    "title": "高画質パッケージイラスト.png",
+                    "size": 7_346_472,
+                    "mediaDownloadUrl": "https://download.example/cloudflare-warning.png",
+                }
+            ],
+        },
+    ]
+    fake_db = FakeDb()
+
+    def fake_stream_download(
+        _job_id: int,
+        _session: object,
+        url: str,
+        target_dir: Path,
+        filename_override: str | None = None,
+        **_kwargs: object,
+    ) -> Path:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved = target_dir / (filename_override or "download.bin")
+        if "cover/1589746" in url:
+            saved.write_bytes(b"\xff\xd8\xff\xe0cover")
+        elif "cloudflare-warning" in url:
+            saved.write_bytes(b"<!doctype html><html><body>Cloudflare Terms of Service</body></html>")
+        else:
+            saved.write_bytes(b"ok")
+        return saved
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "data"
+        with (
+            mock.patch.object(downloader, "DATA_ROOT", root),
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.object(downloader, "fetch_json_value", side_effect=[work, tracks]),
+            mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+        ):
+            downloader.download_asmrone(77, parsed)
+
+        target = Path(str(fake_db.job["target_dir"]))
+        manifest = json.loads((target / "_asmrone_manifest.json").read_text(encoding="utf-8"))
+        archive_metadata = json.loads((target / "_archive_metadata.json").read_text(encoding="utf-8"))
+        cover_exists = (target / "cover.jpg").exists()
+        warning_exists = (target / "イラスト" / "高画質パッケージイラスト.png").exists()
+
+    assert cover_exists
+    assert not warning_exists
+    assert manifest["cover_file"] == "cover.jpg"
+    assert manifest["failed_file_count"] == 1
+    assert manifest["files"][1]["download_status"] == "failed"
+    assert "HTML error page" in manifest["files"][1]["download_error"]
+    assert archive_metadata["cover_file"] == "cover.jpg"
+    assert fake_db.job["thumbnail_url"].endswith("cover.jpg")
+
+
 def test_asmrone_manifest_entries_preserve_japanese_paths() -> None:
     tracks = [
         {

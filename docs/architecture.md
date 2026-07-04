@@ -170,7 +170,7 @@ Provider keys are intentionally coarse for major services and host-based for gen
 
 Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
 
-ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, creates Unicode-safe local track paths, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json`. `_asmrone_manifest.json` records per-file status and partial failures so the library can recover an archive when at least one file downloaded.
+ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, creates Unicode-safe local track paths, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Work cover URLs such as `mainCoverUrl` are downloaded separately as `cover.jpg` when available. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json`. `_asmrone_manifest.json` records per-file status and partial failures so the library can recover an archive when at least one file downloaded. Image attachments that resolve to Cloudflare HTML/error-placeholder responses are discarded and recorded as failed entries rather than kept as broken local images.
 
 ## Internal Job Flow
 
@@ -186,8 +186,10 @@ Folder ZIP:
 
 Media transcode:
 
-- `/api/media/list` recognizes image, video, and audio files
+- `/api/media/list` recognizes image, video, audio, and `.txt`/`.md`/`.markdown` document files
+- audio items inherit the archive cover URL from the first local thumbnail image under the folder, so audio cards, strip thumbnails, and the audio player can show `cover.jpg` or another local illustration
 - audio files are served directly through `/api/media/file` and do not create internal media jobs
+- document files are read through `/api/media/text`, capped to a bounded preview size, and rendered as escaped text in the viewer; Markdown is not converted to HTML
 - `/api/media/play` returns the original file if the browser can play it or a cached transcode already exists
 - on cache miss it returns `202` with `job_required`
 - `/api/media/transcode-jobs` creates a `media_transcode` job
@@ -247,7 +249,7 @@ Main API groups:
 | Addon package | `/api/addon/chrome-extension` |
 | DB maintenance | `/api/maintenance/db/wal`, checkpoint, optimize, compact, backup |
 
-`/api/jobs` keeps the legacy array response when called without a cursor. Cursor pagination returns a wrapper with `jobs` and `next_cursor`.
+`/api/jobs` keeps the legacy array response when called without pagination parameters. Cursor pagination returns a wrapper with `jobs` and `next_cursor`. Numbered pagination with `limit` and `page` returns a wrapper with `jobs`, `page`, `limit`, `total_count`, and `total_pages`; the browser job table uses this mode with 50 rows per page.
 
 Civitai resource health accepts either model-version IDs or model archive components. Model-version checks report presence from completed jobs and Civitai sidecars. Component checks require a `/data` path and compare requested component filenames against local files in that archive folder.
 

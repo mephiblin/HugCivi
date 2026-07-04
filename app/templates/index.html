@@ -246,6 +246,7 @@
             </table>
           </div>
           <div class="mobile-jobs-list" id="mobile-jobs-list" aria-live="polite"></div>
+          <nav class="jobs-pagination" id="jobs-pagination" aria-label="작업 목록 페이지"></nav>
         </section>
         <section class="subscription-work-section" id="subscription-work-section" hidden>
           <div class="subscription-work-heading">
@@ -859,6 +860,7 @@
 
   <script>
     const initialJobs = {{ jobs|tojson }};
+    const initialJobsPage = {{ jobs_page|tojson }};
     const initialLibraryItems = {{ library_items|tojson }};
     const initialStorage = {{ storage|tojson }};
     const targetInput = document.getElementById('target_subdir');
@@ -957,6 +959,7 @@
     const jobsSection = document.getElementById('jobs-section');
     const clearJobsButton = document.getElementById('clear-jobs-button');
     const mobileJobsList = document.getElementById('mobile-jobs-list');
+    const jobsPagination = document.getElementById('jobs-pagination');
     const subscriptionWorkSection = document.getElementById('subscription-work-section');
     const subscriptionWorkStatus = document.getElementById('subscription-work-status');
     const subscriptionWorkFilters = document.getElementById('subscription-work-filters');
@@ -1018,6 +1021,7 @@
     let subscriptionWorkScheduler = null;
     let subscriptionWorkPollTimer = null;
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
+    let currentJobsPage = normalizeJobsPage(initialJobsPage, currentJobs.length);
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let storageUsagePollTimer = null;
@@ -1298,6 +1302,12 @@
       if (!button) return;
       event.preventDefault();
       handleJobAction(Number(button.dataset.jobId), button.dataset.jobAction || '');
+    });
+    jobsPagination?.addEventListener('click', event => {
+      const button = event.target.closest('[data-jobs-page]');
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      refreshJobs({page: Number(button.dataset.jobsPage || 1)});
     });
     librarySort.addEventListener('change', renderLibrary);
     propertiesClose.addEventListener('click', closePropertiesModal);
@@ -1839,12 +1849,7 @@
           return;
         }
 
-        if (Array.isArray(data.jobs)) {
-          currentJobs = data.jobs;
-          renderJobs(currentJobs);
-        } else {
-          await refreshJobs();
-        }
+        await refreshJobs({page: 1});
         const failed = Array.isArray(data.failed) ? data.failed : [];
         if (failed.length) {
           bulkAddInput.value = failed.map(item => item.input || '').filter(Boolean).join('\n');
@@ -2719,12 +2724,7 @@
           hitomiListingStatus.textContent = data.detail || '대기열에 추가하지 못했습니다.';
           return;
         }
-        if (Array.isArray(data.jobs)) {
-          currentJobs = data.jobs;
-          renderJobs(currentJobs);
-        } else {
-          await refreshJobs();
-        }
+        await refreshJobs({page: 1});
         renderHitomiListing(data.listing || {});
         hitomiListingStatus.textContent = `${data.queued || 0}개 추가, ${data.skipped || 0}개 건너뜀`;
       } catch (err) {
@@ -2857,7 +2857,7 @@
           const data = await postWorkflowImportFile(file);
           const jobs = extractJobsFromImportResponse(data);
           if (jobs) {
-            replaceWorkflowJobs(jobs);
+            await replaceWorkflowJobs(jobs);
           }
         }
         showWorkflowDropOverlay('가져오기 완료', `${workflowFiles.length}개 파일 처리됨`);
@@ -2904,9 +2904,8 @@
       return null;
     }
 
-    function replaceWorkflowJobs(jobs) {
-      currentJobs.splice(0, currentJobs.length, ...jobs);
-      renderJobs(currentJobs);
+    async function replaceWorkflowJobs(jobs) {
+      await refreshJobs({page: 1});
       if (activeLibraryPath !== null) {
         renderLibrary();
       }
@@ -2931,13 +2930,31 @@
       }, delay);
     }
 
-    async function refreshJobs() {
+    function normalizeJobsPage(pageData, fallbackCount = 0) {
+      const page = Number(pageData?.page || 1);
+      const limit = Number(pageData?.limit || 50);
+      const totalCount = Number(pageData?.total_count ?? fallbackCount ?? 0);
+      const totalPages = Number(pageData?.total_pages || Math.max(1, Math.ceil(totalCount / Math.max(1, limit))));
+      return {
+        page: Number.isFinite(page) && page > 0 ? Math.floor(page) : 1,
+        limit: Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50,
+        total_count: Number.isFinite(totalCount) && totalCount > 0 ? Math.floor(totalCount) : 0,
+        total_pages: Number.isFinite(totalPages) && totalPages > 0 ? Math.floor(totalPages) : 1,
+      };
+    }
+
+    async function refreshJobs(options = {}) {
       try {
-        const response = await fetch('/api/jobs');
+        const page = Math.max(1, Number(options.page || currentJobsPage.page || 1));
+        const limit = Math.max(1, Number(options.limit || currentJobsPage.limit || 50));
+        const params = new URLSearchParams({limit: String(limit), page: String(page)});
+        const response = await fetch(`/api/jobs?${params.toString()}`);
         if (!response.ok) return;
-        const nextJobs = await response.json();
+        const data = await response.json();
+        const nextJobs = Array.isArray(data) ? data : (Array.isArray(data.jobs) ? data.jobs : []);
         const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);
         currentJobs = nextJobs;
+        currentJobsPage = normalizeJobsPage(data, currentJobs.length);
         renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
         if (refreshFoldersAfterRender) {
@@ -3114,11 +3131,6 @@
     }
 
     async function clearJobHistory() {
-      const removable = currentJobs.filter(job => !['queued', 'running', 'paused', 'pausing', 'canceling', 'deleting'].includes(job.status));
-      if (!removable.length) {
-        window.alert('지울 완료 기록이 없습니다.');
-        return;
-      }
       if (!window.confirm('완료되었거나 실패한 작업 기록을 지울까요?')) return;
       try {
         const response = await fetch('/api/jobs/clear', {method: 'POST'});
@@ -3126,10 +3138,12 @@
           window.alert('작업 기록을 지우지 못했습니다.');
           return;
         }
-        const data = await response.json();
-        currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        const data = await readJsonResponse(response);
+        if (!Number(data.deleted || 0)) {
+          window.alert('지울 완료 기록이 없습니다.');
+        }
+        await refreshJobs({page: currentJobsPage.page});
         await refreshLibraryItems({mode: 'live'});
-        renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
@@ -3141,6 +3155,7 @@
       if (!jobs.length) {
         body.innerHTML = '<tr><td colspan="10" class="empty-row">아직 작업이 없습니다.</td></tr>';
         renderMobileJobs(jobs);
+        renderJobsPagination();
         return;
       }
       body.innerHTML = jobs.map(job => {
@@ -3162,6 +3177,46 @@
         </tr>`;
       }).join('');
       renderMobileJobs(jobs);
+      renderJobsPagination();
+    }
+
+    function renderJobsPagination() {
+      if (!jobsPagination) return;
+      const totalPages = Math.max(1, Number(currentJobsPage.total_pages || 1));
+      const page = Math.max(1, Math.min(totalPages, Number(currentJobsPage.page || 1)));
+      const totalCount = Math.max(0, Number(currentJobsPage.total_count || 0));
+      if (totalPages <= 1) {
+        jobsPagination.innerHTML = totalCount ? `<span class="jobs-pagination-summary">총 ${formatCount(totalCount)}개</span>` : '';
+        return;
+      }
+      const pages = visibleJobPages(page, totalPages);
+      const buttons = pages.map(item => {
+        if (item === 'gap') return '<span class="jobs-page-gap" aria-hidden="true">...</span>';
+        const active = item === page;
+        return `<button type="button" data-jobs-page="${item}" class="${active ? 'active' : ''}" ${active ? 'aria-current="page"' : ''}>${item}</button>`;
+      }).join('');
+      jobsPagination.innerHTML = `
+        <span class="jobs-pagination-summary">총 ${formatCount(totalCount)}개 · ${formatCount(page)} / ${formatCount(totalPages)}</span>
+        <div class="jobs-page-buttons">
+          <button type="button" data-jobs-page="${Math.max(1, page - 1)}" ${page <= 1 ? 'disabled' : ''}>이전</button>
+          ${buttons}
+          <button type="button" data-jobs-page="${Math.min(totalPages, page + 1)}" ${page >= totalPages ? 'disabled' : ''}>다음</button>
+        </div>
+      `;
+    }
+
+    function visibleJobPages(page, totalPages) {
+      const pages = new Set([1, totalPages, page - 2, page - 1, page, page + 1, page + 2]);
+      const sorted = Array.from(pages)
+        .filter(value => value >= 1 && value <= totalPages)
+        .sort((left, right) => left - right);
+      const result = [];
+      sorted.forEach(value => {
+        const previous = result[result.length - 1];
+        if (typeof previous === 'number' && value - previous > 1) result.push('gap');
+        result.push(value);
+      });
+      return result;
     }
 
     function renderMobileJobs(jobs) {
@@ -3266,10 +3321,9 @@
           window.alert(message);
           return;
         }
-        const data = await response.json();
-        currentJobs = Array.isArray(data.jobs) ? data.jobs : [];
+        await readJsonResponse(response);
+        await refreshJobs({page: currentJobsPage.page});
         await refreshLibraryItems();
-        renderJobs(currentJobs);
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
@@ -3636,13 +3690,8 @@
           window.alert(message);
           return;
         }
-        const data = await response.json();
-        if (Array.isArray(data.jobs)) {
-          currentJobs = data.jobs;
-          renderJobs(currentJobs);
-        } else {
-          await refreshJobs();
-        }
+        await readJsonResponse(response);
+        await refreshJobs({page: 1});
         await refreshLibraryItems();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
@@ -3944,19 +3993,30 @@
       if (!item || typeof item !== 'object') return null;
       const type = normalizeMediaType(item.type || item.kind || item.media_type || item.mediaType || item.mime_type || item.mimeType || item.url || item.stream_url || item.preview_url || item.path);
       const url = item.url || item.stream_url || item.streamUrl || item.src || '';
-      if (!['image', 'video', 'audio'].includes(type)) return null;
+      const textUrl = item.text_url || item.textUrl || '';
+      if (!['image', 'video', 'audio', 'document'].includes(type)) return null;
       const path = normalizePath(item.path || '');
-      if (!url && type !== 'video') return null;
+      if (!url && type !== 'video' && !(type === 'document' && textUrl)) return null;
       if (!url && !path) return null;
       const name = item.name || item.filename || (path ? path.split('/').pop() : '') || `media-${index + 1}`;
-      const previewUrl = item.preview_url || item.previewUrl || item.thumbnail_url || item.thumbnailUrl || (type === 'image' ? url : '');
+      const coverUrl = item.cover_url || item.coverUrl || '';
+      const previewUrl = item.preview_url || item.previewUrl || item.thumbnail_url || item.thumbnailUrl || coverUrl || (type === 'image' ? url : '');
       return {
         id: item.id || path || name || index,
         type,
         name,
         path,
         url,
+        textUrl,
         previewUrl,
+        coverUrl: coverUrl || (type === 'audio' ? previewUrl : ''),
+        documentText: typeof item.text === 'string' ? item.text : '',
+        documentLoading: false,
+        documentLoaded: typeof item.text === 'string',
+        documentError: '',
+        documentTruncated: Boolean(item.truncated),
+        documentEncoding: item.encoding || '',
+        documentFormat: item.format || item.document_format || item.documentFormat || '',
         posterUrl: item.poster_url || item.posterUrl || previewUrl,
         playReady: item.play_ready !== false && item.playReady !== false && Boolean(url),
         playJobRequired: Boolean(item.play_job_required || item.playJobRequired || (type === 'video' && !url)),
@@ -4012,8 +4072,12 @@
       if (text.startsWith('video/') || /\.(m4v|mov|mp4|ogg|ogv|webm)(\?|#|$)/i.test(text) || text === 'video') {
         return 'video';
       }
+      if (text.startsWith('text/') || /\.(md|markdown|txt)(\?|#|$)/i.test(text) || ['document', 'markdown', 'text'].includes(text)) {
+        return 'document';
+      }
       if (text.includes('video')) return 'video';
       if (text.includes('audio')) return 'audio';
+      if (text.includes('markdown') || text.includes('text')) return 'document';
       return text.includes('image') ? 'image' : '';
     }
 
@@ -4564,6 +4628,7 @@
       mediaNext.disabled = mediaIndex >= mediaItems.length - 1;
       mediaDisplay.classList.toggle('video-active', item.type === 'video');
       mediaDisplay.classList.toggle('audio-active', item.type === 'audio');
+      mediaDisplay.classList.toggle('document-active', item.type === 'document');
       mediaDisplay.classList.remove('image-scroll-active');
       mediaDisplay.innerHTML = renderMediaDisplay(item);
       if (item.type === 'video') {
@@ -4573,6 +4638,8 @@
         }
       } else if (item.type === 'image') {
         setupMediaImageFit();
+      } else if (item.type === 'document') {
+        setupMediaDocument(item);
       }
       mediaItemTitle.textContent = item.name || `${mediaIndex + 1}`;
       mediaItemMeta.textContent = mediaItemMetaText(item);
@@ -4668,15 +4735,75 @@
       }
       if (item.type === 'audio') {
         const typeAttr = item.mimeType ? ` type="${escapeHtml(item.mimeType)}"` : '';
+        const coverUrl = item.coverUrl || item.previewUrl || '';
+        const coverMarkup = coverUrl
+          ? `<img class="media-audio-cover" src="${escapeHtml(coverUrl)}" alt="${escapeHtml(item.name || 'album cover')}">`
+          : '<div class="media-audio-icon" aria-hidden="true">AUD</div>';
         return `<div class="media-audio-panel">
-          <div class="media-audio-icon" aria-hidden="true">AUD</div>
+          ${coverMarkup}
           <audio class="media-audio" controls preload="metadata">
             <source src="${escapeHtml(item.url)}"${typeAttr}>
             이 브라우저에서 재생할 수 없는 오디오입니다.
           </audio>
         </div>`;
       }
+      if (item.type === 'document') {
+        if (item.documentError) {
+          return `<div class="media-document-panel">
+            <div class="media-document-error">${escapeHtml(item.documentError)}</div>
+          </div>`;
+        }
+        if (!item.documentLoaded) {
+          return `<div class="media-document-panel" data-document-viewer>
+            <div class="media-loading">${escapeHtml(item.documentLoading ? '문서를 읽는 중' : '문서 읽기 대기')}</div>
+          </div>`;
+        }
+        const truncated = item.documentTruncated
+          ? '<div class="media-document-notice">파일이 커서 앞부분만 표시합니다.</div>'
+          : '';
+        return `<div class="media-document-panel">
+          ${truncated}
+          <pre class="media-document-text">${escapeHtml(item.documentText || '')}</pre>
+        </div>`;
+      }
       return `<img class="media-image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name || 'media')}">`;
+    }
+
+    async function setupMediaDocument(item) {
+      if (!item || item.type !== 'document' || item.documentLoaded || item.documentLoading) return;
+      const url = item.textUrl || item.url;
+      if (!url) {
+        item.documentError = '문서 URL을 찾지 못했습니다.';
+        mediaDisplay.innerHTML = renderMediaDisplay(item);
+        return;
+      }
+      item.documentLoading = true;
+      mediaDisplay.innerHTML = renderMediaDisplay(item);
+      try {
+        const response = await fetch(url);
+        const data = await readJsonResponse(response);
+        if (!response.ok || data.ok === false) {
+          item.documentError = data.detail || '문서를 읽지 못했습니다.';
+          item.documentLoaded = false;
+        } else {
+          item.documentText = String(data.text || '');
+          item.documentTruncated = Boolean(data.truncated);
+          item.documentEncoding = data.encoding || item.documentEncoding || '';
+          item.documentFormat = data.format || item.documentFormat || '';
+          item.sizeBytes = Number(data.size_bytes ?? item.sizeBytes) || item.sizeBytes;
+          item.documentLoaded = true;
+          item.documentError = '';
+        }
+      } catch (err) {
+        item.documentError = '네트워크 요청을 완료하지 못했습니다.';
+      } finally {
+        item.documentLoading = false;
+        if (mediaItems[mediaIndex] === item) {
+          mediaDisplay.innerHTML = renderMediaDisplay(item);
+          mediaItemMeta.textContent = mediaItemMetaText(item);
+          renderMediaStrip();
+        }
+      }
     }
 
     function setupMediaPlayer(item) {
@@ -4922,10 +5049,10 @@
         const label = item.name || `${index + 1}`;
         const preview = item.previewUrl
           ? `<img src="${escapeHtml(item.previewUrl)}" alt="">`
-          : `<div class="media-thumb-placeholder">${item.type === 'video' ? 'VID' : (item.type === 'audio' ? 'AUD' : 'IMG')}</div>`;
+          : `<div class="media-thumb-placeholder">${mediaTypeShortLabel(item.type)}</div>`;
         return `<button type="button" class="media-thumb ${index === mediaIndex ? 'active' : ''}" data-media-index="${index}" aria-label="${escapeHtml(label)}">
           <span class="media-thumb-frame">${preview}</span>
-          <span class="media-thumb-kind">${escapeHtml(item.type === 'video' ? 'VIDEO' : (item.type === 'audio' ? 'AUDIO' : 'IMAGE'))}</span>
+          <span class="media-thumb-kind">${escapeHtml(mediaTypeLongLabel(item.type))}</span>
           <span class="media-thumb-name">${escapeHtml(label)}</span>
         </button>`;
       }).join('');
@@ -4939,12 +5066,35 @@
 
     function mediaItemMetaText(item) {
       const values = [];
-      if (item.type) values.push(item.type === 'video' ? '비디오' : (item.type === 'audio' ? '오디오' : '이미지'));
+      if (item.type) values.push(mediaTypeKoreanLabel(item.type));
       if (item.width && item.height) values.push(`${item.width}×${item.height}`);
       if (item.durationSeconds) values.push(formatDuration(item.durationSeconds));
+      if (item.documentFormat) values.push(item.documentFormat === 'markdown' ? 'Markdown' : 'Text');
+      if (item.documentEncoding) values.push(item.documentEncoding);
       if (item.sizeBytes) values.push(formatFileSize(item.sizeBytes));
       if (item.path) values.push(item.path);
       return values.join(' · ');
+    }
+
+    function mediaTypeShortLabel(type) {
+      if (type === 'video') return 'VID';
+      if (type === 'audio') return 'AUD';
+      if (type === 'document') return 'TXT';
+      return 'IMG';
+    }
+
+    function mediaTypeLongLabel(type) {
+      if (type === 'video') return 'VIDEO';
+      if (type === 'audio') return 'AUDIO';
+      if (type === 'document') return 'TEXT';
+      return 'IMAGE';
+    }
+
+    function mediaTypeKoreanLabel(type) {
+      if (type === 'video') return '비디오';
+      if (type === 'audio') return '오디오';
+      if (type === 'document') return '문서';
+      return '이미지';
     }
 
     function showPreviousMedia() {

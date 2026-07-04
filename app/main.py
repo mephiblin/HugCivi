@@ -119,7 +119,9 @@ INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-passwor
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
 AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".weba"}
+DOCUMENT_EXTENSIONS = {".markdown", ".md", ".txt"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt"}
+DOCUMENT_TEXT_MAX_BYTES = 512 * 1024
 YTDLP_INFO_SUFFIX = ".info.json"
 SUBTITLE_LANGUAGE_LABELS = {
     "ko": "한국어",
@@ -131,6 +133,7 @@ BULK_LINE_PREFIX_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
 INTERNAL_JOB_ARCHIVE_ZIP = "archive_zip"
 INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
 INTERNAL_JOB_MEDIA_POSTER = "media_poster"
+JOB_LIST_PAGE_SIZE = 50
 DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT = 50_000
 DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT = 0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT = 0
@@ -406,13 +409,14 @@ def scan_data_root_usage(progress_callback: Callable[[dict[str, Any]], None] | N
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
-    jobs = decorate_jobs(db.list_jobs())
+    job_page = jobs_page_payload(limit=JOB_LIST_PAGE_SIZE, page=1)
     ensure_route_folders()
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
-            "jobs": jobs,
+            "jobs": job_page["jobs"],
+            "jobs_page": job_page,
             "library_items": library_items(),
             "folder_tree": build_folder_tree(DATA_ROOT),
             "settings": db.settings_status(),
@@ -643,8 +647,11 @@ def create_folder(folder_path: str = Form(...), _: str = Depends(require_auth)) 
 def api_jobs(
     limit: int = 100,
     cursor: int | None = None,
+    page: int | None = None,
     _: str = Depends(require_auth),
 ) -> JSONResponse:
+    if page is not None:
+        return JSONResponse(jobs_page_payload(limit=limit, page=page))
     jobs = decorate_jobs(db.list_job_summaries(limit=limit, before_id=cursor))
     if cursor is None:
         return JSONResponse(jobs)
@@ -927,6 +934,23 @@ def jobs_response() -> JSONResponse:
     return JSONResponse({"ok": True, "jobs": decorate_jobs(db.list_jobs())})
 
 
+def jobs_page_payload(*, limit: int = JOB_LIST_PAGE_SIZE, page: int = 1) -> dict[str, Any]:
+    safe_limit = max(1, min(500, int(limit)))
+    total_count = db.count_jobs()
+    total_pages = max(1, (total_count + safe_limit - 1) // safe_limit)
+    current_page = max(1, min(total_pages, int(page)))
+    offset = (current_page - 1) * safe_limit
+    jobs = decorate_jobs(db.list_job_summaries(limit=safe_limit, offset=offset))
+    return {
+        "ok": True,
+        "jobs": jobs,
+        "page": current_page,
+        "limit": safe_limit,
+        "total_count": total_count,
+        "total_pages": total_pages,
+    }
+
+
 def require_job(job_id: int) -> dict[str, Any]:
     job = db.get_job(job_id)
     if not job:
@@ -1084,11 +1108,16 @@ def api_media_list(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
     ensure_downloadable_path(source)
     files = media_files_for_path(source)
+    archive_cover_url = media_archive_cover_url(source)
     payload: dict[str, Any] = {
         "ok": True,
         "path": relative_data_path(source),
         "name": source.name,
-        "items": [media_item_payload(item, index) for index, item in enumerate(files)],
+        "cover_url": archive_cover_url,
+        "items": [
+            media_item_payload(item, index, archive_cover_url=archive_cover_url)
+            for index, item in enumerate(files)
+        ],
     }
     metadata = civitai_archive_generation_metadata(source)
     if metadata:
@@ -1162,6 +1191,33 @@ def api_media_file(path: str, _: str = Depends(require_auth)) -> FileResponse:
     if not source.is_file() or not is_media_file(source):
         raise HTTPException(status_code=404, detail="미디어 파일을 찾지 못했습니다.")
     return FileResponse(source, media_type=media_type_for_path(source))
+
+
+@app.get("/api/media/text")
+def api_media_text(path: str, _: str = Depends(require_auth)) -> JSONResponse:
+    source = existing_data_path(path)
+    if not source.is_file() or not is_document_file(source):
+        raise HTTPException(status_code=404, detail="문서 파일을 찾지 못했습니다.")
+    size = source.stat().st_size
+    with source.open("rb") as file:
+        data = file.read(DOCUMENT_TEXT_MAX_BYTES + 1)
+    truncated = len(data) > DOCUMENT_TEXT_MAX_BYTES
+    if truncated:
+        data = data[:DOCUMENT_TEXT_MAX_BYTES]
+    text, encoding = decode_document_bytes(data)
+    return JSONResponse(
+        {
+            "ok": True,
+            "path": relative_data_path(source),
+            "name": source.name,
+            "format": document_format(source),
+            "text": text,
+            "encoding": encoding,
+            "truncated": truncated,
+            "size_bytes": size,
+            "read_bytes": len(data),
+        }
+    )
 
 
 @app.get("/api/media/play")
@@ -1983,7 +2039,7 @@ def is_workflow_file(path: Path) -> bool:
 
 
 def is_media_file(path: Path) -> bool:
-    return is_image_file(path) or is_video_file(path) or is_audio_file(path)
+    return is_image_file(path) or is_video_file(path) or is_audio_file(path) or is_document_file(path)
 
 
 def is_image_file(path: Path) -> bool:
@@ -1996,6 +2052,10 @@ def is_video_file(path: Path) -> bool:
 
 def is_audio_file(path: Path) -> bool:
     return path.suffix.lower() in AUDIO_EXTENSIONS
+
+
+def is_document_file(path: Path) -> bool:
+    return path.suffix.lower() in DOCUMENT_EXTENSIONS
 
 
 def is_subtitle_file(path: Path) -> bool:
@@ -2046,7 +2106,7 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
         "base_model": str(metadata.get("base_model") or ""),
         "file_format": library_item_format(path, metadata, first_media),
         "precision": library_item_precision(path, metadata, media_count),
-        "thumbnail_url": thumbnail_url_for_media(first_media),
+        "thumbnail_url": thumbnail_url_for_media(first_media) or thumbnail_url_for_path(path),
         "favorite": relative_path in favorites,
         "source_url": str(metadata.get("source_url") or source_url_from_metadata(metadata)),
         "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
@@ -2149,6 +2209,8 @@ def library_item_category(path: Path, metadata: dict[str, Any], first_media: Pat
         if value:
             return str(value)
     if first_media:
+        if media_kind(first_media) == "document":
+            return "Document Archive" if path.is_dir() else "Document File"
         return "Media Gallery" if path.is_dir() else "Media File"
     if is_workflow_file(path):
         return "ComfyUI Workflow"
@@ -2161,6 +2223,8 @@ def library_item_format(path: Path, metadata: dict[str, Any], first_media: Path 
     if value:
         return str(value)
     if first_media:
+        if media_kind(first_media) == "document":
+            return document_format(first_media)
         return media_kind(first_media)
     return path.suffix.lower().removeprefix(".") if path.is_file() else "folder"
 
@@ -2714,10 +2778,13 @@ def re_split_digits(value: str) -> list[str]:
     return re.split(r"(\d+)", value)
 
 
-def media_item_payload(path: Path, index: int) -> dict[str, Any]:
+def media_item_payload(path: Path, index: int, *, archive_cover_url: str = "") -> dict[str, Any]:
     relative_path = relative_data_path(path)
     media_type = media_kind(path)
     thumbnail_url = thumbnail_url_for_media(path)
+    cover_url = archive_cover_url if media_type == "audio" else ""
+    if media_type == "audio" and not thumbnail_url:
+        thumbnail_url = cover_url
     file_url = f"/api/media/file?path={quote(relative_path, safe='/')}"
     ready_playable = browser_playable_video_path_if_ready(path) if media_type == "video" else None
     play_url = media_play_url_for_ready_source(path, ready_playable) if ready_playable is not None else file_url
@@ -2730,7 +2797,9 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
         "type": media_type,
         "url": play_url,
         "original_url": file_url,
+        "text_url": f"/api/media/text?path={quote(relative_path, safe='/')}" if media_type == "document" else "",
         "thumbnail_url": thumbnail_url,
+        "cover_url": cover_url,
         "poster_url": thumbnail_url if media_type == "video" else "",
         "play_ready": media_type != "video" or ready_playable is not None,
         "play_job_required": media_type == "video" and ready_playable is None,
@@ -2740,6 +2809,12 @@ def media_item_payload(path: Path, index: int) -> dict[str, Any]:
         "subtitles": subtitle_payloads_for_media(path) if media_type == "video" else [],
         "size_bytes": path.stat().st_size,
     }
+
+
+def media_archive_cover_url(path: Path) -> str:
+    if not path.is_dir():
+        return ""
+    return thumbnail_url_for_path(path)
 
 
 def subtitle_payloads_for_media(path: Path) -> list[dict[str, Any]]:
@@ -2825,6 +2900,8 @@ def media_kind(path: Path | None) -> str:
         return "video"
     if is_audio_file(path):
         return "audio"
+    if is_document_file(path):
+        return "document"
     return "file"
 
 
@@ -2849,7 +2926,22 @@ def media_type_for_path(path: Path) -> str:
         return "video/mp4"
     if is_audio_file(path):
         return "audio/mpeg"
+    if is_document_file(path):
+        return "text/markdown; charset=utf-8" if document_format(path) == "markdown" else "text/plain; charset=utf-8"
     return "application/octet-stream"
+
+
+def document_format(path: Path) -> str:
+    return "markdown" if path.suffix.lower() in {".markdown", ".md"} else "text"
+
+
+def decode_document_bytes(data: bytes) -> tuple[str, str]:
+    for encoding in ("utf-8-sig", "utf-16", "cp932", "gb18030"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace"), "utf-8-replace"
 
 
 def existing_video_path(path: str) -> Path:

@@ -19,7 +19,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse, unquote
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse, unquote
 
 import requests
 
@@ -91,6 +91,18 @@ THUMBNAIL_MEDIA_TYPES = {
     ".avif": "image/avif",
     ".bmp": "image/bmp",
 }
+ASMRONE_COVER_URL_KEYS = (
+    "mainCoverUrl",
+    "main_cover_url",
+    "coverUrl",
+    "cover_url",
+    "thumbnailCoverUrl",
+    "thumbnail_cover_url",
+    "samCoverUrl",
+    "sam_cover_url",
+    "imageUrl",
+    "image_url",
+)
 CIVITAI_IMAGE_METADATA_FILENAME = "_civitai_image_metadata.json"
 CIVITAI_MODEL_GENERATION_METADATA_FILENAME = "_civitai_generation_metadata.json"
 CIVITAI_MODEL_GENERATION_METADATA_LIMIT = 100
@@ -3458,6 +3470,108 @@ def download_generic(job_id: int, parsed: ParsedDownload) -> None:
     db.update_job(job_id, filename=saved.name)
 
 
+def asmrone_work_cover_url(work: dict[str, Any]) -> str:
+    for key in ASMRONE_COVER_URL_KEYS:
+        value = str(work.get(key) or "").strip()
+        if value:
+            return asmrone_absolute_url(value)
+    return ""
+
+
+def asmrone_absolute_url(value: str) -> str:
+    if value.startswith("//"):
+        return f"https:{value}"
+    parsed = urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return value
+    api = urlparse(ASMRONE_API_BASE)
+    origin = f"{api.scheme}://{api.netloc}" if api.scheme and api.netloc else "https://api.asmr.one"
+    return urljoin(f"{origin}/", value)
+
+
+def asmrone_cover_filename(url: str) -> str:
+    suffix = Path(unquote(urlparse(url).path)).suffix.lower()
+    if suffix not in THUMBNAIL_IMAGE_EXTENSIONS:
+        suffix = ".jpg"
+    return sanitize_segment(f"cover{suffix}", "cover.jpg")
+
+
+def save_asmrone_cover_image(
+    job_id: int,
+    session: requests.Session,
+    target: Path,
+    cover_url: str,
+) -> Path | None:
+    saved: Path | None = None
+    try:
+        db.append_log(job_id, f"ASMR.one cover download: {redact_sensitive_text(cover_url)}")
+        saved = stream_download(
+            job_id,
+            session,
+            cover_url,
+            target,
+            filename_override=asmrone_cover_filename(cover_url),
+        )
+        validate_downloaded_image_file(saved)
+        db.append_log(job_id, f"ASMR.one cover saved: {saved.name}")
+        return saved
+    except JobControlStop:
+        raise
+    except Exception as exc:
+        if saved is not None:
+            saved.unlink(missing_ok=True)
+        db.append_log(job_id, f"ASMR.one cover warning: {redact_sensitive_text(str(exc))}")
+        return None
+
+
+def validate_asmrone_downloaded_file(path: Path, entry: dict[str, Any]) -> None:
+    header = downloaded_file_header(path)
+    if downloaded_file_looks_like_html(header):
+        raise RuntimeError("provider returned an HTML error page instead of the requested file")
+    if not asmrone_entry_is_image(entry, path):
+        return
+    validate_downloaded_image_file(path, expected_size=int(entry.get("size") or 0))
+
+
+def asmrone_entry_is_image(entry: dict[str, Any], path: Path) -> bool:
+    entry_type = str(entry.get("type") or "").lower()
+    if entry_type == "image":
+        return True
+    return path.suffix.lower() in THUMBNAIL_IMAGE_EXTENSIONS
+
+
+def validate_downloaded_image_file(path: Path, *, expected_size: int = 0) -> None:
+    header = downloaded_file_header(path)
+    if downloaded_file_looks_like_html(header):
+        raise RuntimeError("provider returned an HTML error page instead of an image")
+    if not downloaded_file_looks_like_image(header):
+        raise RuntimeError("downloaded image response did not look like an image")
+
+    actual_size = path.stat().st_size
+    if expected_size >= 65_536 and actual_size < expected_size // 4:
+        raise RuntimeError(
+            f"downloaded image is unexpectedly small: {human_bytes(actual_size)} / {human_bytes(expected_size)}"
+        )
+
+
+def downloaded_file_header(path: Path, *, size: int = 512) -> bytes:
+    with path.open("rb") as file:
+        return file.read(size)
+
+
+def downloaded_file_looks_like_html(header: bytes) -> bool:
+    stripped = header.lstrip().lower()
+    return stripped.startswith((b"<!doctype html", b"<html", b"<head", b"<body"))
+
+
+def downloaded_file_looks_like_image(header: bytes) -> bool:
+    if header.startswith((b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a", b"BM")):
+        return True
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return True
+    return b"ftypavif" in header[:32] or b"ftypavis" in header[:32]
+
+
 def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
     if not parsed.asmrone_work_id:
         raise ValueError("ASMR.one work ID가 없습니다.")
@@ -3491,6 +3605,8 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
     )
 
     entries = asmrone_manifest_entries(tracks, source_id=source_id)
+    cover_url = asmrone_work_cover_url(work)
+    cover_path = save_asmrone_cover_image(job_id, session, target, cover_url) if cover_url else None
     downloadable_count = sum(1 for item in entries if item.get("_media_download_url"))
     total_size = sum(int(item.get("size") or 0) for item in entries)
     db.update_job(
@@ -3518,6 +3634,7 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
         file_target = safe_join(target, *local_parts[:-1]) if len(local_parts) > 1 else target
         filename = local_parts[-1]
         db.append_log(job_id, f"ASMR.one file {len(saved_files) + 1}/{downloadable_count}: {entry.get('local_path') or filename}")
+        saved: Path | None = None
         try:
             saved = stream_download(
                 job_id,
@@ -3528,12 +3645,15 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
                 progress_base=downloaded_bytes,
                 progress_total=total_size or None,
             )
+            validate_asmrone_downloaded_file(saved, entry)
         except JobControlStop:
             raise
         except Exception as exc:
             failed_file_count += 1
             entry["download_status"] = "failed"
             entry["download_error"] = redact_sensitive_text(str(exc))
+            if saved is not None:
+                saved.unlink(missing_ok=True)
             cleanup_empty_child_dirs(file_target, target)
             db.append_log(
                 job_id,
@@ -3571,6 +3691,8 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
         "failed_file_count": failed_file_count,
         "total_size": total_size,
         "total_size_human": human_bytes(total_size),
+        "cover_url": cover_url,
+        "cover_file": cover_path.name if cover_path else None,
         "download_url_strategy": "Use mediaDownloadUrl with action=download; ignore mediaStreamUrl.",
         "media_download_enabled": True,
         "files": entries,
@@ -3597,6 +3719,8 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
             "failed_file_count": failed_file_count,
             "total_size": total_size,
             "downloaded_size": downloaded_bytes,
+            "cover_url": cover_url,
+            "cover_file": cover_path.name if cover_path else None,
             "model_category": "ASMR.one Work",
             "file_format": "audio",
         },
@@ -3616,6 +3740,7 @@ def download_asmrone(job_id: int, parsed: ParsedDownload) -> None:
             "file_count": len(entries),
             "downloaded_file_count": len(saved_files),
             "failed_file_count": failed_file_count,
+            "cover_file": cover_path.name if cover_path else None,
             "precision": f"{len(saved_files)} files" if not failed_file_count else f"{len(saved_files)} files, {failed_file_count} failed",
         },
     )

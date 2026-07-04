@@ -854,6 +854,12 @@ def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
         return [redact_job_row(dict(row)) for row in rows]
 
 
+def count_jobs() -> int:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM jobs").fetchone()
+        return int(row["count"] if row else 0)
+
+
 def list_download_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
@@ -868,8 +874,9 @@ def list_download_jobs_to_resume(limit: int = 500) -> list[dict[str, Any]]:
         return [redact_job_row(dict(row)) for row in rows]
 
 
-def list_job_summaries(limit: int = 100, before_id: int | None = None) -> list[dict[str, Any]]:
+def list_job_summaries(limit: int = 100, before_id: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
     safe_limit = max(1, min(500, int(limit)))
+    safe_offset = max(0, int(offset))
     columns = """
         id, created_at, updated_at, input_text, parsed_json, source, status,
         target_dir, filename, progress_bytes, total_bytes, error,
@@ -879,7 +886,10 @@ def list_job_summaries(limit: int = 100, before_id: int | None = None) -> list[d
     """
     with _DB_LOCK, connect() as conn:
         if before_id is None:
-            rows = conn.execute(f"SELECT {columns} FROM jobs ORDER BY id DESC LIMIT ?", (safe_limit,)).fetchall()
+            rows = conn.execute(
+                f"SELECT {columns} FROM jobs ORDER BY id DESC LIMIT ? OFFSET ?",
+                (safe_limit, safe_offset),
+            ).fetchall()
         else:
             rows = conn.execute(
                 f"SELECT {columns} FROM jobs WHERE id < ? ORDER BY id DESC LIMIT ?",
