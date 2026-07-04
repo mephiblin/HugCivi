@@ -3130,34 +3130,47 @@ def write_startup_config(values: dict[str, str]) -> None:
         raise
 
 
-def build_folder_tree(root: Path, max_depth: int = 4, max_entries: int = 300) -> dict[str, Any]:
+def build_folder_tree(
+    root: Path,
+    max_depth: int = 4,
+    max_entries: int = 300,
+    max_children_per_folder: int = 120,
+) -> dict[str, Any]:
     root.mkdir(parents=True, exist_ok=True)
     root = root.resolve()
     remaining = {"count": max_entries}
 
-    def walk(path: Path, depth: int) -> dict[str, Any]:
-        node = {
+    def tree_node(path: Path) -> dict[str, Any]:
+        return {
             "name": path.name or str(path),
             "path": "" if path == root else path.relative_to(root).as_posix(),
             "children": [],
         }
-        if depth >= max_depth or remaining["count"] <= 0:
-            return node
 
+    root_node = tree_node(root)
+    queue: list[tuple[Path, dict[str, Any], int]] = [(root, root_node, 0)]
+    index = 0
+    while index < len(queue) and remaining["count"] > 0:
+        path, node, depth = queue[index]
+        index += 1
+        if depth >= max_depth:
+            continue
         children: list[dict[str, Any]] = []
         try:
             folders = sorted([item for item in path.iterdir() if item.is_dir()], key=lambda item: item.name.lower())
         except OSError:
             folders = []
-        for child in folders:
+        child_limit = len(folders) if depth == 0 else max(0, max_children_per_folder)
+        for child in folders[:child_limit]:
             if remaining["count"] <= 0:
                 break
+            child_node = tree_node(child)
             remaining["count"] -= 1
-            children.append(walk(child, depth + 1))
+            children.append(child_node)
+            queue.append((child, child_node, depth + 1))
         node["children"] = children
-        return node
 
-    return walk(root, 0)
+    return root_node
 
 
 def ensure_route_folders() -> None:

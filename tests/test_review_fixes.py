@@ -905,6 +905,23 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".folder-modal-row.selected" in stylesheet
 
 
+def test_folder_tree_large_sibling_does_not_hide_later_route_roots(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    for name in ("asmr.one", "gallery-dl", "hitomi", "huggingface"):
+        (data_root / name).mkdir()
+    for index in range(20):
+        (data_root / "hitomi" / f"{index:03d}-gallery").mkdir()
+    (data_root / "stable-diffusion" / "loras").mkdir(parents=True)
+
+    tree = main.build_folder_tree(data_root, max_depth=3, max_entries=12, max_children_per_folder=4)
+    root_children = {child["name"]: child for child in tree["children"]}
+    stable_children = {child["name"] for child in root_children["stable-diffusion"]["children"]}
+
+    assert {"asmr.one", "gallery-dl", "hitomi", "huggingface", "stable-diffusion"} <= set(root_children)
+    assert len(root_children["hitomi"]["children"]) == 4
+    assert "loras" in stable_children
+
+
 def test_api_create_folder_creates_child_and_rejects_nested_name(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     parent = data_root / "stable-diffusion"
