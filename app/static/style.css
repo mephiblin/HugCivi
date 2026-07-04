@@ -1769,7 +1769,7 @@ a:hover {
 
 .jobs-table {
   width: 100%;
-  min-width: 860px;
+  min-width: 940px;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -1920,31 +1920,35 @@ a:hover {
 }
 
 .col-info {
-  width: 20%;
+  width: 18%;
 }
 
 .col-source {
-  width: 9%;
+  width: 8%;
 }
 
 .col-input {
-  width: 17%;
+  width: 16%;
 }
 
 .col-file {
-  width: 12%;
+  width: 11%;
 }
 
 .col-progress {
-  width: 16%;
+  width: 14%;
 }
 
 .col-log {
   width: 5%;
 }
 
+.col-move {
+  width: 6%;
+}
+
 .col-actions {
-  width: 9%;
+  width: 10%;
 }
 
 .input-cell {
@@ -2114,6 +2118,10 @@ a:hover {
 
 .job-action-buttons button.danger {
   color: #b42318;
+}
+
+.job-move-cell .job-action-buttons {
+  justify-content: flex-start;
 }
 
 .progress {
@@ -4655,6 +4663,10 @@ a:hover {
   .mobile-job-actions .job-action-buttons {
     flex: 1;
     min-width: 0;
+  }
+
+  .mobile-job-actions .job-move-buttons {
+    flex: 0 0 auto;
   }
 
   .mobile-job-actions a {

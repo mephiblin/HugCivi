@@ -987,6 +987,10 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert 'id="folder_search"' in template
     assert 'id="folder-search-results"' in template
     assert 'id="folder-refresh-button"' in template
+    assert '<th class="col-move">이동</th>' in template
+    assert 'data-job-action="goto-folder"' in template
+    assert 'function goToJobFolder(jobId)' in template
+    assert 'body.innerHTML = \'<tr><td colspan="10" class="empty-row">아직 작업이 없습니다.</td></tr>\';' in template
     assert 'data-action="create-folder"' in template
     assert 'id="folder-create-modal"' in template
     assert 'id="folder-move-modal"' in template
@@ -1014,6 +1018,7 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "const rows = collectFolderRows();" in template
     assert ".folder-search-form" in stylesheet
     assert ".folder-refresh-button" in stylesheet
+    assert ".col-move" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet

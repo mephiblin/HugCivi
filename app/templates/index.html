@@ -176,6 +176,7 @@
                   <th class="col-file">파일</th>
                   <th class="col-progress">진행률</th>
                   <th class="col-log">로그</th>
+                  <th class="col-move">이동</th>
                   <th class="col-actions">제어</th>
                 </tr>
               </thead>
@@ -214,6 +215,11 @@
                     </div>
                   </td>
                   <td data-label="로그"><a href="/jobs/{{ job.id }}/log" target="_blank" rel="noopener">보기</a></td>
+                  <td data-label="이동" class="job-move-cell">
+                    <div class="job-action-buttons job-move-buttons">
+                      <button type="button" data-job-action="goto-folder" data-job-id="{{ job.id }}" {% if not job.target_path and not job.target_dir %}disabled{% endif %}>이동</button>
+                    </div>
+                  </td>
                   <td data-label="제어" class="job-actions-cell">
                     <div class="job-action-buttons">
                       {% if job.status in ['queued', 'running'] %}
@@ -3133,7 +3139,7 @@
     function renderJobs(jobs) {
       const body = document.getElementById('jobs-body');
       if (!jobs.length) {
-        body.innerHTML = '<tr><td colspan="9" class="empty-row">아직 작업이 없습니다.</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="empty-row">아직 작업이 없습니다.</td></tr>';
         renderMobileJobs(jobs);
         return;
       }
@@ -3151,6 +3157,7 @@
           <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
           <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
           <td data-label="로그"><a href="/jobs/${job.id}/log" target="_blank" rel="noopener">보기</a></td>
+          <td data-label="이동" class="job-move-cell">${renderJobMove(job)}</td>
           <td data-label="제어" class="job-actions-cell">${renderJobActions(job)}</td>
         </tr>`;
       }).join('');
@@ -3187,6 +3194,7 @@
         <div class="mobile-job-progress">${renderJobProgress(job)}</div>
         <div class="mobile-job-actions">
           ${renderJobActions(job)}
+          ${renderJobMove(job)}
           <a href="/jobs/${escapeHtml(job.id)}/log" target="_blank" rel="noopener">로그</a>
         </div>
       </article>`;
@@ -3222,6 +3230,11 @@
       return `<div class="job-action-buttons">${buttons.join('')}</div>`;
     }
 
+    function renderJobMove(job) {
+      const disabled = canMoveToJobFolder(job) ? '' : 'disabled';
+      return `<div class="job-action-buttons job-move-buttons"><button type="button" data-job-action="goto-folder" data-job-id="${escapeHtml(job.id)}" ${disabled}>이동</button></div>`;
+    }
+
     function jobActionButton(id, action, label, className = '', disabled = false) {
       return `<button type="button" data-job-action="${escapeHtml(action)}" data-job-id="${escapeHtml(id)}" class="${escapeHtml(className)}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
     }
@@ -3230,6 +3243,10 @@
       if (!jobId || !action) return;
       if (action === 'hitomi-listing') {
         openHitomiListingModal(jobId);
+        return;
+      }
+      if (action === 'goto-folder') {
+        await goToJobFolder(jobId);
         return;
       }
       if (action === 'delete' && !window.confirm('이 작업과 로컬에 저장된 파일을 삭제할까요? 실행 중이면 먼저 중단 요청됩니다.')) return;
@@ -3257,6 +3274,30 @@
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
+    }
+
+    function jobById(jobId) {
+      const idText = String(jobId);
+      return (Array.isArray(currentJobs) ? currentJobs : []).find(job => String(job.id) === idText) || null;
+    }
+
+    function jobFolderPath(job) {
+      return normalizePath(job?.target_path || job?.target_dir || '');
+    }
+
+    function canMoveToJobFolder(job) {
+      return Boolean(jobFolderPath(job));
+    }
+
+    async function goToJobFolder(jobId) {
+      const job = jobById(jobId);
+      const path = jobFolderPath(job);
+      if (!path) {
+        window.alert('이 작업에는 이동할 저장 폴더가 아직 없습니다.');
+        return;
+      }
+      await refreshFolders({preserveExpanded: true});
+      selectFolderPath(path, {expandTree: true, scrollIntoView: true});
     }
 
     function renderModelInfo(job) {
