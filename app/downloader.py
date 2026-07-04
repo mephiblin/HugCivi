@@ -1705,10 +1705,56 @@ def civitai_model_generation_entry(item: dict[str, Any], raw_input: str) -> dict
     return {
         "source_url": record.get("source_url"),
         "download_url": original_url,
+        "source_kind": "gallery",
         "image": record.get("image"),
         "generation_data": record.get("generation_data"),
         "raw_generation_meta": civitai_image_meta(item),
     }
+
+
+def civitai_image_id_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    stem = Path(unquote(urlparse(url).path)).stem.strip()
+    return stem or None
+
+
+def civitai_model_version_example_entries(
+    version_metadata: dict[str, Any],
+    *,
+    raw_input: str,
+    model_page_url: str,
+    version_id: str,
+) -> list[dict[str, Any]]:
+    raw_images = version_metadata.get("images")
+    images = [item for item in raw_images if isinstance(item, dict)] if isinstance(raw_images, list) else []
+    entries: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in images:
+        image_url = civitai_image_original_url(item)
+        if not image_url or image_url in seen_urls:
+            continue
+        image_type = text_value(item.get("type"))
+        if image_type and image_type.lower() != "image":
+            continue
+        image_id = id_value(item.get("id")) or civitai_image_id_from_url(image_url) or str(len(entries) + 1)
+        source_url = civitai_image_page_url(image_id) if image_id else model_page_url
+        record_item = {**item, "id": image_id}
+        record = normalize_civitai_image_record(record_item, source_url=source_url, raw_input=raw_input)
+        generation_data = record.get("generation_data") if isinstance(record.get("generation_data"), dict) else {}
+        generation_data["model_version_ids"] = [version_id] if version_id else []
+        entries.append(
+            {
+                "source_url": source_url or model_page_url,
+                "download_url": image_url,
+                "source_kind": "model_version_example",
+                "image": record.get("image"),
+                "generation_data": generation_data,
+                "raw_generation_meta": civitai_image_meta(item),
+            }
+        )
+        seen_urls.add(image_url)
+    return entries
 
 
 def civitai_model_generation_metadata_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2085,8 +2131,16 @@ def collect_civitai_model_generation_metadata(
     model_name: str | None,
     raw_input: str,
     model_details: dict[str, Any] | None = None,
+    version_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     api_url = civitai_model_generation_metadata_url(version_id)
+    model_page_url = civitai_model_page_url(model_id, version_id) if model_id else raw_input
+    example_images = civitai_model_version_example_entries(
+        version_metadata if isinstance(version_metadata, dict) else {},
+        raw_input=raw_input,
+        model_page_url=model_page_url,
+        version_id=version_id,
+    )
     db.append_log(job_id, f"civitai.model.generation_metadata.start modelVersionId={version_id}")
     try:
         data = fetch_json(session, api_url, job_id=job_id)
@@ -2096,11 +2150,19 @@ def collect_civitai_model_generation_metadata(
             f"civitai.model.generation_metadata.warning modelVersionId={version_id}: "
             f"{redact_sensitive_text(str(exc))}",
         )
-        return None
+        if not example_images:
+            return None
+        data = {"items": [], "metadata": {"warning": redact_sensitive_text(str(exc))}}
 
     raw_items = data.get("items")
     items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
-    images = [civitai_model_generation_entry(item, raw_input) for item in items]
+    gallery_images = [civitai_model_generation_entry(item, raw_input) for item in items]
+    seen_urls = {str(entry.get("download_url") or "") for entry in example_images if entry.get("download_url")}
+    images = example_images + [
+        entry
+        for entry in gallery_images
+        if not entry.get("download_url") or str(entry.get("download_url")) not in seen_urls
+    ]
     generation_count = sum(
         1
         for image in images
@@ -2115,12 +2177,14 @@ def collect_civitai_model_generation_metadata(
         "model_id": model_id,
         "version_id": version_id,
         "model_name": model_name,
-        "model_page_url": civitai_model_page_url(model_id, version_id) if model_id else None,
+        "model_page_url": model_page_url if model_id else None,
         "raw_input": raw_input,
         "api_url": api_url,
         "api_metadata": api_metadata,
         "image_count": len(images),
         "generation_count": generation_count,
+        "model_example_count": len(example_images),
+        "gallery_image_count": len(gallery_images),
         "model_details": model_details or {},
         "images": images,
     }
@@ -3208,6 +3272,7 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
         model_name=model_name,
         raw_input=parsed.raw_input,
         model_details=model_details,
+        version_metadata=metadata,
     )
     generation_metadata_summary = civitai_model_generation_metadata_summary(generation_metadata)
     if generation_metadata is not None:

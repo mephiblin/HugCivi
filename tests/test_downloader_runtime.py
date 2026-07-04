@@ -427,6 +427,104 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertNotIn("image-secret", sidecar_text)
             self.assertNotIn("file-secret", model_sidecar.read_text(encoding="utf-8"))
 
+    def test_civitai_model_preview_prefers_model_version_images_over_gallery_images(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.com/models/2342797/z-image-base",
+            civitai_model_id="2342797",
+            civitai_version_id="2635223",
+        )
+        version_metadata = {
+            "id": 2635223,
+            "name": "Base",
+            "baseModel": "ZImageBase",
+            "model": {"id": 2342797, "name": "Z Image Base", "type": "Checkpoint"},
+            "files": [
+                {
+                    "id": 77,
+                    "name": "z_image_bf16.safetensors",
+                    "type": "Model",
+                    "primary": True,
+                    "metadata": {"format": "SafeTensor", "fp": "bf16"},
+                    "downloadUrl": "https://download.civitai.com/z_image_bf16.safetensors",
+                }
+            ],
+            "images": [
+                {
+                    "url": "https://image.civitai.com/example/original=true/119036219.jpeg",
+                    "width": 832,
+                    "height": 1216,
+                    "type": "image",
+                    "nsfwLevel": 1,
+                }
+            ],
+        }
+        model_page_metadata = {
+            "id": 2342797,
+            "name": "Z Image Base",
+            "type": "Checkpoint",
+            "description": "<p>Z-Image body</p>",
+            "modelVersions": [{"id": 2635223, "name": "Base"}],
+        }
+        gallery_response = {
+            "items": [
+                {
+                    "id": 135633584,
+                    "url": "https://image.civitai.com/gallery/original=true/gallery.png",
+                    "width": 832,
+                    "height": 1216,
+                    "meta": {"prompt": "gallery prompt"},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+            downloaded_urls: list[str] = []
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+                **_kwargs: object,
+            ) -> Path:
+                downloaded_urls.append(url)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "download.bin")
+                saved.write_bytes(b"file")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[version_metadata, model_page_metadata, gallery_response]),
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
+                mock.patch.object(downloader, "attach_civitai_tensor_metadata_summary", return_value=None),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "checkpoints" / "zimagebase" / "z-image-base" / "version_2635223"
+            generation_payload = json.loads((target / "_civitai_generation_metadata.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(downloaded_urls[0], "https://image.civitai.com/example/original=true/119036219.jpeg")
+            self.assertTrue((target / "civitai_example_119036219.jpeg").exists())
+            self.assertFalse((target / "civitai_example_135633584.png").exists())
+            self.assertEqual(generation_payload["model_example_count"], 1)
+            self.assertEqual(generation_payload["gallery_image_count"], 1)
+            self.assertEqual(generation_payload["images"][0]["source_kind"], "model_version_example")
+            self.assertEqual(generation_payload["images"][0]["source_url"], "https://civitai.com/images/119036219")
+            self.assertEqual(generation_payload["images"][1]["source_kind"], "gallery")
+            self.assertEqual(generation_payload["images"][1]["generation_data"]["prompt"]["text"], "gallery prompt")
+            self.assertEqual(
+                fake_db.job["thumbnail_url"],
+                "/api/fs/preview?path=civitai/checkpoints/zimagebase/z-image-base/version_2635223/civitai_example_119036219.jpeg",
+            )
+
     def test_civitai_model_downloads_required_component_files(self) -> None:
         parsed = ParsedDownload(
             source="civitai",

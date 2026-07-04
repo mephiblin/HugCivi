@@ -138,6 +138,17 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
                 "model_page_url": "https://civitai.com/models/123?modelVersionId=456",
                 "image_count": 1,
                 "generation_count": 1,
+                "component_downloads": [
+                    {
+                        "role": "primary",
+                        "name": "example.safetensors",
+                        "type": "Model",
+                        "filename": "example.safetensors",
+                        "local_file": "example.safetensors",
+                        "required": True,
+                        "status": "downloaded",
+                    }
+                ],
                 "model_details": {
                     "model": {
                         "id": "123",
@@ -204,6 +215,7 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
     assert payload["metadata"]["model_details"]["version"]["base_model_type"] == "Standard"
     assert payload["metadata"]["model_details"]["version"]["trained_words"] == ["trigger", "style token"]
     assert payload["metadata"]["model_details"]["version"]["files"][0]["hashes"]["AutoV2"] == "ABC123"
+    assert payload["metadata"]["component_downloads"][0]["local_file"] == "example.safetensors"
     assert payload["metadata"]["generation_data"]["prompt"]["text"] == "model prompt"
     assert payload["metadata"]["generation_data"]["metadata"][0]["value"] == "12345"
     assert payload["items"][0]["name"] == "civitai_example_999.jpeg"
@@ -216,6 +228,74 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
     assert rows[0]["thumbnail_url"].endswith("civitai_example_999.jpeg")
     assert rows[0]["has_media"] is True
     assert rows[0]["media_count"] == 1
+
+
+def test_civitai_model_component_health_checks_local_files(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "stable-diffusion" / "checkpoints" / "zimagebase" / "z-image-base" / "version_2635223"
+    target.mkdir(parents=True)
+    (target / "z_image_bf16.safetensors").write_bytes(b"model")
+    (target / "qwen_3_4b_fp8_mixed.safetensors").write_bytes(b"text encoder")
+    (target / "ae.safetensors").write_bytes(b"vae")
+
+    payload = response_json(
+        asyncio.run(
+            main.api_civitai_resource_health(
+                JsonRequest(
+                    {
+                        "path": "stable-diffusion/checkpoints/zimagebase/z-image-base/version_2635223",
+                        "components": [
+                            {
+                                "key": "component:0:z_image_bf16.safetensors",
+                                "role": "primary",
+                                "name": "z_image_bf16.safetensors",
+                                "filename": "z_image_bf16.safetensors",
+                                "local_file": "z_image_bf16.safetensors",
+                                "type": "Model",
+                                "required": True,
+                            },
+                            {
+                                "key": "component:1:ae.safetensors",
+                                "role": "required_component",
+                                "name": "ae.safetensors",
+                                "filename": "ae.safetensors",
+                                "local_file": "ae.safetensors",
+                                "type": "VAE",
+                                "required": True,
+                            },
+                            {
+                                "key": "component:2:qwen_3_4b_fp8_mixed.safetensors",
+                                "role": "required_component",
+                                "name": "qwen_3_4b_fp8_mixed.safetensors",
+                                "filename": "qwen_3_4b_fp8_mixed.safetensors",
+                                "local_file": "qwen_3_4b_fp8_mixed.safetensors",
+                                "type": "Text Encoder",
+                                "required": True,
+                            },
+                            {
+                                "key": "component:3:missing.safetensors",
+                                "role": "required_component",
+                                "name": "missing.safetensors",
+                                "filename": "missing.safetensors",
+                                "local_file": "missing.safetensors",
+                                "type": "Model",
+                                "required": True,
+                            },
+                        ],
+                    }
+                ),
+                "_",
+            )
+        )
+    )
+
+    components = {item["key"]: item for item in payload["components"]}
+    assert payload["ok"] is True
+    assert components["component:0:z_image_bf16.safetensors"]["present"] is True
+    assert components["component:1:ae.safetensors"]["present"] is True
+    assert components["component:2:qwen_3_4b_fp8_mixed.safetensors"]["present"] is True
+    assert components["component:3:missing.safetensors"]["present"] is False
+    assert components["component:1:ae.safetensors"]["target_path"].endswith("ae.safetensors")
 
 
 def test_civitai_model_job_card_enables_media_viewer_from_local_thumbnail(app_modules: tuple) -> None:
@@ -324,6 +404,10 @@ def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules:
     assert 'data-action="civitai-refresh"' in template
     assert "data-civitai-refresh=" in template
     assert "async function refreshCivitaiArchive(target)" in template
+    assert "componentDownloads" in template
+    assert "Downloaded components" in template
+    assert "Check components" in template
+    assert "modelComponentResources(mediaArchiveMetadata)" in template
 
 
 def test_civitai_refresh_api_queues_existing_model_folder(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:

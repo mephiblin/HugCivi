@@ -3791,6 +3791,9 @@
 
     function renderMediaViewer(data, target) {
       mediaArchiveMetadata = normalizeCivitaiImageMetadata(data?.metadata);
+      if (mediaArchiveMetadata) {
+        mediaArchiveMetadata.archivePath = normalizePath(data?.path || target?.path || '');
+      }
       mediaResourceHealth = new Map();
       mediaResourceHealthLoading = false;
       mediaResourceHealthError = '';
@@ -3921,6 +3924,7 @@
         generationData: generation && typeof generation === 'object' ? generation : {},
         modelDetails: metadata.model_details && typeof metadata.model_details === 'object' ? metadata.model_details : {},
         resourceDownloads: Array.isArray(metadata.resource_downloads) ? metadata.resource_downloads : [],
+        componentDownloads: Array.isArray(metadata.component_downloads) ? metadata.component_downloads : [],
       };
     }
 
@@ -3930,6 +3934,8 @@
       const negativePrompt = generationText(generation.negative_prompt || generation.negativePrompt);
       const copyAllText = generationCopyAllText(metadata);
       const resources = generationResources(generation);
+      const modelComponents = modelComponentResources(metadata);
+      const isModelArchive = metadata.kind === 'civitai_model_generation_metadata';
       const metadataRows = generationMetadataRows(generation);
       const modelDetails = renderCivitaiModelDetails(metadata.modelDetails || {});
       const sourceUrl = metadata.sourceUrl || '';
@@ -3939,9 +3945,9 @@
       const modelLink = metadata.kind === 'civitai_model_generation_metadata' && isHttpUrl(metadata.modelUrl || '')
         ? `<p><a href="${escapeHtml(metadata.modelUrl)}" target="_blank" rel="noopener">${escapeHtml(metadata.modelName || metadata.modelUrl)}</a></p>`
         : '';
-      const resourceIds = generationModelVersionIds(metadata);
-      const healthButton = resourceIds.length
-        ? `<button type="button" class="generation-small-button" data-resource-health-check ${mediaResourceHealthLoading ? 'disabled' : ''}>${mediaResourceHealthLoading ? 'Checking' : 'Check resources'}</button>`
+      const healthTargets = isModelArchive ? modelComponents : generationModelVersionIds(metadata);
+      const healthButton = healthTargets.length
+        ? `<button type="button" class="generation-small-button" data-resource-health-check ${mediaResourceHealthLoading ? 'disabled' : ''}>${mediaResourceHealthLoading ? 'Checking' : (isModelArchive ? 'Check components' : 'Check resources')}</button>`
         : '';
       const healthError = mediaResourceHealthError
         ? `<p class="generation-error">${escapeHtml(mediaResourceHealthError)}</p>`
@@ -3956,13 +3962,21 @@
           <button type="button" class="generation-copy-all" data-generation-copy="all" ${copyAllText ? '' : 'disabled'}>COPY ALL</button>
         </header>
         ${modelDetails}
-        <section class="generation-section">
+        ${isModelArchive && modelComponents.length ? `<section class="generation-section">
           <div class="generation-section-head">
-            <h4>Resources used</h4>
+            <h4>Downloaded components</h4>
             ${healthButton}
           </div>
           ${healthError}
-          ${renderGenerationResources(resources)}
+          ${renderModelComponents(modelComponents)}
+        </section>` : ''}
+        <section class="generation-section">
+          <div class="generation-section-head">
+            <h4>${isModelArchive ? 'Example image resources' : 'Resources used'}</h4>
+            ${isModelArchive ? '' : healthButton}
+          </div>
+          ${isModelArchive ? '' : healthError}
+          ${renderGenerationResources(resources, {showHealth: !isModelArchive})}
         </section>
         <section class="generation-section">
           <div class="generation-section-head">
@@ -4122,17 +4136,44 @@
       return `${amount.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
     }
 
-    function renderGenerationResources(resources) {
+    function renderModelComponents(components) {
+      if (!components.length) {
+        return '<div class="generation-empty">No downloaded components.</div>';
+      }
+      return `<div class="generation-resources">${components.map(component => {
+        const health = mediaResourceHealth.get(component.key);
+        const state = health ? (health.present ? 'present' : 'missing') : component.initialState;
+        const title = health
+          ? (health.present ? `Present${health.target_path ? `: ${health.target_path}` : ''}` : 'Not found')
+          : component.initialTitle;
+        const badges = [
+          component.role,
+          component.type,
+          component.required ? 'required' : '',
+          component.filename,
+        ].filter(value => value != null && String(value).trim()).map(value => `<span>${escapeHtml(value)}</span>`).join('');
+        return `<article class="generation-resource">
+          <span class="generation-health ${state}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>
+          <div class="generation-resource-body">
+            <strong><span>${escapeHtml(component.name || component.filename || 'component')}</span></strong>
+            ${badges ? `<span>${badges}</span>` : ''}
+          </div>
+        </article>`;
+      }).join('')}</div>`;
+    }
+
+    function renderGenerationResources(resources, options = {}) {
       if (!resources.length) {
         return '<div class="generation-empty">No registered resources.</div>';
       }
+      const showHealth = options.showHealth !== false;
       return `<div class="generation-resources">${resources.map(resource => {
         const versionId = resourceModelVersionId(resource);
-        const health = versionId ? mediaResourceHealth.get(versionId) : null;
+        const health = showHealth && versionId ? mediaResourceHealth.get(versionId) : null;
         const state = health ? (health.present ? 'present' : 'missing') : 'unknown';
         const title = health
           ? (health.present ? `Present${health.target_path ? `: ${health.target_path}` : ''}` : 'Not found')
-          : 'Not checked';
+          : (showHealth ? 'Not checked' : 'Example image resource');
         const href = resourceHref(resource);
         const name = resource.name || resource.model_name || resource.modelName || `Version ${versionId || '-'}`;
         const nameMarkup = href
@@ -4264,6 +4305,28 @@
       return ids;
     }
 
+    function modelComponentResources(metadata) {
+      const downloads = Array.isArray(metadata?.componentDownloads) ? metadata.componentDownloads : [];
+      if (!downloads.length) return [];
+      return downloads.map((component, index) => {
+        const filename = generationScalar(component.local_file || component.localFile || component.filename || component.name);
+        const name = generationScalar(component.name || filename);
+        const status = String(component.status || '').toLowerCase();
+        const presentStatus = ['downloaded', 'kept', 'present'].includes(status);
+        return {
+          key: `component:${index}:${filename || name}`,
+          name,
+          filename,
+          local_file: generationScalar(component.local_file || component.localFile),
+          role: generationScalar(component.role),
+          type: generationScalar(component.type),
+          required: Boolean(component.required),
+          initialState: presentStatus ? 'present' : 'unknown',
+          initialTitle: presentStatus ? 'Present when downloaded' : 'Not checked',
+        };
+      }).filter(component => component.name || component.filename);
+    }
+
     function resourceHref(resource) {
       if (isHttpUrl(resource.href || '')) return resource.href;
       const modelId = resource.model_id ?? resource.modelId;
@@ -4328,16 +4391,32 @@
 
     async function checkCivitaiResourceHealth() {
       if (!mediaArchiveMetadata || mediaResourceHealthLoading) return;
-      const ids = generationModelVersionIds(mediaArchiveMetadata);
-      if (!ids.length) return;
+      const isModelArchive = mediaArchiveMetadata.kind === 'civitai_model_generation_metadata';
+      const components = isModelArchive ? modelComponentResources(mediaArchiveMetadata) : [];
+      const ids = isModelArchive ? [] : generationModelVersionIds(mediaArchiveMetadata);
+      if (!ids.length && !components.length) return;
       mediaResourceHealthLoading = true;
       mediaResourceHealthError = '';
       renderMediaStrip();
       try {
+        const body = isModelArchive
+          ? {
+              path: mediaArchiveMetadata.archivePath || '',
+              components: components.map(component => ({
+                key: component.key,
+                name: component.name,
+                filename: component.filename,
+                local_file: component.local_file,
+                role: component.role,
+                type: component.type,
+                required: component.required,
+              })),
+            }
+          : {model_version_ids: ids};
         const response = await fetch('/api/civitai/resource-health', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({model_version_ids: ids}),
+          body: JSON.stringify(body),
         });
         if (!response.ok) {
           let message = '리소스 상태를 확인하지 못했습니다.';
@@ -4351,8 +4430,9 @@
           return;
         }
         const data = await response.json();
-        mediaResourceHealth = new Map((Array.isArray(data.resources) ? data.resources : []).map(resource => [
-          String(resource.model_version_id || resource.modelVersionId || ''),
+        const healthRows = isModelArchive ? data.components : data.resources;
+        mediaResourceHealth = new Map((Array.isArray(healthRows) ? healthRows : []).map(resource => [
+          String(isModelArchive ? resource.key : (resource.model_version_id || resource.modelVersionId || '')),
           resource,
         ]).filter(([id]) => id));
       } catch (err) {

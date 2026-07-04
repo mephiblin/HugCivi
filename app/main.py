@@ -1106,8 +1106,22 @@ async def api_civitai_resource_health(request: Request, _: str = Depends(require
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
-    ids = requested_model_version_ids(payload)
-    return JSONResponse({"ok": True, "resources": civitai_resource_health_payload(ids)})
+    ids = requested_model_version_ids(payload, required=False)
+    components = requested_civitai_components(payload)
+    if not ids and not components:
+        raise HTTPException(status_code=400, detail="확인할 Civitai 리소스가 없습니다.")
+    component_results: list[dict[str, Any]] = []
+    if components:
+        source = existing_data_path(str(payload.get("path") or ""))
+        ensure_downloadable_path(source)
+        component_results = civitai_component_health_payload(source, components)
+    return JSONResponse(
+        {
+            "ok": True,
+            "resources": civitai_resource_health_payload(ids),
+            "components": component_results,
+        }
+    )
 
 
 @app.post("/api/civitai/refresh")
@@ -2412,9 +2426,11 @@ def civitai_refresh_parsed_download(path: Path, metadata: dict[str, Any]) -> Par
     )
 
 
-def requested_model_version_ids(payload: dict[str, Any]) -> list[str]:
+def requested_model_version_ids(payload: dict[str, Any], *, required: bool = True) -> list[str]:
     raw_ids = payload.get("model_version_ids", payload.get("modelVersionIds"))
     if not isinstance(raw_ids, list):
+        if not required:
+            return []
         raise HTTPException(status_code=400, detail="model_version_ids 배열이 필요합니다.")
     ids: list[str] = []
     for value in raw_ids:
@@ -2424,6 +2440,52 @@ def requested_model_version_ids(payload: dict[str, Any]) -> list[str]:
     if len(ids) > 100:
         raise HTTPException(status_code=400, detail="한 번에 100개 이하의 리소스만 확인할 수 있습니다.")
     return ids
+
+
+def requested_civitai_components(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_components = payload.get("components")
+    if raw_components is None:
+        return []
+    if not isinstance(raw_components, list):
+        raise HTTPException(status_code=400, detail="components 배열이 필요합니다.")
+    components = [item for item in raw_components if isinstance(item, dict)]
+    if len(components) > 100:
+        raise HTTPException(status_code=400, detail="한 번에 100개 이하의 컴포넌트만 확인할 수 있습니다.")
+    return components
+
+
+def civitai_component_health_payload(path: Path, components: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for index, component in enumerate(components):
+        key = first_metadata_text(component.get("key"), f"component:{index}")
+        names = civitai_component_candidate_names(component)
+        found = next((path / name for name in names if (path / name).is_file()), None)
+        results.append(
+            {
+                "key": key,
+                "name": first_metadata_text(component.get("name"), component.get("filename"), component.get("local_file")),
+                "filename": first_metadata_text(component.get("filename"), component.get("local_file")),
+                "local_file": found.name if found is not None else first_metadata_text(component.get("local_file")),
+                "role": first_metadata_text(component.get("role")),
+                "type": first_metadata_text(component.get("type")),
+                "required": bool(component.get("required")),
+                "present": found is not None,
+                "target_path": relative_data_path(found) if found is not None else "",
+            }
+        )
+    return results
+
+
+def civitai_component_candidate_names(component: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for value in (component.get("local_file"), component.get("localFile"), component.get("filename"), component.get("name")):
+        text = first_metadata_text(value)
+        if not text:
+            continue
+        name = Path(text.replace("\\", "/")).name
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def civitai_resource_health_payload(model_version_ids: list[str]) -> list[dict[str, Any]]:
