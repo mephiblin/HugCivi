@@ -149,6 +149,7 @@ Internal jobs:
   - `archive_zip`
   - `media_transcode`
   - `media_poster`
+  - `media_thumbnail_backfill`
 
 Restart handling is conservative. `running` jobs are requeued, `pausing` becomes `paused`, `canceling` becomes `canceled`, and `deleting` rows are deleted or cleaned up according to their job family.
 
@@ -163,10 +164,13 @@ Restart handling is conservative. `running` jobs are requeued, `pausing` becomes
    - `QUEUE_PER_PROVIDER_LIMIT`
    - `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS`
    - `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS`
+   - `DOWNLOAD_STALL_TIMEOUT_SECONDS`
 6. `downloader.run_job()` dispatches to the source handler.
 7. The handler writes files under `/data`, sidecar metadata when appropriate, progress, logs, and final display metadata.
 
 Provider keys are intentionally coarse for major services and host-based for generic/gallery-dl style inputs. This favors safety and rate-limit avoidance over maximum throughput.
+
+Hugging Face snapshot downloads share the same queue controls: `QUEUE_PER_PROVIDER_LIMIT` limits concurrent Hugging Face jobs, and snapshot internal workers stay fixed at 1 so the provider limit does not multiply inside each job. `DOWNLOAD_STALL_TIMEOUT_SECONDS` controls both the HugCivi watchdog and the Hugging Face Hub response wait.
 
 Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
 
@@ -210,7 +214,8 @@ Card thumbnail generation:
 - the frontend delays card thumbnail requests until cards are in or near the viewport and runs at most 3 thumbnail requests at a time, so first visits or existing file scans do not fan out 100 image generations at once
 - thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`
 - thumbnail cache misses use ffmpeg behind the same media transcode semaphore that protects video work
-- image thumbnails do not create internal job rows; the endpoint either serves a cache hit or generates the file during the request
+- the library `썸네일 생성` action creates one `media_thumbnail_backfill` internal job for the selected folder, scans card representative images only, skips existing cache files, and defaults to 3 worker threads
+- ordinary image thumbnail requests do not create one internal job row per image; the endpoint either serves a cache hit or generates the file during the request
 - `/api/fs/preview`, `/api/media/file`, and `/api/media/poster` remain available for compatibility and media-viewer/full-size use
 
 The UI polls job status and then swaps to the artifact URL when the job is done.
@@ -255,7 +260,7 @@ Main API groups:
 | Settings | `/settings` |
 | Folders/library | `GET/POST /api/folders`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
-| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
+| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
 | Civitai health/refresh | `/api/civitai/resource-health`, `/api/civitai/refresh` |

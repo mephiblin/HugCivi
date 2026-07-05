@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -91,6 +92,7 @@ def register_internal_job_handlers() -> None:
     internal_jobs.register_handler(INTERNAL_JOB_ARCHIVE_ZIP, run_archive_zip_job)
     internal_jobs.register_handler(INTERNAL_JOB_MEDIA_TRANSCODE, run_media_transcode_job)
     internal_jobs.register_handler(INTERNAL_JOB_MEDIA_POSTER, run_media_poster_job)
+    internal_jobs.register_handler(INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL, run_media_thumbnail_backfill_job)
 
 
 @asynccontextmanager
@@ -134,11 +136,16 @@ BULK_LINE_PREFIX_RE = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
 INTERNAL_JOB_ARCHIVE_ZIP = "archive_zip"
 INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
 INTERNAL_JOB_MEDIA_POSTER = "media_poster"
+INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL = "media_thumbnail_backfill"
 JOB_LIST_PAGE_SIZE = 50
 LIBRARY_PAGE_SIZE = 50
 LIBRARY_PAGE_MAX_SIZE = 100
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
+MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
+MEDIA_THUMBNAIL_BACKFILL_MAX_WORKERS = 16
+MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS = 5000
+MEDIA_THUMBNAIL_BACKFILL_HARD_MAX_ITEMS = 20000
 DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT = 50_000
 DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT = 0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT = 0
@@ -1242,6 +1249,81 @@ def api_media_thumbnail(
     return FileResponse(thumbnail, media_type="image/jpeg", filename=f"{source.stem}.jpg")
 
 
+@app.post("/api/media/thumbnail-jobs")
+async def api_media_thumbnail_jobs(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
+
+    requested_path = str(payload.get("path") or "").strip()
+    if not requested_path:
+        raise HTTPException(status_code=400, detail="썸네일을 생성할 저장 폴더를 선택하세요.")
+    source = existing_data_path(requested_path)
+    ensure_downloadable_path(source)
+    try:
+        unsafe_source = source.is_symlink() or has_symlink_ancestor(source)
+    except (OSError, ValueError):
+        unsafe_source = True
+    if unsafe_source:
+        raise HTTPException(status_code=400, detail="symlink 폴더는 썸네일 생성 대상으로 사용할 수 없습니다.")
+
+    size = thumbnail_size_value(payload.get("size"))
+    workers = thumbnail_backfill_worker_count(payload.get("workers"))
+    max_items = thumbnail_backfill_item_limit(payload.get("limit"))
+    candidates = thumbnail_backfill_candidates(source, size=size, max_items=max_items)
+    source_path = relative_data_path(source)
+    if not candidates:
+        return JSONResponse(
+            {
+                "ok": True,
+                "queued": False,
+                "job_id": None,
+                "candidate_count": 0,
+                "workers": workers,
+                "size": size,
+                "path": source_path,
+            }
+        )
+
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL,
+        input_text=f"thumbnail backfill:{source_path}",
+        payload={
+            "path": source_path,
+            "size": size,
+            "workers": workers,
+            "limit": max_items,
+            "candidate_count": len(candidates),
+        },
+        target_dir=source,
+        filename=f"{source.name}-thumbnails",
+        total_bytes=len(candidates),
+        metadata={
+            "media_job": {
+                "kind": INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL,
+                "path": source_path,
+                "size": size,
+                "workers": workers,
+                "candidate_count": len(candidates),
+            }
+        },
+    )
+    internal_jobs.enqueue_job(job_id)
+    job = db.get_job(job_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "job_id": job_id,
+            "job": decorate_job(job, include_log=False) if job else None,
+            "candidate_count": len(candidates),
+            "workers": workers,
+            "size": size,
+            "path": source_path,
+        }
+    )
+
+
 @app.get("/api/media/text")
 def api_media_text(path: str, _: str = Depends(require_auth)) -> JSONResponse:
     source = existing_data_path(path)
@@ -1774,6 +1856,9 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["job_kind"] = db.normalized_job_kind(job.get("job_kind"))
     if job["job_kind"] != db.JOB_KIND_DOWNLOAD and str(job.get("source") or "") == "internal":
         job["source"] = job["job_kind"]
+    if job["job_kind"] == INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL:
+        job["progress_human"] = f"{int(progress)}개"
+        job["total_human"] = f"{int(total or 0)}개"
     if (
         not job.get("thumbnail_url")
         and job.get("target_dir")
@@ -3184,6 +3269,64 @@ def card_thumbnail_url_for_url(url: str) -> str:
     return card_thumbnail_url_for_media(source)
 
 
+def thumbnail_backfill_worker_count(value: Any | None = None) -> int:
+    raw_value = value if value is not None else os.getenv("MEDIA_THUMBNAIL_BACKFILL_WORKERS")
+    try:
+        workers = int(raw_value if raw_value is not None else MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS)
+    except (TypeError, ValueError):
+        workers = MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS
+    return max(1, min(MEDIA_THUMBNAIL_BACKFILL_MAX_WORKERS, workers))
+
+
+def thumbnail_backfill_item_limit(value: Any | None = None) -> int:
+    raw_value = value if value is not None else os.getenv("MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS")
+    try:
+        limit = int(raw_value if raw_value is not None else MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS)
+    except (TypeError, ValueError):
+        limit = MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS
+    return max(1, min(MEDIA_THUMBNAIL_BACKFILL_HARD_MAX_ITEMS, limit))
+
+
+def thumbnail_request_path_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    if parsed.path != "/api/media/thumbnail":
+        return ""
+    values = parse_qs(parsed.query).get("path", [])
+    if not values:
+        return ""
+    return str(values[0] or "").strip().replace("\\", "/").lstrip("/")
+
+
+def thumbnail_cache_ready(source: Path, size: int) -> bool:
+    try:
+        target = media_thumbnail_target(source, size)
+        return target.exists() and target.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def thumbnail_backfill_candidates(root_path: Path, *, size: int, max_items: int) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for item in live_library_items(max_items=max_items, root_path=root_path):
+        request_path = thumbnail_request_path_from_url(str(item.get("thumbnail_url") or ""))
+        if not request_path:
+            continue
+        try:
+            source = thumbnail_source_for_request(request_path)
+            resolved = str(source.resolve(strict=False))
+        except (HTTPException, OSError, ValueError):
+            continue
+        if resolved in seen or thumbnail_cache_ready(source, size):
+            continue
+        try:
+            candidates.append(relative_data_path(source))
+        except (OSError, ValueError):
+            continue
+        seen.add(resolved)
+    return candidates
+
+
 def media_type_for_path(path: Path) -> str:
     guessed = mimetypes.guess_type(path.name)[0]
     if guessed:
@@ -3344,6 +3487,77 @@ def run_media_poster_job(job_id: int, job: dict[str, Any]) -> None:
         path=poster,
         url=poster_url,
         expires_at=expires_at.isoformat(timespec="seconds"),
+    )
+
+
+def run_media_thumbnail_backfill_job(job_id: int, job: dict[str, Any]) -> None:
+    payload = db.parse_internal_job_payload(job)
+    root = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(root)
+    size = thumbnail_size_value(payload.get("size"))
+    workers = thumbnail_backfill_worker_count(payload.get("workers"))
+    raw_paths = payload.get("paths")
+    if isinstance(raw_paths, list):
+        candidates = [str(path) for path in raw_paths if isinstance(path, str) and path.strip()]
+    else:
+        candidates = thumbnail_backfill_candidates(
+            root,
+            size=size,
+            max_items=thumbnail_backfill_item_limit(payload.get("limit")),
+        )
+    total = len(candidates)
+    db.update_job(job_id, progress_bytes=0, total_bytes=total)
+    db.append_log(job_id, f"thumbnail backfill candidates={total} workers={workers} size={size}")
+    if total <= 0:
+        return
+
+    results = {"generated": 0, "skipped": 0, "failed": 0}
+    failed_examples: list[str] = []
+
+    def generate(relative_path: str) -> tuple[str, str, str]:
+        internal_jobs.check_job_control(job_id)
+        try:
+            source = thumbnail_source_for_request(relative_path)
+            if thumbnail_cache_ready(source, size):
+                return "skipped", relative_path, ""
+            thumbnail = cached_image_thumbnail_path(source, size=size)
+            if not safe_cache_file(MEDIA_CACHE_DIR, thumbnail):
+                return "failed", relative_path, "thumbnail cache path rejected"
+            return "generated", relative_path, ""
+        except HTTPException as exc:
+            return "failed", relative_path, str(exc.detail)
+        except Exception as exc:  # noqa: BLE001 - keep the batch moving past corrupt images
+            return "failed", relative_path, str(exc)
+
+    completed = 0
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"thumbnail-backfill-{job_id}") as executor:
+        futures = [executor.submit(generate, path) for path in candidates]
+        for future in as_completed(futures):
+            internal_jobs.check_job_control(job_id)
+            status, relative_path, error = future.result()
+            completed += 1
+            if status in results:
+                results[status] += 1
+            if status == "failed" and len(failed_examples) < 10:
+                failed_examples.append(f"{relative_path}: {error}")
+            db.update_job(job_id, progress_bytes=completed, total_bytes=total)
+
+    detail = {
+        "media_job": {
+            "kind": INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL,
+            "path": relative_data_path(root),
+            "size": size,
+            "workers": workers,
+            "candidate_count": total,
+            **results,
+            "failed_examples": failed_examples,
+        }
+    }
+    db.update_job(job_id, progress_bytes=completed, total_bytes=total, metadata_json=json.dumps(detail, ensure_ascii=False))
+    db.append_log(
+        job_id,
+        "thumbnail backfill done "
+        f"generated={results['generated']} skipped={results['skipped']} failed={results['failed']}",
     )
 
 

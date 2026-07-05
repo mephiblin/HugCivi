@@ -298,6 +298,7 @@
                 <option value="date">날짜순</option>
                 <option value="favorite">즐겨찾기</option>
               </select>
+              <button type="button" class="library-thumbnail-job-button" id="library-thumbnail-job-button" title="현재 폴더의 누락 카드 썸네일 생성" disabled>썸네일 생성</button>
               <span id="library-count">0개</span>
             </div>
           </div>
@@ -451,17 +452,17 @@
 
         <section class="settings-block settings-pane" id="settings-queue"
                  data-settings-title="대기열 관리"
-                 data-settings-description="공급자별 실행 슬롯과 전체 실행 슬롯을 조절합니다.">
+                 data-settings-description="공급자별 실행 슬롯, 전체 실행 슬롯, 다운로드 대기 시간을 조절합니다.">
           <div class="settings-block-copy">
             <h3>대기열 관리</h3>
-            <p>공급자별 실행 슬롯과 전체 실행 슬롯을 조절합니다.</p>
+            <p>공급자별 실행 슬롯, 전체 실행 슬롯, 다운로드 대기 시간을 조절합니다.</p>
           </div>
           <div class="settings-grid two-cols">
             <label class="setting-field" for="queue_per_provider_limit">
               <span>각 공급자당 동시 다운로드 수 제한</span>
               <input id="queue_per_provider_limit" name="queue_per_provider_limit" type="number" min="1" step="1"
                      value="{{ settings.queue.QUEUE_PER_PROVIDER_LIMIT.value }}" autocomplete="off">
-              <small>같은 공급자에서 동시에 실행할 작업 수입니다. 예: Hugging Face 1개, Civitai 1개, Hitomi 1개.</small>
+              <small>같은 공급자에서 동시에 실행할 작업 수입니다. Hugging Face snapshot 내부 병렬은 1로 고정해 이 값이 곱해지지 않게 합니다.</small>
             </label>
             <label class="setting-field" for="queue_global_limit">
               <span>전체 동시 다운로드 수 제한</span>
@@ -485,7 +486,7 @@
               <span>타임아웃 시간</span>
               <input id="queue_stall_timeout_seconds" name="queue_stall_timeout_seconds" type="number" min="0" step="1"
                      value="{{ settings.queue.DOWNLOAD_STALL_TIMEOUT_SECONDS.value }}" autocomplete="off">
-              <small>초 단위입니다. 기본값은 600초이며, 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. 0은 사용 안 함입니다.</small>
+              <small>초 단위입니다. 진행률이나 파일명이 바뀌지 않는 시간이 이 값을 넘으면 작업을 정지합니다. Hugging Face 서버 응답 대기도 이 값을 따릅니다. 0은 사용 안 함입니다.</small>
             </label>
             <label class="setting-field" for="hitomi_listing_queue_mode">
               <span>Hitomi 목록 처리</span>
@@ -875,6 +876,7 @@
     const libraryCount = document.getElementById('library-count');
     const librarySort = document.getElementById('library-sort');
     const libraryPagination = document.getElementById('library-pagination');
+    const libraryThumbnailJobButton = document.getElementById('library-thumbnail-job-button');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
     const settingsClose = document.getElementById('settings-close');
@@ -1333,6 +1335,7 @@
     librarySort.addEventListener('change', () => {
       refreshLibraryForActivePath({page: 1});
     });
+    libraryThumbnailJobButton?.addEventListener('click', queueLibraryThumbnailBackfill);
     libraryPagination?.addEventListener('click', event => {
       const button = event.target.closest('[data-library-page]');
       if (!button || button.disabled) return;
@@ -2925,6 +2928,7 @@
 
     function switchToLibrary(path) {
       activeLibraryPath = path || '';
+      setLibraryThumbnailJobButtonState();
       commandInput.value = '';
       commandInput.required = true;
       commandInput.placeholder = '이 폴더에 받을 URL 또는 다운로드 명령 입력';
@@ -2942,6 +2946,7 @@
       activeMobileTab = tab;
       if (tab === 'library' && activeLibraryPath === null) {
         activeLibraryPath = '';
+        setLibraryThumbnailJobButtonState();
         showLibraryLoading(activeLibraryPath, 'live');
         refreshLibraryForActivePath({mode: 'live', page: 1});
       }
@@ -2978,6 +2983,7 @@
       libraryCount.textContent = '';
       libraryGrid.innerHTML = '<div class="library-empty">불러오는 중</div>';
       if (libraryPagination) libraryPagination.innerHTML = '';
+      setLibraryThumbnailJobButtonState();
     }
 
     function setupWorkflowDropImport() {
@@ -3310,6 +3316,52 @@
       });
     }
 
+    function setLibraryThumbnailJobButtonState(state = 'idle') {
+      if (!libraryThumbnailJobButton) return;
+      const path = normalizePath(activeLibraryPath || '');
+      const busy = state === 'loading';
+      libraryThumbnailJobButton.disabled = busy || activeLibraryPath === null || !path;
+      libraryThumbnailJobButton.textContent = busy ? '예약중' : '썸네일 생성';
+      libraryThumbnailJobButton.title = path
+        ? (busy ? '썸네일 생성 작업 예약 중' : '현재 폴더의 누락 카드 썸네일 생성')
+        : '저장 폴더를 선택한 뒤 사용할 수 있습니다.';
+    }
+
+    async function queueLibraryThumbnailBackfill(event) {
+      event?.preventDefault();
+      event?.stopPropagation();
+      const path = normalizePath(activeLibraryPath || '');
+      if (!path) {
+        window.alert('왼쪽 저장 폴더에서 대상 폴더를 선택하세요.');
+        return;
+      }
+      setLibraryThumbnailJobButtonState('loading');
+      try {
+        const response = await fetch('/api/media/thumbnail-jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            path,
+            workers: THUMBNAIL_REQUEST_MAX_ACTIVE,
+          }),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          window.alert(data.detail || '썸네일 생성 작업을 예약하지 못했습니다.');
+          return;
+        }
+        if (!data.queued) {
+          window.alert('새로 생성할 카드 썸네일이 없습니다.');
+          return;
+        }
+        await refreshJobs({page: 1});
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+      } finally {
+        setLibraryThumbnailJobButtonState();
+      }
+    }
+
     async function refreshStorage() {
       try {
         const response = await fetch('/api/storage');
@@ -3511,6 +3563,7 @@
         archive_zip: 'Archive',
         media_transcode: 'Transcode',
         media_poster: 'Poster',
+        media_thumbnail_backfill: 'Thumbnail',
       };
       const value = normalizeJobSource(source);
       if (labels[value]) return labels[value];
@@ -3711,6 +3764,7 @@
       const matches = currentLibraryPage.paged ? filtered : sortLibraryJobs(filtered);
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
       libraryCount.textContent = libraryCountLabel(matches.length);
+      setLibraryThumbnailJobButtonState();
       if (!matches.length) {
         libraryGrid.innerHTML = '<div class="library-empty">이 폴더에 표시할 모델 카드가 없습니다.</div>';
         renderLibraryPagination();

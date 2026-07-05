@@ -11,9 +11,16 @@
 ### 프론트
 
 - 라이브러리 카드는 50개 단위 페이지로 넘기고, 카드 썸네일은 `/config/media-cache/thumbnails` 캐시와 화면 근처 최대 3개 동시 요청 큐를 사용해 첫 방문/기존 파일 로드 때 요청이 한 번에 몰리지 않도록 했습니다.
+- 선택한 라이브러리 폴더의 `썸네일 생성` 버튼이 누락된 카드 대표 썸네일을 `media_thumbnail_backfill` 내부 작업으로 예약합니다. 기본 3 worker로 ASMR.one `cover.jpg`, Civitai `civitai_example_*`, 갤러리 첫 이미지 같은 대표 이미지만 생성하고 이미 캐시된 파일은 건너뜁니다.
 - 자동 폴링과 저장 폴더 전용 새로고침으로 대체된 우상단 전체 새로고침 아이콘을 제거했습니다.
 - 우상단 버튼 순서를 저장소 표시, 계산, 애드온, 썸네일 블러 순서로 정리했습니다.
 - 작업 목록 제목 옆에 `ALL` 및 작업 소스별 필터 버튼을 추가해 Civitai, Hitomi, ASMR.one 등 현재 기록에 존재하는 사이트 작업만 골라 볼 수 있게 했습니다.
+
+### 대기열/Hugging Face
+
+- 별도 Hugging Face worker/timeout 옵션을 제거하고, 기존 설정창의 `각 공급자당 동시 다운로드 수 제한`이 Hugging Face job 수를 제어하도록 정리했습니다. HF snapshot 내부 병렬은 1로 고정해 공급자 제한값이 곱해지지 않게 했습니다.
+- `타임아웃 시간`은 Hugging Face Hub 응답 대기에도 적용됩니다.
+- Docker/Portainer/CasaOS/Ubuntu 예시에서 `HF_SNAPSHOT_MAX_WORKERS`와 `HF_HUB_DOWNLOAD_TIMEOUT` 항목을 제거해 대기열 설정이 다운로드 안정성의 단일 조절 지점이 되도록 했습니다.
 
 ## 2026-07-04
 

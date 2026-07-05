@@ -1,6 +1,6 @@
 # HugCivi Configuration Reference
 
-Last updated: 2026-07-04
+Last updated: 2026-07-05
 
 This document lists the configuration knobs a developer or operator is likely to meet. Values can come from environment variables, Docker/Portainer stack settings, or the web UI settings table depending on the key.
 
@@ -89,12 +89,12 @@ The authenticated settings modal renders these credential and option values in p
 | --- | --- | --- | --- |
 | `MAX_CONCURRENT_DOWNLOADS` | `3` | env/UI | Global external download concurrency. |
 | `MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT` | `12` | env | Upper cap for UI-saved global concurrency. |
-| `QUEUE_PER_PROVIDER_LIMIT` | `1` | env/UI | Concurrent jobs per provider bucket. |
+| `QUEUE_PER_PROVIDER_LIMIT` | `1` | env/UI | Concurrent jobs per provider bucket. Hugging Face snapshot internal workers stay fixed at 1 so this provider limit does not multiply. |
 | `QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT` | `4` | env | Upper cap for UI-saved provider limit. |
 | `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS` | `2` | env/UI | Minimum provider cooldown. |
 | `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS` | `2` | env/UI | Maximum provider cooldown. |
 | `QUEUE_PROVIDER_COOLDOWN_SECONDS` | `2` | env/UI legacy | Compatibility fallback used when min/max cooldown values are absent. Prefer the min/max keys. |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Docker/local `600`, Portainer `0` | env/UI | `0` disables watchdog timeout. |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Docker/local `600`, Portainer `0` | env/UI | Watchdog timeout and Hugging Face Hub response wait. `0` disables timeout semantics. |
 | `DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS` | `1.5` | env | Default host throttle. |
 | `HF_REQUEST_MIN_INTERVAL_SECONDS` | default throttle | env | Hugging Face-specific request throttle. |
 | `CIVITAI_REQUEST_MIN_INTERVAL_SECONDS` | default throttle | env | Civitai-specific request throttle. |
@@ -112,11 +112,9 @@ The authenticated settings modal renders these credential and option values in p
 
 | Key | Default | Source | Notes |
 | --- | --- | --- | --- |
-| `HF_HUB_DOWNLOAD_TIMEOUT` | `120` | env | Hugging Face hub timeout. |
 | `HF_XET_HIGH_PERFORMANCE` | `0` | env | Hugging Face Xet behavior. |
 | `HF_XET_NUM_CONCURRENT_RANGE_GETS` | `4` | env | Hugging Face Xet concurrency. |
 | `HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY` | `1` | env | Hugging Face Xet disk behavior. |
-| `HF_SNAPSHOT_MAX_WORKERS` | `2` | env | Hugging Face snapshot worker count. |
 | `CIVITAI_API_BASE` | `https://civitai.com/api/v1` | env | Used for model/version metadata, image metadata, model-file tensor metadata, and refresh metadata. Override only for tests or compatible mirrors. |
 | `CIVITAI_IMAGE_RESOURCE_RETRY_DELAY_SECONDS` | `86400` | env/settings fallback | Delay before retrying non-permanent Civitai image resource failures. There is no current visible UI field for this value. |
 | `CIVITAI_IMAGE_MAX_RESOURCE_JOBS` | `30` | env | Max child jobs created from one Civitai image page. |
@@ -171,6 +169,8 @@ Current implementation status:
 | `MEDIA_TRANSCODE_AUDIO_BITRATE` | `160k` | env | ffmpeg audio bitrate. |
 | `MEDIA_CACHE_TTL_SECONDS` | `2592000` | env | Media cache cleanup age for transcodes, posters, and card thumbnails. |
 | `MEDIA_CACHE_MAX_BYTES` | `0` | env | `0` means no media cache size cap. Applies to all files under `MEDIA_CACHE_DIR`. |
+| `MEDIA_THUMBNAIL_BACKFILL_WORKERS` | `3` | env | Worker threads used by selected-folder card thumbnail backfill jobs. Clamped to 1-16 and still subject to the ffmpeg media semaphore. |
+| `MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS` | `5000` | env | Max library card items scanned when queueing a thumbnail backfill job. Clamped to 1-20000. |
 | `MEDIA_FILE_SCAN_MAX_FILES` | `5000` | env | Limits media scans. |
 | `WORKFLOW_IMPORT_MAX_BYTES` | `104857600` | env | Max uploaded ComfyUI workflow PNG/JSON size. Minimum enforced value is 1 MiB. |
 | `LIBRARY_ITEM_SIZE_SCAN_MAX_FILES` | `2000` | env | Limits library item size scans. |
@@ -183,7 +183,7 @@ Current implementation status:
 | `JOB_LOG_MAX_CHARS` | `200000` | env | Stored job log trim limit. |
 | `SQLITE_VACUUM_AFTER_CLEAR` | `0` | env | If truthy, `POST /api/jobs/clear` runs `VACUUM` after deleting inactive job history. Keep disabled during normal NAS use. |
 
-`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. The browser requests 50-card pages with `limit=50&page=<n>` and no separate page-size setting. Live scans are controlled by the same scan budgets as live library fallback. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
+`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. The browser requests 50-card pages with `limit=50&page=<n>` and no separate page-size setting. Live scans are controlled by the same scan budgets as live library fallback. `POST /api/media/thumbnail-jobs` queues an internal job for the selected folder's missing card-representative thumbnails; it uses `MEDIA_THUMBNAIL_BACKFILL_WORKERS` unless an API caller supplies a clamped `workers` value. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
 
 ## Compose Default Differences
 

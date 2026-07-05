@@ -1793,6 +1793,66 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertEqual(downloader.queue_global_limit(), 5)
             self.assertEqual(downloader.queue_per_provider_limit(), 2)
 
+    def test_huggingface_snapshot_uses_queue_timeout_and_single_internal_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsed = ParsedDownload(
+                source="huggingface",
+                raw_input="https://huggingface.co/owner/repo",
+                repo_id="owner/repo",
+                repo_type="model",
+            )
+            fake_db = FakeDb(
+                {},
+                settings={
+                    "QUEUE_PER_PROVIDER_LIMIT": "3",
+                    "DOWNLOAD_STALL_TIMEOUT_SECONDS": "300",
+                },
+            )
+            metadata = {
+                "id": "owner/repo",
+                "modelId": "owner/repo",
+                "pipeline_tag": "text-generation",
+                "siblings": [{"rfilename": "model.gguf"}],
+            }
+            captured_specs: list[dict] = []
+
+            def fake_hf_process(_job_id: int, spec: dict, target: Path) -> str:
+                captured_specs.append(spec)
+                return str(target)
+
+            with (
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "fetch_huggingface_metadata", return_value=metadata),
+                mock.patch.object(downloader, "verify_huggingface_token"),
+                mock.patch.object(downloader, "run_huggingface_download_process", side_effect=fake_hf_process),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "QUEUE_PER_PROVIDER_LIMIT_HARD_LIMIT": "4",
+                        "HF_SNAPSHOT_MAX_WORKERS": "9",
+                    },
+                ),
+            ):
+                downloader.download_huggingface(42, parsed)
+
+            self.assertEqual(captured_specs[0]["max_workers"], 1)
+            self.assertEqual(captured_specs[0]["hub_download_timeout"], 300)
+            self.assertTrue(any("snapshot workers=1, timeout=300s" in message for message in fake_db.logs))
+
+    def test_huggingface_disabled_queue_timeout_disables_hub_timeout_semantics(self) -> None:
+        fake_db = FakeDb({}, settings={"DOWNLOAD_STALL_TIMEOUT_SECONDS": "0"})
+
+        with (
+            mock.patch.object(downloader, "db", fake_db),
+            mock.patch.dict(os.environ, {"HF_HUB_DOWNLOAD_TIMEOUT": "120", "HF_TOKEN": "old-token"}),
+        ):
+            downloader.configure_huggingface_runtime(None)
+
+            self.assertEqual(os.environ["HF_HUB_DOWNLOAD_TIMEOUT"], str(downloader.HF_DISABLED_TIMEOUT_SECONDS))
+            self.assertNotIn("HF_TOKEN", os.environ)
+
     def test_same_provider_cooldown_can_be_disabled(self) -> None:
         parsed = ParsedDownload(source="generic", raw_input="https://example.test/a.bin", url="https://example.test/a.bin")
         job = {"status": "queued", "parsed_json": json.dumps(parsed.to_dict())}

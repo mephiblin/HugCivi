@@ -49,7 +49,8 @@ USER_AGENT = os.getenv("USER_AGENT", "nas-model-archiver/0.1")
 CHUNK_SIZE = 1024 * 1024
 CIVITAI_API_BASE = os.getenv("CIVITAI_API_BASE", "https://civitai.com/api/v1").rstrip("/")
 ASMRONE_API_BASE = os.getenv("ASMRONE_API_BASE", "https://api.asmr.one/api").rstrip("/")
-HF_DEFAULT_SNAPSHOT_WORKERS = 2
+HF_DEFAULT_SNAPSHOT_WORKERS = 1
+HF_DISABLED_TIMEOUT_SECONDS = 24 * 60 * 60
 HF_DOWNLOAD_SUBCOMMAND = "huggingface-download"
 HF_RESULT_PREFIX = "HUGCIVI_HF_RESULT_JSON:"
 ROUTE_SETTING_BY_TYPE = {
@@ -1080,6 +1081,18 @@ def queue_stall_timeout_seconds() -> int:
     return nonnegative_int_setting("DOWNLOAD_STALL_TIMEOUT_SECONDS", DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)
 
 
+def huggingface_snapshot_worker_count() -> int:
+    return 1
+
+
+def huggingface_hub_download_timeout_seconds(timeout: int | None = None) -> int:
+    if timeout is None:
+        timeout = queue_stall_timeout_seconds()
+    if timeout <= 0:
+        return HF_DISABLED_TIMEOUT_SECONDS
+    return timeout
+
+
 def progress_scan_max_files() -> int:
     return nonnegative_int_env("DOWNLOAD_PROGRESS_SCAN_MAX_FILES", DOWNLOAD_PROGRESS_SCAN_MAX_FILES_DEFAULT)
 
@@ -1291,10 +1304,14 @@ def sleep_with_job_control(job_id: int | None, seconds: float) -> None:
         time.sleep(min(remaining, 1.0))
 
 
-def configure_huggingface_runtime(token: str | None) -> None:
+def configure_huggingface_runtime(token: str | None, *, hub_download_timeout: int | None = None) -> None:
     if token:
         os.environ["HF_TOKEN"] = token
-    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+    else:
+        os.environ.pop("HF_TOKEN", None)
+    if hub_download_timeout is None:
+        hub_download_timeout = huggingface_hub_download_timeout_seconds()
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(max(1, int(hub_download_timeout)))
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "0")
     os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "4")
     os.environ.setdefault("HF_XET_RECONSTRUCT_WRITE_SEQUENTIALLY", "1")
@@ -1327,12 +1344,20 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         raise ValueError("Hugging Face repo_id가 없습니다.")
 
     token = db.get_secret("HF_TOKEN")
-    configure_huggingface_runtime(token)
+    snapshot_workers = huggingface_snapshot_worker_count()
+    queue_timeout = queue_stall_timeout_seconds()
+    hub_download_timeout = huggingface_hub_download_timeout_seconds(queue_timeout)
+    configure_huggingface_runtime(token, hub_download_timeout=hub_download_timeout)
 
     if token:
         db.append_log(job_id, "HF token configured: authenticated Hub requests enabled")
     else:
         db.append_log(job_id, "HF token not configured: anonymous public Hub access")
+    db.append_log(
+        job_id,
+        f"HF queue settings: snapshot workers={snapshot_workers}, timeout="
+        f"{'disabled' if queue_timeout <= 0 else str(queue_timeout) + 's'}",
+    )
 
     verify_huggingface_token(job_id, token)
     check_job_control(job_id)
@@ -1350,6 +1375,7 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
         "revision": parsed.revision,
         "local_dir": str(target),
         "token": token,
+        "hub_download_timeout": hub_download_timeout,
     }
 
     write_metadata(
@@ -1380,7 +1406,12 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
             )
             local_path = run_huggingface_download_process(
                 job_id,
-                huggingface_download_process_spec(common, mode="file", filename=filename),
+                huggingface_download_process_spec(
+                    common,
+                    mode="file",
+                    filename=filename,
+                    hub_download_timeout=hub_download_timeout,
+                ),
                 target,
             )
             check_job_control(job_id)
@@ -1407,7 +1438,8 @@ def download_huggingface(job_id: int, parsed: ParsedDownload) -> None:
                 mode="snapshot",
                 allow_patterns=parsed.include_patterns or None,
                 ignore_patterns=parsed.exclude_patterns or None,
-                max_workers=positive_int_env("HF_SNAPSHOT_MAX_WORKERS", HF_DEFAULT_SNAPSHOT_WORKERS),
+                max_workers=snapshot_workers,
+                hub_download_timeout=hub_download_timeout,
             ),
             target,
         )
@@ -1425,6 +1457,7 @@ def huggingface_download_process_spec(
     allow_patterns: list[str] | None = None,
     ignore_patterns: list[str] | None = None,
     max_workers: int | None = None,
+    hub_download_timeout: int | None = None,
 ) -> dict[str, Any]:
     return {
         "mode": mode,
@@ -1437,6 +1470,7 @@ def huggingface_download_process_spec(
         "allow_patterns": allow_patterns,
         "ignore_patterns": ignore_patterns,
         "max_workers": max_workers,
+        "hub_download_timeout": hub_download_timeout,
     }
 
 
@@ -6193,7 +6227,12 @@ def huggingface_download_worker_main() -> int:
 
     try:
         token = spec.get("token") or None
-        configure_huggingface_runtime(str(token) if token else None)
+        hub_download_timeout = spec.get("hub_download_timeout")
+        try:
+            hub_download_timeout_seconds = int(hub_download_timeout) if hub_download_timeout is not None else None
+        except (TypeError, ValueError):
+            hub_download_timeout_seconds = None
+        configure_huggingface_runtime(str(token) if token else None, hub_download_timeout=hub_download_timeout_seconds)
 
         from huggingface_hub import hf_hub_download, snapshot_download
 

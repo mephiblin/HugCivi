@@ -61,6 +61,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - 자동 폴더 분류와 사용자 지정 기본 폴더
 - 라이브러리 카드 보기
 - 라이브러리 카드는 50개 단위 페이지로 표시하고, 카드 썸네일은 작은 캐시 JPEG를 화면 근처 카드부터 최대 3개씩 요청
+- 선택한 라이브러리 폴더의 누락 카드 썸네일은 `썸네일 생성`으로 내부 작업에 예약해 대표 이미지만 순차 생성
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
@@ -566,7 +567,6 @@ QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS=2
 QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS=2
 DOWNLOAD_STALL_TIMEOUT_SECONDS=600
 INTERNAL_JOB_MAX_CONCURRENT=2
-HF_SNAPSHOT_MAX_WORKERS=2
 DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
 DOWNLOAD_HTTP_MAX_RETRIES=3
 DOWNLOAD_RETRY_BACKOFF_SECONDS=5
@@ -580,6 +580,8 @@ MEDIA_TRANSCODE_MAX_CONCURRENT=1
 MEDIA_TRANSCODE_TIMEOUT_SECONDS=1800
 MEDIA_CACHE_TTL_SECONDS=2592000
 MEDIA_CACHE_MAX_BYTES=0
+MEDIA_THUMBNAIL_BACKFILL_WORKERS=3
+MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS=5000
 HITOMI_BACKEND=auto
 HITOMI_LISTING_QUEUE_MODE=auto
 GALLERY_DL_AUTO_UPDATE=1
@@ -601,7 +603,7 @@ YT_DLP_EXTRA_OPTIONS=
 
 너무 많은 요청으로 차단될 가능성을 줄이기 위해 기본값을 보수적으로 잡았습니다.
 
-다운로드 큐 설정은 외부 provider 다운로드에 적용됩니다. ZIP, transcode, poster 같은 서버-local 작업은 `INTERNAL_JOB_MAX_CONCURRENT`와 작업별 semaphore 설정을 사용합니다. Synology NAS가 약하거나 동영상 transcode가 무겁다면 `INTERNAL_JOB_MAX_CONCURRENT=1`을 권장합니다.
+다운로드 큐 설정은 외부 provider 다운로드에 적용됩니다. `QUEUE_PER_PROVIDER_LIMIT`는 같은 공급자 작업 수를 제한하고, Hugging Face snapshot 내부 병렬은 1로 고정해 공급자 제한값이 곱해지지 않게 합니다. `DOWNLOAD_STALL_TIMEOUT_SECONDS`는 무진행 watchdog과 Hugging Face Hub 응답 대기에 함께 적용되며, `0`은 사용 안 함입니다. ZIP, transcode, poster, 썸네일 백필 같은 서버-local 작업은 `INTERNAL_JOB_MAX_CONCURRENT`와 작업별 semaphore 설정을 사용합니다. Synology NAS가 약하거나 동영상 transcode가 무겁다면 `INTERNAL_JOB_MAX_CONCURRENT=1`을 권장합니다.
 
 운영 기준인 `portainer-stack.yml`과 로컬 개발용 `docker-compose.yml`은 일부 기본값이 다릅니다. 특히 Portainer stack의 `DOWNLOAD_STALL_TIMEOUT_SECONDS` 기본값은 현재 `0`이며, 이는 watchdog timeout 비활성화를 의미합니다. 운영에서 무진행 job을 자동으로 끊고 싶으면 Portainer 환경변수나 UI 설정에서 `600` 같은 값을 명시하세요.
 
@@ -649,7 +651,7 @@ Portainer Stack의 Environment variables에서 `APP_PASSWORD`를 설정했는지
 
 ### 다운로드가 느립니다
 
-기본값은 차단 방지를 위해 느리게 잡혀 있습니다. 먼저 토큰을 입력하고, 그래도 부족하면 `HF_SNAPSHOT_MAX_WORKERS` 또는 `MAX_CONCURRENT_DOWNLOADS`를 조금씩 올리세요.
+기본값은 차단 방지를 위해 느리게 잡혀 있습니다. 먼저 토큰을 입력하고, 그래도 부족하면 설정창의 공급자당/전체 동시 다운로드 수를 조금씩 올리세요.
 
 ### 폴더 삭제가 안 됩니다
 
@@ -704,6 +706,7 @@ python -m pytest -q -p no:cacheprovider
 
 - `.txt`, `.md`, `.markdown` 파일을 라이브러리 카드와 미디어 뷰어에서 안전한 텍스트 문서로 볼 수 있게 했습니다.
 - 라이브러리 카드를 50개 단위 페이지로 넘기고, 카드 썸네일을 `/config/media-cache/thumbnails` 캐시와 화면 근처 최대 3개 동시 요청 큐로 처리해 큰 폴더 첫 로드 부담을 줄였습니다.
+- 선택한 라이브러리 폴더의 누락 카드 대표 썸네일을 `media_thumbnail_backfill` 내부 작업으로 예약하는 버튼을 추가했습니다.
 - 작업 목록을 50개 단위 숫자 페이지네이션으로 표시하고, `ALL` 및 Civitai/Hitomi/ASMR.one 같은 현재 작업 소스별 필터 버튼을 추가했습니다.
 - 저장 폴더 전용 새로고침, 우상단 버튼 순서 정리, 불필요한 전체 새로고침 아이콘 제거를 반영했습니다.
 

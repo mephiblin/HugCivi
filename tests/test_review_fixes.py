@@ -484,6 +484,67 @@ def test_media_thumbnail_endpoint_rejects_root_and_symlink(app_modules: tuple) -
     assert link_dir_error.value.status_code == 400
 
 
+def test_media_thumbnail_backfill_job_uses_card_representatives(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    archive = data_root / "asmr.one" / "RJ123456 - Sample"
+    archive.mkdir(parents=True)
+    cover = archive / "cover.jpg"
+    cover.write_bytes(b"cover")
+    extra = archive / "z-extra.png"
+    extra.write_bytes(b"extra")
+    (archive / "track.mp3").write_bytes(b"audio")
+    queued: list[int] = []
+    calls: list[str] = []
+
+    def fake_cached_thumbnail(source: Path, *, size: int | None = None) -> Path:
+        calls.append(main.relative_data_path(source))
+        target = main.media_thumbnail_target(source, main.thumbnail_size_value(size))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"jpg")
+        return target
+
+    monkeypatch.setattr(main.internal_jobs, "enqueue_job", lambda job_id: queued.append(job_id))
+    monkeypatch.setattr(main, "cached_image_thumbnail_path", fake_cached_thumbnail)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/media/thumbnail-jobs",
+        json={"path": "asmr.one", "workers": 3},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["queued"] is True
+    assert payload["candidate_count"] == 1
+    assert payload["workers"] == 3
+    assert queued == [payload["job_id"]]
+
+    job = db.get_job(payload["job_id"])
+    assert job is not None
+    assert job["job_kind"] == main.INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL
+    parsed_payload = db.parse_internal_job_payload(job)
+    assert "paths" not in parsed_payload
+    assert parsed_payload["candidate_count"] == 1
+
+    main.register_internal_job_handlers()
+    main.internal_jobs.run_job(payload["job_id"])
+
+    updated = db.get_job(payload["job_id"])
+    assert updated is not None
+    assert updated["status"] == "done"
+    assert updated["progress_bytes"] == 1
+    assert updated["total_bytes"] == 1
+    assert calls == ["asmr.one/RJ123456 - Sample/cover.jpg"]
+    assert main.media_thumbnail_target(cover, main.MEDIA_THUMBNAIL_DEFAULT_SIZE).exists()
+    metadata = json.loads(updated["metadata_json"])
+    assert metadata["media_job"]["generated"] == 1
+    assert metadata["media_job"]["workers"] == 3
+
+
 def test_lifespan_runs_startup_tasks_and_stops_workers(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -1191,6 +1252,7 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
 def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, _data_root, _config_root = app_modules
     template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    stylesheet = (main.BASE_DIR / "static" / "style.css").read_text(encoding="utf-8")
 
     render_jobs = template[
         template.index("function renderJobs(jobs)") : template.index("function renderJobSourceFilters()")
@@ -1211,6 +1273,11 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
     assert "THUMBNAIL_REQUEST_MAX_ACTIVE = 3" in template
     assert "THUMBNAIL_REQUEST_TIMEOUT_MS = 60000" in template
     assert "function setupDeferredThumbnails" in template
+    assert 'id="library-thumbnail-job-button"' in template
+    assert "fetch('/api/media/thumbnail-jobs'" in template
+    assert "workers: THUMBNAIL_REQUEST_MAX_ACTIVE" in template
+    assert "media_thumbnail_backfill: 'Thumbnail'" in template
+    assert ".library-thumbnail-job-button" in stylesheet
     assert "data-thumbnail-src" in render_model_info
     assert "data-thumbnail-src" in render_mobile_job_card
     assert "data-thumbnail-src" in render_library

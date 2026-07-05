@@ -50,7 +50,6 @@ QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS=2
 QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS=5
 DOWNLOAD_STALL_TIMEOUT_SECONDS=600
 INTERNAL_JOB_MAX_CONCURRENT=1
-HF_SNAPSHOT_MAX_WORKERS=2
 DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS=1.5
 GALLERY_DL_SLEEP_REQUEST_SECONDS=2
 YT_DLP_FORMAT=best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best
@@ -76,10 +75,10 @@ Settings:
 | Setting | Meaning |
 | --- | --- |
 | `MAX_CONCURRENT_DOWNLOADS` | Global external download job limit. |
-| `QUEUE_PER_PROVIDER_LIMIT` | Concurrent jobs allowed for the same provider bucket. |
+| `QUEUE_PER_PROVIDER_LIMIT` | Concurrent jobs allowed for the same provider bucket. Hugging Face snapshot internal workers stay fixed at 1 so this provider limit does not multiply. |
 | `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS` | Minimum cooldown after a provider job finishes. |
 | `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS` | Maximum cooldown after a provider job finishes. |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Watchdog timeout for jobs with no detected progress. `0` disables the timeout. |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Watchdog timeout for jobs with no detected progress. Hugging Face Hub response waits also follow this value. `0` disables the timeout semantics. |
 
 Internal server-local jobs use a separate limit:
 
@@ -171,6 +170,7 @@ Media:
 - Unplayable videos create `media_transcode` jobs on demand.
 - Missing video posters create `media_poster` jobs on demand.
 - Library/job card image thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`.
+- The library `썸네일 생성` button queues a `media_thumbnail_backfill` internal job for the selected folder. It scans card representatives only, skips thumbnails already cached, and defaults to 3 worker threads.
 - Media cache files live under `/config/media-cache`.
 - First visit or first load of existing files may spend CPU/I/O creating uncached thumbnails, but the browser queues requests for cards in or near the viewport and runs at most 3 thumbnail requests at a time; it should not send 100 thumbnail generations at once.
 
@@ -184,6 +184,8 @@ MEDIA_TRANSCODE_CRF=23
 MEDIA_TRANSCODE_AUDIO_BITRATE=160k
 MEDIA_CACHE_TTL_SECONDS=2592000
 MEDIA_CACHE_MAX_BYTES=0
+MEDIA_THUMBNAIL_BACKFILL_WORKERS=3
+MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS=5000
 DOWNLOAD_ARCHIVE_TTL_SECONDS=86400
 DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1
 DOWNLOAD_ARCHIVE_MAX_FILES=50000
@@ -191,9 +193,9 @@ DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES=0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
 ```
 
-`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work.
+`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work. Thumbnail backfill jobs use 3 queue workers by default, but each ffmpeg invocation still passes through the media semaphore.
 
-Deploy note: no new environment variables, DB migrations, or volume changes are required for the deferred thumbnail request queue. Rebuild and redeploy the web image to ship the frontend pacing behavior; existing `/config/media-cache` contents remain valid and the existing TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
+Deploy note: no DB migrations or volume changes are required for thumbnail backfill jobs. Rebuild and redeploy the web image to ship the new library action; existing `/config/media-cache` contents remain valid and the existing TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
 
 ## Library Index
 
@@ -300,7 +302,7 @@ Slow downloads:
 
 - add provider tokens/cookies where appropriate
 - keep `QUEUE_PER_PROVIDER_LIMIT=1`
-- increase `MAX_CONCURRENT_DOWNLOADS` slowly
+- increase the provider/global concurrency settings slowly
 - check provider rate limits before increasing retry pressure
 
 NAS becomes sluggish:
