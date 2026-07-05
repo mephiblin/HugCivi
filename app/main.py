@@ -118,6 +118,9 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 security = HTTPBasic()
 PWA_MANIFEST_PATH = BASE_DIR / "static" / "manifest.webmanifest"
 PWA_SERVICE_WORKER_PATH = BASE_DIR / "static" / "sw.js"
+FOLDER_TREE_MAX_DEPTH = 4
+FOLDER_TREE_MAX_ENTRIES = 5000
+FOLDER_TREE_MAX_CHILDREN_PER_FOLDER = 1000
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
@@ -140,6 +143,7 @@ INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL = "media_thumbnail_backfill"
 JOB_LIST_PAGE_SIZE = 50
 LIBRARY_PAGE_SIZE = 50
 LIBRARY_PAGE_MAX_SIZE = 100
+LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = 1000
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
@@ -1891,7 +1895,13 @@ def decorate_job_media_flags(job: dict[str, Any]) -> None:
 
 def normalize_library_sort(sort: str | None) -> str:
     value = str(sort or "az").strip().lower()
-    return value if value in {"az", "za", "date", "favorite"} else "az"
+    aliases = {
+        "date": "date_desc",
+        "newest": "date_desc",
+        "oldest": "date_asc",
+    }
+    value = aliases.get(value, value)
+    return value if value in {"az", "za", "date_desc", "date_asc", "favorite"} else "az"
 
 
 def library_page_limit(limit: int | None) -> int:
@@ -1998,15 +2008,18 @@ def live_library_items_page(
     sort: str = "az",
 ) -> tuple[list[dict[str, Any]], bool]:
     fetch_limit = max(1, offset + limit + 1)
-    items = sort_library_items(live_library_items(max_items=fetch_limit, root_path=root_path), sort)
+    scan_limit = max(fetch_limit, LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS)
+    items = sort_library_items(live_library_items(max_items=scan_limit, root_path=root_path), sort)
     page_items = items[offset : offset + limit]
     return page_items, len(items) > offset + limit
 
 
 def sort_library_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
     mode = normalize_library_sort(sort)
-    if mode == "date":
+    if mode == "date_desc":
         return sorted(items, key=lambda item: (-library_item_timestamp(item), library_item_sort_title(item)))
+    if mode == "date_asc":
+        return sorted(items, key=lambda item: (library_item_timestamp(item), library_item_sort_title(item)))
     if mode == "za":
         return sorted(items, key=library_item_sort_title, reverse=True)
     if mode == "favorite":
@@ -3970,9 +3983,9 @@ def write_startup_config(values: dict[str, str]) -> None:
 
 def build_folder_tree(
     root: Path,
-    max_depth: int = 4,
-    max_entries: int = 300,
-    max_children_per_folder: int = 120,
+    max_depth: int = FOLDER_TREE_MAX_DEPTH,
+    max_entries: int = FOLDER_TREE_MAX_ENTRIES,
+    max_children_per_folder: int = FOLDER_TREE_MAX_CHILDREN_PER_FOLDER,
 ) -> dict[str, Any]:
     root.mkdir(parents=True, exist_ok=True)
     root = root.resolve()

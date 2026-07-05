@@ -231,9 +231,9 @@ Indexer behavior:
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
-- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up
+- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Live selected-folder pagination sorts a stable scan window before slicing pages so early pages do not repeat cards as later pages expand the scanned set.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
-- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`
+- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
 
 The index row stores the same kind of payload the UI already expects, rather than normalizing every display field into separate columns. This is a pragmatic cache/index for a personal archive UI, not a full search engine.

@@ -295,7 +295,8 @@
               <select id="library-sort">
                 <option value="az" selected>A-Z</option>
                 <option value="za">Z-A</option>
-                <option value="date">날짜순</option>
+                <option value="date_desc">최신순</option>
+                <option value="date_asc">오래된순</option>
                 <option value="favorite">즐겨찾기</option>
               </select>
               <button type="button" class="library-thumbnail-job-button" id="library-thumbnail-job-button" title="현재 폴더의 누락 카드 썸네일 생성" disabled>썸네일 생성</button>
@@ -1333,14 +1334,15 @@
       refreshJobs({page: 1, source});
     });
     librarySort.addEventListener('change', () => {
-      refreshLibraryForActivePath({page: 1});
+      refreshLibraryForActivePath({page: 1, loading: true});
     });
     libraryThumbnailJobButton?.addEventListener('click', queueLibraryThumbnailBackfill);
     libraryPagination?.addEventListener('click', event => {
       const button = event.target.closest('[data-library-page]');
       if (!button || button.disabled) return;
       event.preventDefault();
-      refreshLibraryForActivePath({page: Number(button.dataset.libraryPage || 1)});
+      const page = Number(button.dataset.libraryPage || 1);
+      refreshLibraryForActivePath({page, loading: true});
     });
     propertiesClose.addEventListener('click', closePropertiesModal);
     propertiesModal.addEventListener('click', event => {
@@ -2962,19 +2964,21 @@
       return window.matchMedia('(max-width: 700px)').matches;
     }
 
-    function showLibraryLoading(path, mode = 'live') {
+    function showLibraryLoading(path, mode = 'live', options = {}) {
       const normalized = normalizePath(path || '');
+      const page = Math.max(1, Number(options.page || 1));
+      const limit = Math.max(1, Number(options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
       currentLibraryItems = [];
       currentLibraryPage = normalizeLibraryPage(
         {
-          page: 1,
-          limit: currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
+          page,
+          limit,
           total_count: null,
           total_pages: null,
           has_next: false,
           mode,
           path: normalized,
-          sort: librarySort?.value || 'az',
+          sort: options.sort || librarySort?.value || currentLibraryPage.sort || 'az',
           paged: true,
         },
         0
@@ -3300,19 +3304,30 @@
     }
 
     async function refreshLibraryForActivePath(options = {}) {
+      const mode = options.mode || (activeLibraryPath === null ? 'index' : 'live');
+      const page = options.page || currentLibraryPage.page || 1;
+      const limit = options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE;
+      const path = activeLibraryPath === null ? '' : activeLibraryPath;
+      if (options.loading) {
+        showLibraryLoading(path, mode, {
+          page,
+          limit,
+          sort: librarySort?.value || currentLibraryPage.sort || 'az',
+        });
+      }
       if (activeLibraryPath === null) {
         await refreshLibraryItems({
-          mode: options.mode || 'index',
-          page: options.page || currentLibraryPage.page || 1,
-          limit: options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
+          mode,
+          page,
+          limit,
         });
         return;
       }
       await refreshLibraryItems({
-        mode: options.mode || 'live',
+        mode,
         path: activeLibraryPath,
-        page: options.page || currentLibraryPage.page || 1,
-        limit: options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE,
+        page,
+        limit,
       });
     }
 
@@ -3918,8 +3933,11 @@
     function sortLibraryJobs(jobs) {
       const mode = librarySort.value || 'az';
       return [...jobs].sort((left, right) => {
-        if (mode === 'date') {
+        if (mode === 'date' || mode === 'date_desc' || mode === 'newest') {
           return jobTime(right) - jobTime(left) || compareJobTitle(left, right);
+        }
+        if (mode === 'date_asc' || mode === 'oldest') {
+          return jobTime(left) - jobTime(right) || compareJobTitle(left, right);
         }
         if (mode === 'za') {
           return compareJobTitle(right, left);

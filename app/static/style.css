@@ -2544,9 +2544,14 @@ a:hover {
 }
 
 .asset-overlay strong {
+  display: -webkit-box;
+  max-height: 2.56em;
   font-size: 12px;
   font-weight: 900;
   line-height: 1.28;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .asset-overlay span {

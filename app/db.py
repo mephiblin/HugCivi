@@ -1372,11 +1372,14 @@ def library_index_where(path_prefix: str) -> tuple[str, tuple[str, ...]]:
 
 
 def library_index_order(sort: str) -> str:
-    if sort == "za":
+    value = str(sort or "az").strip().lower()
+    if value == "za":
         return "ORDER BY lower(name) DESC, lower(path) DESC"
-    if sort == "date":
+    if value in {"date", "date_desc", "newest"}:
         return "ORDER BY mtime_ns DESC, lower(path) ASC"
-    if sort == "favorite":
+    if value in {"date_asc", "oldest"}:
+        return "ORDER BY mtime_ns ASC, lower(path) ASC"
+    if value == "favorite":
         return (
             "ORDER BY CASE WHEN path IN (SELECT path FROM favorites) THEN 0 ELSE 1 END, "
             "lower(name) ASC, lower(path) ASC"

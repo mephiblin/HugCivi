@@ -1037,6 +1037,77 @@ def test_library_api_keeps_legacy_array_and_returns_paged_wrapper(app_modules: t
     assert [item["target_path"].rsplit("/", 1)[-1] for item in page["items"]] == ["alpha", "bravo"]
 
 
+def test_library_api_date_sort_supports_newest_oldest_and_legacy_alias(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "sort-fixtures"
+    fixtures = (
+        ("oldest-card", 1_700_000_000),
+        ("middle-card", 1_700_000_100),
+        ("newest-card", 1_700_000_200),
+    )
+    for name, timestamp in fixtures:
+        target = root / name
+        target.mkdir(parents=True)
+        (target / "preview.jpg").write_bytes(b"image")
+        os.utime(target, (timestamp, timestamp))
+
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    def item_names(payload: dict[str, object]) -> list[str]:
+        items = payload.get("items")
+        assert isinstance(items, list)
+        assert all(isinstance(item, dict) for item in items)
+        return [str(item["target_path"]).rsplit("/", 1)[-1] for item in items]
+
+    newest = json.loads(main.api_library(limit=10, page=1, sort="date_desc", _="_").body.decode("utf-8"))
+    legacy = json.loads(main.api_library(limit=10, page=1, sort="date", _="_").body.decode("utf-8"))
+    oldest = json.loads(main.api_library(limit=10, page=1, sort="date_asc", _="_").body.decode("utf-8"))
+    live_oldest = json.loads(
+        main.api_library(mode="live", path="sort-fixtures", limit=10, page=1, sort="date_asc", _="_").body.decode(
+            "utf-8"
+        )
+    )
+
+    assert newest["sort"] == "date_desc"
+    assert legacy["sort"] == "date_desc"
+    assert oldest["sort"] == "date_asc"
+    assert item_names(newest) == ["newest-card", "middle-card", "oldest-card"]
+    assert item_names(legacy) == item_names(newest)
+    assert item_names(oldest) == ["oldest-card", "middle-card", "newest-card"]
+    assert item_names(live_oldest) == ["oldest-card", "middle-card", "newest-card"]
+
+
+def test_live_library_pagination_sorts_stable_scan_window(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    source_items = [
+        {"target_path": f"late/z-card-{index:03d}", "model_title": f"zzz card {index:03d}"}
+        for index in range(60)
+    ] + [
+        {"target_path": f"early/a-card-{index:03d}", "model_title": f"aaa 漢字カード {index:03d}"}
+        for index in range(60)
+    ]
+    scan_limits: list[int] = []
+
+    def fake_live_library_items(max_items: int = 1000, *, root_path: Path | None = None) -> list[dict[str, str]]:
+        scan_limits.append(max_items)
+        return source_items[:max_items]
+
+    monkeypatch.setattr(main, "live_library_items", fake_live_library_items)
+
+    first_page, first_has_next = main.live_library_items_page(limit=50, offset=0, sort="az")
+    second_page, second_has_next = main.live_library_items_page(limit=50, offset=50, sort="az")
+    first_paths = {str(item["target_path"]) for item in first_page}
+    second_paths = {str(item["target_path"]) for item in second_page}
+
+    assert first_has_next is True
+    assert second_has_next is True
+    assert scan_limits == [main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS, main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS]
+    assert len(first_paths) == 50
+    assert len(second_paths) == 50
+    assert first_paths.isdisjoint(second_paths)
+    assert [str(item["target_path"]) for item in first_page[:2]] == ["early/a-card-000", "early/a-card-001"]
+
+
 def test_retry_failed_job_requeues_existing_job(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -1227,10 +1298,16 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "async function refreshLibraryItems(options = {})" in template
     assert "async function refreshLibraryForActivePath(options = {})" in template
+    assert "function showLibraryLoading(path, mode = 'live', options = {})" in template
     assert "refreshLibraryForActivePath({mode: 'live', page: 1});" in template
+    assert "refreshLibraryForActivePath({page: 1, loading: true});" in template
+    assert "refreshLibraryForActivePath({page, loading: true});" in template
     assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
     assert "? visibleJobPages(page, totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
     assert "return Array.from(new Set(candidates)).filter(value => value >= 1);" in template
+    assert '<option value="date_desc">최신순</option>' in template
+    assert '<option value="date_asc">오래된순</option>' in template
+    assert '<option value="date">날짜순</option>' not in template
     assert "params.set('path', normalizePath(options.path || ''))" in template
     assert "refreshLibraryForActivePath({mode: 'live'})," in template
     assert "function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {})" in template
@@ -1249,6 +1326,11 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".library-pagination" in stylesheet
     assert "overflow-wrap: anywhere;" in stylesheet
     assert "word-break: break-word;" in stylesheet
+    asset_title_style = stylesheet[
+        stylesheet.index(".asset-overlay strong {") : stylesheet.index(".asset-overlay span {")
+    ]
+    assert "max-height: 2.56em;" in asset_title_style
+    assert "-webkit-line-clamp: 2;" in asset_title_style
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet
@@ -1318,6 +1400,25 @@ def test_folder_tree_large_sibling_does_not_hide_later_route_roots(app_modules: 
     assert {"asmr.one", "gallery-dl", "hitomi", "huggingface", "stable-diffusion"} <= set(root_children)
     assert len(root_children["hitomi"]["children"]) == 4
     assert "loras" in stable_children
+
+
+def test_api_folders_default_includes_more_than_120_sibling_folders(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    parent = data_root / "stable-diffusion" / "checkpoints"
+    parent.mkdir(parents=True)
+    for index in range(151):
+        (parent / f"model-{index:03d}").mkdir()
+
+    client = TestClient(main.app)
+    response = client.get("/api/folders", auth=("admin", "test-password-that-is-long"))
+
+    assert response.status_code == 200
+    payload = response.json()
+    stable = next(child for child in payload["children"] if child["name"] == "stable-diffusion")
+    checkpoints = next(child for child in stable["children"] if child["name"] == "checkpoints")
+    checkpoint_children = {child["name"] for child in checkpoints["children"]}
+    assert len(checkpoint_children) == 151
+    assert "model-150" in checkpoint_children
 
 
 def test_api_create_folder_creates_child_and_rejects_nested_name(app_modules: tuple) -> None:
