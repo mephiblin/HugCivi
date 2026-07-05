@@ -1099,6 +1099,147 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertNotIn("secret-token", sidecar_text)
             self.assertNotIn("image-secret", sidecar_text)
 
+    def test_civitai_image_page_downloads_rendered_webm_video(self) -> None:
+        raw_input = "https://civitai.red/images/97376108"
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input=raw_input,
+            civitai_image_id="97376108",
+            civitai_image_url=raw_input,
+        )
+        asset_id = "94809a6a-5793-48cf-9347-84fe41f6c2d7"
+        content_url = (
+            f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{asset_id}/"
+            f"transcode=true,width=450,optimized=true/{asset_id}.mp4"
+        )
+        thumbnail_url = (
+            f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{asset_id}/"
+            f"anim=false,transcode=true,width=450,original=false,optimized=true/{asset_id}.jpeg"
+        )
+        original_url = (
+            f"https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/{asset_id}/"
+            f"original=true/AnimateDiff_00063.webm"
+        )
+        next_payload = {
+            "props": {
+                "pageProps": {
+                    "trpcState": {
+                        "json": {
+                            "queries": [
+                                {
+                                    "state": {
+                                        "data": {
+                                            "id": 97376108,
+                                            "name": "AnimateDiff_00063.webm",
+                                            "url": asset_id,
+                                            "height": 496,
+                                            "width": 560,
+                                            "postId": 21602466,
+                                            "type": "video",
+                                            "mimeType": "video/webm",
+                                            "createdAt": "2025-08-30T12:35:38.771Z",
+                                            "metadata": {"width": 560, "height": 496, "duration": 1.863},
+                                            "user": {"username": "Prometheus_scholar"},
+                                        }
+                                    },
+                                    "queryKey": [["image", "get"], {"input": {"id": 97376108}, "type": "query"}],
+                                },
+                                {
+                                    "state": {
+                                        "data": {
+                                            "type": "video",
+                                            "meta": {"prompt": "rendered video prompt"},
+                                            "resources": [],
+                                        }
+                                    },
+                                    "queryKey": [
+                                        ["image", "getGenerationData"],
+                                        {"input": {"id": 97376108}, "type": "query"},
+                                    ],
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        rendered_html = (
+            "<html><head>"
+            '<script type="application/ld+json">'
+            + json.dumps(
+                {
+                    "@context": "https://schema.org",
+                    "@type": "VideoObject",
+                    "name": "Video posted by Prometheus_scholar",
+                    "contentUrl": content_url,
+                    "thumbnailUrl": thumbnail_url,
+                    "width": 560,
+                    "height": 496,
+                }
+            )
+            + "</script></head><body>"
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(next_payload)
+            + "</script></body></html>"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+            requested_pages: list[str] = []
+            downloaded_urls: list[str] = []
+
+            def fake_request(
+                _session: object,
+                _method: str,
+                url: str,
+                **_kwargs: object,
+            ) -> requests.Response:
+                requested_pages.append(url)
+                return http_response(rendered_html, url=url)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                downloaded_urls.append(url)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"webm")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", return_value={"items": []}) as fetch_json,
+                mock.patch.object(downloader, "request_with_safety", side_effect=fake_request),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "images" / "Prometheus_scholar" / "image_97376108"
+            payload = json.loads((target / "_civitai_image_metadata.json").read_text(encoding="utf-8"))
+
+            fetch_json.assert_called_once()
+            self.assertEqual(requested_pages, ["https://civitai.com/images/97376108"])
+            self.assertEqual(downloaded_urls, [original_url])
+            self.assertEqual(fake_db.job["filename"], "image_97376108.webm")
+            self.assertEqual(fake_db.job["model_type"], "Video")
+            self.assertEqual(fake_db.job["file_format"], "webm")
+            self.assertEqual(fake_db.job["thumbnail_url"], thumbnail_url)
+            self.assertEqual(payload["image"]["original_url"], original_url)
+            self.assertEqual(payload["image"]["thumbnail_url"], thumbnail_url)
+            self.assertEqual(payload["image"]["mime_type"], "video/webm")
+            self.assertEqual(payload["archive_info"]["model_type"], "Video")
+            self.assertEqual(payload["local_files"]["primary_image"], "image_97376108.webm")
+            self.assertEqual(payload["resource_downloads"], [])
+            enqueue_job.assert_not_called()
+
     def test_civitai_image_page_enriches_model_version_only_resources(self) -> None:
         parsed = ParsedDownload(
             source="civitai",

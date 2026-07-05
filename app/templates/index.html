@@ -3843,7 +3843,7 @@
         : `${formatCount(page)}페이지`;
       const pages = totalPages
         ? visibleJobPages(page, totalPages)
-        : [Math.max(1, page - 1), page, hasNext ? page + 1 : null].filter(Boolean);
+        : visibleUnknownTotalLibraryPages(page, hasNext);
       const buttons = pages.map(item => {
         if (item === 'gap') return '<span class="jobs-page-gap" aria-hidden="true">...</span>';
         const active = item === page;
@@ -3857,6 +3857,12 @@
           <button type="button" data-library-page="${page + 1}" ${nextDisabled ? 'disabled' : ''}>다음</button>
         </div>
       `;
+    }
+
+    function visibleUnknownTotalLibraryPages(page, hasNext) {
+      const candidates = [Math.max(1, page - 1), page];
+      if (hasNext) candidates.push(page + 1);
+      return Array.from(new Set(candidates)).filter(value => value >= 1);
     }
 
     function libraryPlaceholderLabel(job) {

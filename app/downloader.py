@@ -83,6 +83,8 @@ _YT_DLP_VERSION_LOCK = threading.Lock()
 _YT_DLP_VERSION_CACHE: str | None = None
 DOWNLOAD_RUNTIME_METADATA_KEY = "download_runtime"
 THUMBNAIL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
+CIVITAI_VIDEO_EXTENSIONS = {".m4v", ".mov", ".mp4", ".webm"}
+CIVITAI_MEDIA_EXTENSIONS = THUMBNAIL_IMAGE_EXTENSIONS | CIVITAI_VIDEO_EXTENSIONS
 THUMBNAIL_MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -116,6 +118,10 @@ CIVITAI_IMAGE_CONTENT_TYPE_EXTENSIONS = {
     "image/gif": ".gif",
     "image/avif": ".avif",
     "image/bmp": ".bmp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
 }
 CIVITAI_GENERATION_META_LABELS = {
     "seed": "Seed",
@@ -1819,9 +1825,8 @@ def extract_civitai_next_image_item(html_text: str, image_id: str) -> dict[str, 
         return None
 
     json_ld = extract_civitai_image_json_ld(html_text, image_id)
-    image_url = text_value(json_ld.get("contentUrl")) if json_ld else None
-    if not image_url:
-        image_url = rendered_civitai_image_url(image_data)
+    image_url = rendered_civitai_media_url(image_data, json_ld)
+    thumbnail_url = text_value(json_ld.get("thumbnailUrl")) if json_ld else None
 
     raw_user = image_data.get("user")
     user = raw_user if isinstance(raw_user, dict) else {}
@@ -1835,10 +1840,13 @@ def extract_civitai_next_image_item(html_text: str, image_id: str) -> dict[str, 
     return {
         "id": image_data.get("id") or image_id,
         "postId": image_data.get("postId") or image_data.get("post_id"),
+        "name": image_data.get("name"),
         "url": image_url,
+        "thumbnailUrl": thumbnail_url,
         "hash": image_data.get("hash") or first_mapping_value(metadata, "hash"),
         "width": image_data.get("width") or first_mapping_value(metadata, "width"),
         "height": image_data.get("height") or first_mapping_value(metadata, "height"),
+        "mimeType": image_data.get("mimeType") or image_data.get("mime_type") or first_mapping_value(metadata, "mimeType"),
         "nsfwLevel": image_data.get("nsfwLevel") or image_data.get("nsfw_level"),
         "type": image_data.get("type"),
         "createdAt": image_data.get("createdAt") or image_data.get("publishedAt"),
@@ -1849,6 +1857,7 @@ def extract_civitai_next_image_item(html_text: str, image_id: str) -> dict[str, 
 
 
 def extract_civitai_image_json_ld(html_text: str, image_id: str) -> dict[str, Any] | None:
+    fallback: dict[str, Any] | None = None
     for match in re.finditer(r"<script\b([^>]*)>(.*?)</script>", html_text, re.S | re.I):
         attrs, body = match.groups()
         if "application/ld+json" not in attrs.lower():
@@ -1861,22 +1870,77 @@ def extract_civitai_image_json_ld(html_text: str, image_id: str) -> dict[str, An
         for candidate in candidates:
             if not isinstance(candidate, dict):
                 continue
-            if candidate.get("@type") != "ImageObject":
+            raw_type = candidate.get("@type")
+            types = raw_type if isinstance(raw_type, list) else [raw_type]
+            if not any(str(item) in {"ImageObject", "VideoObject"} for item in types):
                 continue
             license_page = text_value(candidate.get("acquireLicensePage") or candidate.get("url")) or ""
-            if image_id and f"/images/{image_id}" not in license_page:
+            if image_id and license_page and f"/images/{image_id}" not in license_page:
                 continue
-            return candidate
-    return None
+            if license_page:
+                return candidate
+            if fallback is None:
+                fallback = candidate
+    return fallback
 
 
-def rendered_civitai_image_url(image_data: dict[str, Any]) -> str | None:
+def is_http_url_value(value: str | None) -> bool:
+    return bool(value and value.startswith(("http://", "https://")))
+
+
+def rendered_civitai_media_url(image_data: dict[str, Any], json_ld: dict[str, Any] | None = None) -> str | None:
     value = text_value(image_data.get("url"))
-    if not value:
-        return None
-    if value.startswith(("http://", "https://")):
+    if is_http_url_value(value):
         return value
+    content_url = text_value(json_ld.get("contentUrl")) if json_ld else None
+    if content_url and rendered_civitai_media_is_video(image_data):
+        original_url = civitai_original_media_url_from_rendered(content_url, image_data)
+        if original_url:
+            return original_url
+    if is_http_url_value(content_url):
+        return content_url
     return None
+
+
+def rendered_civitai_media_is_video(image_data: dict[str, Any]) -> bool:
+    media_type = text_value(image_data.get("type"))
+    if media_type and media_type.lower() == "video":
+        return True
+    mime_type = text_value(image_data.get("mimeType") or image_data.get("mime_type"))
+    if mime_type and mime_type.lower().startswith("video/"):
+        return True
+    name = text_value(image_data.get("name"))
+    return bool(name and Path(name).suffix.lower() in CIVITAI_VIDEO_EXTENSIONS)
+
+
+def civitai_rendered_media_filename(image_data: dict[str, Any], content_url: str) -> str:
+    name = text_value(image_data.get("name"))
+    if name:
+        return Path(name).name
+    asset_id = text_value(image_data.get("url")) or "media"
+    mime_type = text_value(image_data.get("mimeType") or image_data.get("mime_type"))
+    suffix = CIVITAI_IMAGE_CONTENT_TYPE_EXTENSIONS.get(str(mime_type or "").split(";", 1)[0].strip().lower())
+    if not suffix:
+        suffix = Path(unquote(urlparse(content_url).path)).suffix.lower() or ".bin"
+    return f"{asset_id}{suffix}"
+
+
+def civitai_original_media_url_from_rendered(content_url: str, image_data: dict[str, Any]) -> str | None:
+    asset_id = text_value(image_data.get("url"))
+    if not asset_id or is_http_url_value(asset_id):
+        return None
+    parsed = urlparse(content_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    try:
+        asset_index = parts.index(asset_id)
+    except ValueError:
+        return None
+    filename = civitai_rendered_media_filename(image_data, content_url)
+    original_parts = [*parts[: asset_index + 1], "original=true", filename]
+    path = "/" + "/".join(quote(part, safe="=,") for part in original_parts)
+    return urlunparse(parsed._replace(path=path, query="", fragment=""))
 
 
 def rendered_civitai_generation_meta(generation_data: dict[str, Any] | None) -> dict[str, Any]:
@@ -2806,14 +2870,16 @@ def civitai_image_model_version_ids(item: dict[str, Any], resources: list[dict[s
 def civitai_image_original_url(item: dict[str, Any]) -> str | None:
     for key in ("url", "originalUrl", "imageUrl"):
         value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        text = value.strip() if isinstance(value, str) else ""
+        if is_http_url_value(text):
+            return text
     raw_image = item.get("image")
     if isinstance(raw_image, dict):
         for key in ("url", "originalUrl", "imageUrl"):
             value = raw_image.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+            text = value.strip() if isinstance(value, str) else ""
+            if is_http_url_value(text):
+                return text
     return None
 
 
@@ -2842,6 +2908,27 @@ def civitai_remote_thumbnail_url(url: str | None) -> str | None:
     if not url:
         return None
     return url.replace("/original=true/", "/width=256/")
+
+
+def civitai_image_thumbnail_url(item: dict[str, Any], original_url: str | None) -> str | None:
+    for source in (item, item.get("image") if isinstance(item.get("image"), dict) else {}):
+        if not isinstance(source, dict):
+            continue
+        for key in ("thumbnailUrl", "thumbnail_url", "thumbnail", "previewUrl", "preview_url"):
+            value = source.get(key)
+            text = value.strip() if isinstance(value, str) else ""
+            if is_http_url_value(text):
+                return text
+
+    mime_type = text_value(item.get("mimeType") or item.get("mime_type"))
+    media_type = text_value(item.get("type"))
+    is_video = bool(
+        (mime_type and mime_type.lower().startswith("video/"))
+        or (media_type and media_type.lower() == "video")
+    )
+    if is_video:
+        return None
+    return civitai_remote_thumbnail_url(original_url)
 
 
 def build_civitai_copy_all_text(prompt: str | None, negative_prompt: str | None, metadata: list[dict[str, str]]) -> str:
@@ -2873,11 +2960,19 @@ def normalize_civitai_image_record(
     resources = normalize_civitai_image_resources(item, meta)
     model_version_ids = civitai_image_model_version_ids(item, resources)
     original_url = civitai_image_original_url(item)
+    thumbnail_url = civitai_image_thumbnail_url(item, original_url)
     image_id = id_value(item.get("id")) or "unknown"
     username = civitai_image_username(item)
     base_model = civitai_image_base_model(meta, resources)
     width = item.get("width")
     height = item.get("height")
+    mime_type = text_value(item.get("mimeType") or item.get("mime_type"))
+    item_type = text_value(item.get("type"))
+    is_video = bool(
+        (mime_type and mime_type.lower().startswith("video/"))
+        or (item_type and item_type.lower() == "video")
+    )
+    model_type = "Video" if is_video else "Image"
     precision = f"{width} x {height}" if width and height else None
     generation_available = bool(prompt or negative_prompt or metadata or resources or model_version_ids)
 
@@ -2888,14 +2983,17 @@ def normalize_civitai_image_record(
         "raw_input": redact_sensitive_text(raw_input) or raw_input,
         "image": {
             "id": image_id,
+            "name": text_value(item.get("name")) or "",
             "post_id": id_value(item.get("postId") or item.get("post_id")),
             "username": username,
             "width": width,
             "height": height,
+            "mime_type": mime_type,
+            "type": item_type or model_type.lower(),
             "created_at": item.get("createdAt") or item.get("created_at"),
             "nsfw_level": item.get("nsfwLevel") or item.get("nsfw_level"),
             "original_url": redact_sensitive_text(original_url) if original_url else None,
-            "thumbnail_url": civitai_remote_thumbnail_url(redact_sensitive_text(original_url) if original_url else None),
+            "thumbnail_url": redact_sensitive_text(thumbnail_url) if thumbnail_url else None,
         },
         "generation_data": {
             "available": generation_available,
@@ -2911,11 +3009,11 @@ def normalize_civitai_image_record(
         "archive_info": {
             "model_title": f"Civitai image {image_id}",
             "model_category": "Civitai Image Page",
-            "model_type": "Image",
+            "model_type": model_type,
             "base_model": base_model,
             "file_format": None,
             "precision": precision,
-            "thumbnail_url": None,
+            "thumbnail_url": redact_sensitive_text(thumbnail_url) if thumbnail_url else None,
         },
     }
 
@@ -2942,7 +3040,7 @@ def civitai_image_extension(session: requests.Session, url: str, job_id: int) ->
             return extension
 
     suffix = Path(unquote(urlparse(url).path)).suffix.lower()
-    if suffix in THUMBNAIL_IMAGE_EXTENSIONS:
+    if suffix in CIVITAI_MEDIA_EXTENSIONS:
         return suffix
     return ".jpg"
 

@@ -1228,6 +1228,9 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "async function refreshLibraryItems(options = {})" in template
     assert "async function refreshLibraryForActivePath(options = {})" in template
     assert "refreshLibraryForActivePath({mode: 'live', page: 1});" in template
+    assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
+    assert "? visibleJobPages(page, totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
+    assert "return Array.from(new Set(candidates)).filter(value => value >= 1);" in template
     assert "params.set('path', normalizePath(options.path || ''))" in template
     assert "refreshLibraryForActivePath({mode: 'live'})," in template
     assert "function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {})" in template
@@ -1244,6 +1247,8 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".col-move" in stylesheet
     assert ".jobs-pagination" in stylesheet
     assert ".library-pagination" in stylesheet
+    assert "overflow-wrap: anywhere;" in stylesheet
+    assert "word-break: break-word;" in stylesheet
     assert ".folder-search-result" in stylesheet
     assert ".folder-modal-tree" in stylesheet
     assert ".folder-modal-row.selected" in stylesheet

@@ -2536,8 +2536,11 @@ a:hover {
 .asset-overlay span,
 .asset-overlay small {
   display: block;
+  min-width: 0;
   overflow: hidden;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
+  word-break: break-word;
 }
 
 .asset-overlay strong {
