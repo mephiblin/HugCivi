@@ -72,7 +72,7 @@
   - `POST /api/fs/move`
   - `build_folder_tree(root, max_depth=4, max_entries=5000, max_children_per_folder=1000)`
 
-현재 `build_folder_tree()`는 깊이와 개수를 제한한다. 2026-07-06 기준으로 기본 예산은 5,000개 폴더 항목과 비루트 폴더당 1,000개 자식이다. 따라서 구현된 클라이언트 필터는 "현재 로드된 폴더 트리 안에서 검색"이라는 한계가 있다.
+현재 `build_folder_tree()`는 깊이와 개수를 제한한다. 2026-07-06 기준으로 기본 예산은 5,000개 폴더 항목과 비루트 폴더당 1,000개 자식이다. 따라서 구현된 클라이언트 필터는 "현재 로드된 폴더 트리 안에서 검색"이라는 한계가 있다. 폴더 수가 archive 규모로 커지는 경우에는 [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md)의 lazy child loading, server-side folder search, folder index 방향을 우선 검토한다.
 
 구현 전 우클릭 메뉴의 `이동`은 다음처럼 텍스트 prompt를 사용했다.
 
@@ -177,6 +177,7 @@ window.prompt('이동할 대상 폴더를 /data 기준 경로로 입력하세요
 - `build_folder_tree(max_depth=4, max_entries=5000, max_children_per_folder=1000)` 밖에 있는 깊거나 매우 큰 폴더는 검색되지 않는다.
 - 많은 폴더를 가진 `/data`에서는 사용자가 기대하는 "전체 검색"과 다를 수 있다.
 - 선택된 폴더 범위 밖으로 이동 대상을 고르는 기능과는 분리한다. 이동 팝업은 여전히 전체 트리를 보여준다.
+- 장기 scaling 해법은 `max_children_per_folder` 값을 계속 키우는 것이 아니라 lazy folder tree와 server-side folder search로 분리하는 것이다. 후속 기준은 [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md)에 둔다.
 
 UI 문구:
 
