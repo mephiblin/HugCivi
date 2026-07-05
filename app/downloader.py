@@ -1681,17 +1681,194 @@ def fetch_civitai_image_item(session: requests.Session, image_id: str, job_id: i
     data = fetch_json(session, meta_url, job_id=job_id)
     raw_items = data.get("items")
     items = raw_items if isinstance(raw_items, list) else []
-    if not items:
-        raise ValueError(f"Civitai image {image_id} metadata was not found.")
-
     for item in items:
         if isinstance(item, dict) and str(item.get("id") or "") == str(image_id):
             return item
+
+    if not items:
+        item = fetch_civitai_rendered_image_page_item(session, image_id, job_id)
+        if item:
+            return item
+        raise ValueError(f"Civitai image {image_id} metadata was not found.")
     raise ValueError(f"Civitai image API did not return requested imageId={image_id}.")
 
 
 def civitai_image_page_url(image_id: str) -> str:
     return f"https://civitai.com/images/{quote(image_id, safe='')}"
+
+
+def fetch_civitai_rendered_image_page_item(
+    session: requests.Session,
+    image_id: str,
+    job_id: int,
+) -> dict[str, Any] | None:
+    page_url = civitai_image_page_url(image_id)
+    try:
+        db.append_log(job_id, f"civitai.image.rendered_page_metadata: {page_url}")
+        response = request_with_safety(session, "GET", page_url, job_id=job_id, timeout=(20, 60))
+        response.raise_for_status()
+        item = extract_civitai_next_image_item(response.text, image_id)
+        if item:
+            db.append_log(job_id, f"civitai.image.rendered_page_metadata.ok image_id={image_id}")
+        return item
+    except Exception as exc:
+        db.append_log(
+            job_id,
+            f"civitai.image.rendered_page_metadata.warning image_id={image_id}: "
+            f"{redact_sensitive_text(str(exc))}",
+        )
+        return None
+
+
+def extract_civitai_next_payload(html_text: str) -> dict[str, Any] | None:
+    match = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html_text, re.S)
+    if not match:
+        return None
+    try:
+        payload = json.loads(html.unescape(match.group(1)))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def civitai_next_queries(payload: dict[str, Any] | None) -> list[Any]:
+    if not payload:
+        return []
+    queries = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("trpcState", {})
+        .get("json", {})
+        .get("queries", [])
+    )
+    return queries if isinstance(queries, list) else []
+
+
+def civitai_next_query_data(query: Any) -> dict[str, Any] | None:
+    if not isinstance(query, dict):
+        return None
+    state = query.get("state")
+    data = state.get("data") if isinstance(state, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def civitai_next_query_name(query: Any) -> tuple[str, ...]:
+    if not isinstance(query, dict):
+        return ()
+    query_key = query.get("queryKey")
+    if not isinstance(query_key, list) or not query_key:
+        return ()
+    first = query_key[0]
+    if isinstance(first, list):
+        return tuple(str(item) for item in first)
+    if isinstance(first, str):
+        return (first,)
+    return ()
+
+
+def extract_civitai_next_image_item(html_text: str, image_id: str) -> dict[str, Any] | None:
+    payload = extract_civitai_next_payload(html_text)
+    image_data: dict[str, Any] | None = None
+    generation_data: dict[str, Any] | None = None
+
+    for query in civitai_next_queries(payload):
+        data = civitai_next_query_data(query)
+        if not data:
+            continue
+        query_name = civitai_next_query_name(query)
+        if query_name == ("image", "get") and id_value(data.get("id")) == id_value(image_id):
+            image_data = data
+        elif query_name == ("image", "getGenerationData"):
+            generation_data = data
+
+    if image_data is None:
+        return None
+
+    json_ld = extract_civitai_image_json_ld(html_text, image_id)
+    image_url = text_value(json_ld.get("contentUrl")) if json_ld else None
+    if not image_url:
+        image_url = rendered_civitai_image_url(image_data)
+
+    raw_user = image_data.get("user")
+    user = raw_user if isinstance(raw_user, dict) else {}
+    meta = rendered_civitai_generation_meta(generation_data)
+    resources = rendered_civitai_generation_resources(generation_data)
+    if resources:
+        meta = {**meta, "resources": resources}
+    raw_metadata = image_data.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+    return {
+        "id": image_data.get("id") or image_id,
+        "postId": image_data.get("postId") or image_data.get("post_id"),
+        "url": image_url,
+        "hash": image_data.get("hash") or first_mapping_value(metadata, "hash"),
+        "width": image_data.get("width") or first_mapping_value(metadata, "width"),
+        "height": image_data.get("height") or first_mapping_value(metadata, "height"),
+        "nsfwLevel": image_data.get("nsfwLevel") or image_data.get("nsfw_level"),
+        "type": image_data.get("type"),
+        "createdAt": image_data.get("createdAt") or image_data.get("publishedAt"),
+        "username": text_value(user.get("username") or user.get("name")) or "unknown",
+        "meta": meta,
+        "modelVersionIds": rendered_civitai_generation_model_version_ids(resources),
+    }
+
+
+def extract_civitai_image_json_ld(html_text: str, image_id: str) -> dict[str, Any] | None:
+    for match in re.finditer(r"<script\b([^>]*)>(.*?)</script>", html_text, re.S | re.I):
+        attrs, body = match.groups()
+        if "application/ld+json" not in attrs.lower():
+            continue
+        try:
+            payload = json.loads(html.unescape(body.strip()))
+        except json.JSONDecodeError:
+            continue
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("@type") != "ImageObject":
+                continue
+            license_page = text_value(candidate.get("acquireLicensePage") or candidate.get("url")) or ""
+            if image_id and f"/images/{image_id}" not in license_page:
+                continue
+            return candidate
+    return None
+
+
+def rendered_civitai_image_url(image_data: dict[str, Any]) -> str | None:
+    value = text_value(image_data.get("url"))
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    return None
+
+
+def rendered_civitai_generation_meta(generation_data: dict[str, Any] | None) -> dict[str, Any]:
+    if not generation_data:
+        return {}
+    raw_meta = generation_data.get("meta")
+    return dict(raw_meta) if isinstance(raw_meta, dict) else {}
+
+
+def rendered_civitai_generation_resources(generation_data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not generation_data:
+        return []
+    resources = generation_data.get("resources")
+    return [resource for resource in resources if isinstance(resource, dict)] if isinstance(resources, list) else []
+
+
+def rendered_civitai_generation_model_version_ids(resources: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for resource in resources:
+        version_id = id_value(first_mapping_value(resource, "modelVersionId", "model_version_id", "versionId"))
+        if not version_id or version_id in seen:
+            continue
+        ids.append(version_id)
+        seen.add(version_id)
+    return ids
 
 
 def civitai_model_generation_metadata_url(

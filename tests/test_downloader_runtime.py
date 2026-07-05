@@ -21,6 +21,14 @@ def http_error(status_code: int) -> requests.HTTPError:
     return requests.HTTPError(f"{status_code} Client Error", response=response)
 
 
+def http_response(text: str, *, url: str = "https://civitai.com/") -> requests.Response:
+    response = requests.Response()
+    response.status_code = 200
+    response.url = url
+    response._content = text.encode("utf-8")
+    return response
+
+
 class FakeDb:
     def __init__(
         self,
@@ -935,6 +943,161 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertNotIn("secret-token", sidecar_text)
             self.assertNotIn("image-secret", sidecar_text)
             self.assertNotIn("unit-token", sidecar_text)
+
+    def test_civitai_image_page_falls_back_to_rendered_page_when_api_items_are_empty(self) -> None:
+        raw_input = "https://civitai.com/images/135562121?token=secret-token"
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input=raw_input,
+            civitai_image_id="135562121",
+            civitai_image_url=raw_input,
+        )
+        next_payload = {
+            "props": {
+                "pageProps": {
+                    "trpcState": {
+                        "json": {
+                            "queries": [
+                                {
+                                    "state": {
+                                        "data": {
+                                            "id": 135562121,
+                                            "url": "6d04999b-2c18-4fd0-9bf9-a86b98fe9b46",
+                                            "height": 1728,
+                                            "width": 1344,
+                                            "postId": 29554076,
+                                            "type": "image",
+                                            "createdAt": "2026-07-02T21:31:22.026Z",
+                                            "nsfwLevel": 8,
+                                            "metadata": {"hash": "rendered-hash", "width": 1344, "height": 1728},
+                                            "user": {"username": "Zandune"},
+                                        }
+                                    },
+                                    "queryKey": [["image", "get"], {"input": {"id": 135562121}, "type": "query"}],
+                                },
+                                {
+                                    "state": {
+                                        "data": {
+                                            "type": "image",
+                                            "meta": {
+                                                "prompt": "rendered prompt",
+                                                "negativePrompt": "rendered negative",
+                                                "steps": 32,
+                                            },
+                                            "resources": [
+                                                {
+                                                    "imageId": 135562121,
+                                                    "modelVersionId": 2963801,
+                                                    "modelId": 1949537,
+                                                    "modelName": "Rendered LoRA",
+                                                    "modelType": "LORA",
+                                                    "versionId": 2963801,
+                                                    "versionName": "Anima",
+                                                    "baseModel": "Anima",
+                                                    "strength": 0.75,
+                                                }
+                                            ],
+                                        }
+                                    },
+                                    "queryKey": [
+                                        ["image", "getGenerationData"],
+                                        {"input": {"id": 135562121}, "type": "query"},
+                                    ],
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        rendered_html = (
+            "<html><head>"
+            '<script type="application/ld+json">'
+            + json.dumps(
+                {
+                    "@context": "https://schema.org",
+                    "@type": "ImageObject",
+                    "contentUrl": "https://image.civitai.com/example/original=true/rendered.jpeg?token=image-secret",
+                    "acquireLicensePage": "https://civitai.com/images/135562121",
+                    "width": 1344,
+                    "height": 1728,
+                    "creator": {"@type": "Person", "name": "Zandune"},
+                }
+            )
+            + "</script></head><body>"
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(next_payload)
+            + "</script></body></html>"
+        )
+        version_metadata = {
+            "id": 2963801,
+            "name": "Anima",
+            "baseModel": "Anima",
+            "model": {"id": 1949537, "name": "Rendered LoRA", "type": "LORA"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+            original_create_job = fake_db.create_job
+            fake_db.create_job = mock.Mock(side_effect=original_create_job)
+            requested_pages: list[str] = []
+
+            def fake_request(
+                _session: object,
+                _method: str,
+                url: str,
+                **_kwargs: object,
+            ) -> requests.Response:
+                requested_pages.append(url)
+                return http_response(rendered_html, url=url)
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                _url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+            ) -> Path:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / str(filename_override)
+                saved.write_bytes(b"image")
+                return saved
+
+            with (
+                mock.patch.dict(os.environ, {"DOWNLOAD_ENABLE_HEAD_REQUESTS": "0"}),
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[{"items": []}, version_metadata]) as fetch_json,
+                mock.patch.object(downloader, "request_with_safety", side_effect=fake_request),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+                mock.patch.object(downloader, "enqueue_job") as enqueue_job,
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "images" / "Zandune" / "image_135562121"
+            payload = json.loads((target / "_civitai_image_metadata.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(fetch_json.call_count, 2)
+            self.assertEqual(requested_pages, ["https://civitai.com/images/135562121"])
+            self.assertEqual(fake_db.job["target_dir"], str(target))
+            self.assertEqual(fake_db.job["filename"], "image_135562121.jpeg")
+            self.assertEqual(payload["image"]["username"], "Zandune")
+            self.assertEqual(payload["image"]["width"], 1344)
+            self.assertEqual(payload["generation_data"]["prompt"]["text"], "rendered prompt")
+            self.assertEqual(payload["generation_data"]["negative_prompt"]["text"], "rendered negative")
+            self.assertEqual(payload["generation_data"]["model_version_ids"], ["2963801"])
+            self.assertEqual(payload["generation_data"]["resources"][0]["model_id"], "1949537")
+            self.assertEqual(payload["generation_data"]["resources"][0]["model_version_id"], "2963801")
+            self.assertEqual(payload["resource_downloads"][0]["status"], "queued")
+            self.assertEqual(payload["resource_downloads"][0]["child_job_id"], 501)
+            self.assertEqual(fake_db.created_jobs[0].civitai_model_id, "1949537")
+            self.assertEqual(fake_db.created_jobs[0].civitai_version_id, "2963801")
+            enqueue_job.assert_called_once_with(501)
+
+            sidecar_text = (target / "_civitai_image_metadata.json").read_text(encoding="utf-8")
+            self.assertNotIn("secret-token", sidecar_text)
+            self.assertNotIn("image-secret", sidecar_text)
 
     def test_civitai_image_page_enriches_model_version_only_resources(self) -> None:
         parsed = ParsedDownload(
