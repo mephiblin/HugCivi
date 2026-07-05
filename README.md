@@ -307,7 +307,7 @@ https://civitai.com/images/135240496
 456789
 ```
 
-숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai 모델 다운로드는 모델 폴더에 대표 예시 이미지 1장과 prompt, negative prompt, seed, steps 같은 generation metadata sidecar를 저장합니다. 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보도 함께 보존합니다. 대표 예시 이미지는 라이브러리 카드 썸네일로 쓰이며, 카드의 미디어 뷰어에서 모델 본문과 generation metadata를 확인할 수 있습니다. 기존 Civitai 모델 카드는 우클릭 메뉴의 `갱신`으로 모델 파일은 유지하면서 누락된 sidecar, 대표 예시 이미지, 변경된 모델 페이지 metadata를 다시 받아올 수 있습니다. Civitai image URL은 이미지와 generation metadata를 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
+숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai 모델 다운로드는 모델 폴더에 대표 예시 이미지 1장과 prompt, negative prompt, seed, steps 같은 generation metadata sidecar를 저장합니다. 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보도 함께 보존합니다. 대표 예시 이미지는 라이브러리 카드 썸네일로 쓰이며, 카드의 미디어 뷰어에서 모델 본문과 generation metadata를 확인할 수 있습니다. 기존 Civitai 모델 카드는 우클릭 메뉴의 `갱신`으로 모델 파일은 유지하면서 누락된 sidecar, 대표 예시 이미지, 변경된 모델 페이지 metadata를 다시 받아올 수 있습니다. Civitai image URL은 이미지 또는 렌더링 페이지 webm 영상을 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
 
 ### Hitomi
 
@@ -701,6 +701,16 @@ python -m pytest -q -p no:cacheprovider
 ## 패치내역
 
 자세한 변경 내용은 [PATCH_NOTES.md](PATCH_NOTES.md)에 정리되어 있습니다.
+
+### 2026-07-06
+
+- Civitai image page가 public API에서 비어 있어도 렌더링 페이지 metadata를 fallback으로 읽고, webm 영상 asset은 원본 `.webm` 파일로 저장할 수 있게 했습니다.
+- 라이브러리 날짜 정렬을 `최신순`/`오래된순`으로 분리하고 legacy `sort=date` 요청은 최신순 alias로 유지했습니다.
+- 선택 폴더 live pagination의 카드 반복과 페이지/정렬 전환 중 이전 카드 잔상을 줄이고, 긴 일본어/한자 카드 제목을 overlay 안에서 2줄로 제한했습니다.
+- 선택 폴더 live scan의 기본 안정 window를 작은 폴더 기준 3페이지분으로 낮춰, 100개 안팎 카드 폴더가 1000개 후보를 스캔하며 느려지는 문제를 완화했습니다.
+- 저장 폴더 tree는 root direct child만 담는 `/api/folders` 초기 tree와 `/api/folders/children`의 펼친 폴더 direct child lazy loading으로 나누어 초기 로드 비용을 줄였습니다.
+- 폴더 검색과 이동 대상 선택은 현재 로드된 tree와 lazy 확장분을 대상으로 동작하며, archive-scale 전체 검색은 server-side folder search와 optional folder index로 확장하는 방향을 남겼습니다.
+- 배포 이미지는 로컬 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
 
 ### 2026-07-05
 

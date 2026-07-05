@@ -31,7 +31,7 @@ The dated documents below are useful context, but code and current reference doc
 
 | Document | Status |
 | --- | --- |
-| [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md) | future design for archive-scale folder navigation: lazy child loading, server-side folder search, and optional folder indexing. Not implemented unless code later proves otherwise. |
+| [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md) | partially implemented reference. Current code has root-direct `/api/folders` plus lazy `/api/folders/children`; server-side folder search and optional folder indexing remain future work. |
 | [Library Card Performance Plan 2026-07-05](library-card-performance-plan-2026-07-05.md) | implemented planning record. Current behavior is documented in Architecture, Feature and Code Map, Operations, and the 2026-07-05 patch notes. |
 | [Transfer Design 2026-07-02](transfer-design-2026-07-02.md) | future design, not implemented unless code later proves otherwise. |
 | [Storage Folder Search Design 2026-07-02](storage-folder-search-design-2026-07-02.md) | implemented reference for turning the sidebar `새 폴더` area into a storage folder search box, moving folder creation to the tree context menu, and replacing text-based move prompts with a tree picker. |

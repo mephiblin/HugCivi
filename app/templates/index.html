@@ -16,9 +16,16 @@
 </head>
 <body>
   {% macro folder_node(node, depth=0) %}
-    <li class="folder-node {% if node.children %}has-children{% endif %}{% if depth == 0 %} expanded{% endif %}">
+    {% set children = node.children|default([]) %}
+    {% set has_children = (node.has_children|default(false)) or (children|length > 0) %}
+    {% set render_children = depth == 0 and children %}
+    {% set children_loaded = render_children or not has_children %}
+    <li class="folder-node {% if has_children %}has-children{% endif %}{% if depth == 0 %} expanded{% endif %}"
+        data-folder-path="{{ node.path }}"
+        data-folder-loaded="{{ 'true' if children_loaded else 'false' }}"
+        data-folder-has-children="{{ 'true' if has_children else 'false' }}">
       <div class="folder-row">
-        {% if node.children %}
+        {% if has_children %}
           <button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>
         {% else %}
           <span class="folder-toggle-spacer"></span>
@@ -28,11 +35,13 @@
           <span class="folder-name">{{ node.name }}</span>
         </button>
       </div>
-      {% if node.children %}
+      {% if has_children %}
         <ul class="folder-children">
-          {% for child in node.children %}
-            {{ folder_node(child, depth + 1) }}
-          {% endfor %}
+          {% if render_children %}
+            {% for child in children %}
+              {{ folder_node(child, depth + 1) }}
+            {% endfor %}
+          {% endif %}
         </ul>
       {% endif %}
     </li>
@@ -865,6 +874,8 @@
     const initialLibraryPage = {{ library_page|tojson }};
     const initialStorage = {{ storage|tojson }};
     const LIBRARY_PAGE_SIZE = 50;
+    const FOLDER_CHILDREN_LIMIT = 200;
+    const FOLDER_CHILDREN_ENDPOINT = '/api/folders/children';
     const THUMBNAIL_REQUEST_MAX_ACTIVE = 3;
     const THUMBNAIL_OBSERVER_MARGIN = '640px 0px';
     const THUMBNAIL_REQUEST_TIMEOUT_MS = 60000;
@@ -1004,6 +1015,10 @@
     let contextTarget = null;
     let folderSearchTimer = null;
     let folderSearchResults = [];
+    let folderChildrenEndpointAvailable = true;
+    let folderFallbackTree = null;
+    let folderFallbackTreePromise = null;
+    const folderChildrenRequests = new Map();
     let activeFolderCreateParent = '';
     let activeFolderMoveTarget = null;
     let activeFolderMoveDestination = null;
@@ -1075,16 +1090,23 @@
       switchToHome();
     });
 
-    folderTree?.addEventListener('click', event => {
+    folderTree?.addEventListener('click', async event => {
+      const loadMore = event.target.closest('[data-folder-load-more]');
+      if (loadMore) {
+        event.preventDefault();
+        event.stopPropagation();
+        await loadMoreFolderChildren(loadMore);
+        return;
+      }
       const toggle = event.target.closest('.folder-toggle');
       if (toggle) {
         event.stopPropagation();
-        toggle.closest('.folder-node')?.classList.toggle('expanded');
+        await toggleFolderNode(toggle.closest('.folder-node'));
         return;
       }
       const picker = event.target.closest('.folder-picker');
       if (!picker) return;
-      selectFolderPath(picker.dataset.path || '');
+      await selectFolderPath(picker.dataset.path || '');
     });
 
     folderRefreshButton?.addEventListener('click', async event => {
@@ -1106,12 +1128,12 @@
       });
     });
 
-    folderSearchForm?.addEventListener('submit', event => {
+    folderSearchForm?.addEventListener('submit', async event => {
       event.preventDefault();
-      selectFolderSearchResult();
+      await selectFolderSearchResult();
     });
     folderSearchInput?.addEventListener('input', scheduleFolderSearch);
-    folderSearchInput?.addEventListener('keydown', event => {
+    folderSearchInput?.addEventListener('keydown', async event => {
       if (event.key === 'Escape') {
         event.preventDefault();
         clearFolderSearch();
@@ -1119,14 +1141,14 @@
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        selectFolderSearchResult();
+        await selectFolderSearchResult();
       }
     });
-    folderSearchResultsBox?.addEventListener('click', event => {
+    folderSearchResultsBox?.addEventListener('click', async event => {
       const button = event.target.closest('[data-folder-search-path]');
       if (!button) return;
       event.preventDefault();
-      selectFolderPath(button.dataset.folderSearchPath || '', {expandTree: true, scrollIntoView: true});
+      await selectFolderPath(button.dataset.folderSearchPath || '', {expandTree: true, scrollIntoView: true});
     });
 
     sidebarTabs.forEach(button => {
@@ -1297,7 +1319,19 @@
       }
       event.stopPropagation();
     });
-    folderMoveTree.addEventListener('click', event => {
+    folderMoveTree.addEventListener('click', async event => {
+      const loadMore = event.target.closest('[data-folder-load-more]');
+      if (loadMore) {
+        event.preventDefault();
+        await loadMoreFolderChildren(loadMore);
+        return;
+      }
+      const toggle = event.target.closest('.folder-toggle');
+      if (toggle) {
+        event.preventDefault();
+        await toggleFolderNode(toggle.closest('.folder-node'));
+        return;
+      }
       const button = event.target.closest('[data-move-destination]');
       if (!button || button.disabled) return;
       event.preventDefault();
@@ -1468,31 +1502,41 @@
       downloadQueuePanel.hidden = true;
     });
 
-    function selectFolderPath(path, options = {}) {
+    async function selectFolderPath(path, options = {}) {
       const normalized = normalizePath(path);
       targetInput.value = normalized;
       selectedFolder.textContent = normalized ? `/data/${normalized}` : '/data';
+      let selectedButton = markSelectedFolderPath(normalized);
+      if (options.switchView !== false) switchToLibrary(normalized);
+      if (options.expandTree) {
+        const revealedButton = await revealFolderPath(normalized);
+        selectedButton = markSelectedFolderPath(normalized) || revealedButton || selectedButton;
+      }
+      if (selectedButton && options.scrollIntoView) selectedButton.scrollIntoView({block: 'nearest'});
+      if (folderSearchInput?.value.trim()) updateFolderSearch();
+      return selectedButton;
+    }
+
+    function markSelectedFolderPath(path) {
+      const normalized = normalizePath(path);
       let selectedButton = null;
-      document.querySelectorAll('.folder-tree .folder-picker').forEach(item => {
+      folderTree?.querySelectorAll('.folder-picker[data-path]').forEach(item => {
         const selected = normalizePath(item.dataset.path || '') === normalized;
         item.classList.toggle('selected', selected);
         if (selected && !selectedButton) selectedButton = item;
       });
-      if (selectedButton && options.expandTree) expandFolderAncestors(selectedButton);
-      if (selectedButton && options.scrollIntoView) selectedButton.scrollIntoView({block: 'nearest'});
-      if (options.switchView !== false) switchToLibrary(normalized);
-      if (folderSearchInput?.value.trim()) updateFolderSearch();
+      return selectedButton;
     }
 
     function existingFolderPath(path) {
       let normalized = normalizePath(path);
       while (normalized) {
-        if (folderTree?.querySelector(`.folder-picker[data-path="${cssEscape(normalized)}"]`)) return normalized;
+        if (findFolderPicker(normalized)) return normalized;
         const parts = normalized.split('/').filter(Boolean);
         parts.pop();
         normalized = parts.join('/');
       }
-      return '';
+      return findFolderPicker('') ? '' : '';
     }
 
     function parentFolderPath(path) {
@@ -1501,21 +1545,267 @@
       return parts.join('/');
     }
 
-    function expandedFolderPaths() {
-      return new Set(Array.from(document.querySelectorAll('.folder-tree .folder-node.expanded > .folder-row .folder-picker')).map(button => normalizePath(button.dataset.path || '')));
+    function expandedFolderPaths(container = folderTree) {
+      return new Set(Array.from((container || document).querySelectorAll('.folder-node.expanded')).map(folderNodePath));
     }
 
-    function expandFolderAncestors(button) {
-      let node = button.closest('.folder-node');
+    function folderNodePath(node) {
+      return normalizePath(node?.dataset?.folderPath || '');
+    }
+
+    function findFolderNode(path, container = folderTree) {
+      const normalized = normalizePath(path);
+      return (container || document).querySelector(`.folder-node[data-folder-path="${cssEscape(normalized)}"]`);
+    }
+
+    function findFolderPicker(path) {
+      const normalized = normalizePath(path);
+      return folderTree?.querySelector(`.folder-picker[data-path="${cssEscape(normalized)}"]`) || null;
+    }
+
+    async function revealFolderPath(path) {
+      const normalized = normalizePath(path);
+      const rootNode = findFolderNode('');
+      if (!rootNode) return null;
+      rootNode.classList.add('expanded');
+      if (!normalized) return findFolderPicker('');
+
+      let parentNode = rootNode;
+      let currentPath = '';
+      for (const part of normalized.split('/').filter(Boolean)) {
+        await ensureFolderChildrenLoaded(parentNode);
+        currentPath = normalizePath([currentPath, part].filter(Boolean).join('/'));
+        let currentNode = findFolderNode(currentPath);
+        if (!currentNode) {
+          await ensureFolderChildrenLoaded(parentNode, {force: true});
+          currentNode = findFolderNode(currentPath);
+        }
+        if (!currentNode) return null;
+        currentNode.classList.add('expanded');
+        parentNode = currentNode;
+      }
+      return findFolderPicker(normalized);
+    }
+
+    async function expandFolderAncestors(button, options = {}) {
+      const chain = [];
+      let node = button?.closest('.folder-node') || null;
       while (node) {
-        node.classList.add('expanded');
+        chain.unshift(node);
         node = node.parentElement?.closest('.folder-node') || null;
+      }
+      for (const item of chain) {
+        item.classList.add('expanded');
+        if (options.load) await ensureFolderChildrenLoaded(item);
       }
     }
 
-    function collectFolderRows() {
+    async function toggleFolderNode(node) {
+      if (!node) return;
+      if (node.classList.contains('expanded')) {
+        node.classList.remove('expanded');
+        return;
+      }
+      node.classList.add('expanded');
+      await ensureFolderChildrenLoaded(node);
+    }
+
+    async function loadMoreFolderChildren(button) {
+      const parentNode = button?.closest('.folder-children')?.closest('.folder-node') || null;
+      if (!parentNode) return;
+      await ensureFolderChildrenLoaded(parentNode, {append: true});
+    }
+
+    async function ensureFolderChildrenLoaded(node, options = {}) {
+      if (!node || node.dataset.folderHasChildren !== 'true') return true;
+      if (!options.force && !options.append && node.dataset.folderLoaded === 'true') return true;
+      const list = ensureFolderChildrenList(node);
+      removeFolderTransientRows(list);
+      list.insertAdjacentHTML('beforeend', renderFolderTransientRow('불러오는 중'));
+      try {
+        const payload = await fetchFolderChildren(folderNodePath(node), {
+          cursor: options.append ? (node.dataset.nextCursor || '') : '',
+        });
+        renderLoadedFolderChildren(node, payload, options);
+        return true;
+      } catch (err) {
+        console.error(err);
+        removeFolderTransientRows(list);
+        list.insertAdjacentHTML('beforeend', renderFolderTransientRow('하위 폴더를 불러오지 못했습니다.'));
+        return false;
+      }
+    }
+
+    function ensureFolderChildrenList(node) {
+      let list = node.querySelector(':scope > .folder-children');
+      if (!list) {
+        list = document.createElement('ul');
+        list.className = 'folder-children';
+        node.appendChild(list);
+      }
+      node.classList.add('has-children');
+      node.dataset.folderHasChildren = 'true';
+      const row = node.querySelector(':scope > .folder-row');
+      if (row && !row.querySelector(':scope > .folder-toggle')) {
+        const spacer = row.querySelector(':scope > .folder-toggle-spacer');
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'folder-toggle';
+        toggle.setAttribute('aria-label', '폴더 접기 또는 열기');
+        if (spacer) {
+          spacer.replaceWith(toggle);
+        } else {
+          row.prepend(toggle);
+        }
+      }
+      return list;
+    }
+
+    function renderLoadedFolderChildren(node, payload, options = {}) {
+      const list = ensureFolderChildrenList(node);
+      const append = Boolean(options.append);
+      if (!append) list.innerHTML = '';
+      removeFolderTransientRows(list);
+      const modal = Boolean(node.closest('#folder-move-tree'));
+      const sourcePath = modal ? (activeFolderMoveTarget?.path || '') : '';
+      const existing = new Set(Array.from(list.querySelectorAll(':scope > .folder-node[data-folder-path]')).map(folderNodePath));
+      const rows = (payload.items || []).filter(item => {
+        const path = normalizePath(item.path || '');
+        if (existing.has(path)) return false;
+        existing.add(path);
+        return true;
+      }).map(item => modal
+        ? renderFolderMoveTreeNode(item, 1, expandedFolderPaths(folderMoveTree), sourcePath)
+        : renderFolderTreeNode(item, 1, expandedFolderPaths(folderTree))
+      ).join('');
+      if (rows) list.insertAdjacentHTML('beforeend', rows);
+      node.dataset.folderLoaded = 'true';
+      node.dataset.nextCursor = payload.nextCursor || '';
+      node.dataset.hasMore = payload.hasMore ? 'true' : 'false';
+      if (payload.hasMore) {
+        list.insertAdjacentHTML('beforeend', renderFolderLoadMoreRow(modal));
+      }
+      if (!list.querySelector(':scope > .folder-node:not([data-folder-transient])') && !payload.hasMore) {
+        list.insertAdjacentHTML('beforeend', renderFolderTransientRow('하위 폴더가 없습니다.'));
+      }
+      if (modal) updateMoveDestinationSelection();
+    }
+
+    function removeFolderTransientRows(list) {
+      list?.querySelectorAll(':scope > [data-folder-transient]').forEach(row => row.remove());
+    }
+
+    function renderFolderTransientRow(message) {
+      return `<li class="folder-node folder-transient-node" data-folder-transient="status">
+        <div class="folder-row">
+          <span class="folder-toggle-spacer"></span>
+          <div class="folder-search-empty">${escapeHtml(message)}</div>
+        </div>
+      </li>`;
+    }
+
+    function renderFolderLoadMoreRow(modal = false) {
+      const buttonClass = modal ? 'folder-modal-row' : 'folder-picker';
+      return `<li class="folder-node folder-transient-node" data-folder-transient="load-more">
+        <div class="folder-row">
+          <span class="folder-toggle-spacer"></span>
+          <button type="button" class="${buttonClass}" data-folder-load-more>
+            <span class="folder-name">더 보기</span>
+          </button>
+        </div>
+      </li>`;
+    }
+
+    async function fetchFolderChildren(path, options = {}) {
+      const normalized = normalizePath(path);
+      const cursor = String(options.cursor || '');
+      const requestKey = `${normalized}\n${cursor}`;
+      if (folderChildrenRequests.has(requestKey)) return folderChildrenRequests.get(requestKey);
+      const request = (async () => {
+        if (folderChildrenEndpointAvailable) {
+          const params = new URLSearchParams({path: normalized, limit: String(FOLDER_CHILDREN_LIMIT)});
+          if (cursor) params.set('cursor', cursor);
+          const response = await fetch(`${FOLDER_CHILDREN_ENDPOINT}?${params.toString()}`);
+          if (response.ok) {
+            const data = await response.json();
+            return normalizeFolderChildrenPayload(data, normalized);
+          }
+          if (response.status === 404 || response.status === 405) {
+            folderChildrenEndpointAvailable = false;
+          } else {
+            throw new Error(`Folder children request failed: ${response.status}`);
+          }
+        }
+        return fetchFolderChildrenFromFallback(normalized);
+      })();
+      folderChildrenRequests.set(requestKey, request);
+      try {
+        return await request;
+      } finally {
+        folderChildrenRequests.delete(requestKey);
+      }
+    }
+
+    async function fetchFolderChildrenFromFallback(path) {
+      const tree = await fetchFallbackFolderTree();
+      const node = findFolderTreeNode(tree, path);
+      return normalizeFolderChildrenPayload({items: node?.children || []}, path);
+    }
+
+    async function fetchFallbackFolderTree(force = false) {
+      if (folderFallbackTree && !force) return folderFallbackTree;
+      if (!folderFallbackTreePromise) {
+        folderFallbackTreePromise = (async () => {
+          const response = await fetch('/api/folders');
+          if (!response.ok) throw new Error(`Folder tree request failed: ${response.status}`);
+          folderFallbackTree = await response.json();
+          return folderFallbackTree;
+        })().finally(() => {
+          folderFallbackTreePromise = null;
+        });
+      }
+      return folderFallbackTreePromise;
+    }
+
+    function findFolderTreeNode(node, path) {
+      const normalized = normalizePath(path);
+      if (!node || typeof node !== 'object') return null;
+      if (normalizePath(node.path || '') === normalized) return node;
+      for (const child of Array.isArray(node.children) ? node.children : []) {
+        const match = findFolderTreeNode(child, normalized);
+        if (match) return match;
+      }
+      return null;
+    }
+
+    function normalizeFolderChildrenPayload(data, parentPath = '') {
+      const items = Array.isArray(data)
+        ? data
+        : (Array.isArray(data?.items) ? data.items : (Array.isArray(data?.children) ? data.children : []));
+      return {
+        items: items.map(item => normalizeFolderChildNode(item, parentPath)).filter(Boolean),
+        nextCursor: data?.next_cursor || data?.nextCursor || '',
+        hasMore: Boolean(data?.has_more || data?.hasMore),
+      };
+    }
+
+    function normalizeFolderChildNode(item, parentPath = '') {
+      if (!item || typeof item !== 'object') return null;
+      const children = Array.isArray(item.children) ? item.children : [];
+      const name = item.name || (item.path ? normalizePath(item.path).split('/').pop() : '');
+      const path = normalizePath(item.path || [parentPath, name].filter(Boolean).join('/'));
+      return {
+        ...item,
+        name: name || (path ? path.split('/').pop() : 'data'),
+        path,
+        children,
+        has_children: Boolean(item.has_children || item.hasChildren || children.length),
+      };
+    }
+
+    function collectFolderRows(container = folderTree) {
       const seen = new Set();
-      return Array.from(document.querySelectorAll('.folder-tree .folder-picker[data-path]')).map(button => {
+      return Array.from((container || document).querySelectorAll('.folder-picker[data-path]')).map(button => {
         const path = normalizePath(button.dataset.path || '');
         if (seen.has(path)) return null;
         seen.add(path);
@@ -1542,10 +1832,12 @@
 
     function scheduleFolderSearch() {
       window.clearTimeout(folderSearchTimer);
-      folderSearchTimer = window.setTimeout(updateFolderSearch, 150);
+      folderSearchTimer = window.setTimeout(() => {
+        updateFolderSearch();
+      }, 150);
     }
 
-    function updateFolderSearch() {
+    async function updateFolderSearch() {
       if (!folderSearchInput || !folderSearchStatus || !folderSearchResultsBox) return;
       const rawQuery = folderSearchInput.value.trim();
       if (!rawQuery) {
@@ -1561,10 +1853,12 @@
       renderFolderSearchResults(folderSearchResults, scopePath);
     }
 
-    function renderFolderSearchResults(items, scopePath = folderSearchScopePath()) {
+    function renderFolderSearchResults(items, scopePath = folderSearchScopePath(), options = {}) {
       if (!folderSearchStatus || !folderSearchResultsBox) return;
       const scopeLabel = folderSearchScopeLabel(scopePath);
-      folderSearchStatus.textContent = items.length ? `${scopeLabel}에서 ${items.length}개 결과` : `${scopeLabel}에서 결과가 없습니다.`;
+      folderSearchStatus.textContent = options.loading
+        ? `${scopeLabel} 검색 중...`
+        : (items.length ? `${scopeLabel}에서 ${items.length}개 결과` : `${scopeLabel}에서 결과가 없습니다.`);
       folderSearchResultsBox.hidden = false;
       if (!items.length) {
         folderSearchResultsBox.innerHTML = `<div class="folder-search-empty">${escapeHtml(scopeLabel)}에서 결과가 없습니다.</div>`;
@@ -1578,7 +1872,7 @@
         </button>
       `).join('');
       markFolderSearchMatches(items);
-      items.forEach(item => expandFolderAncestors(item.button));
+      items.filter(item => item.button).forEach(item => expandFolderAncestors(item.button));
     }
 
     function markFolderSearchMatches(items) {
@@ -1600,10 +1894,10 @@
       markFolderSearchMatches([]);
     }
 
-    function selectFolderSearchResult() {
+    async function selectFolderSearchResult() {
       if (!folderSearchInput) return;
       window.clearTimeout(folderSearchTimer);
-      updateFolderSearch();
+      await updateFolderSearch();
       if (!folderSearchResults.length) return;
       const rawQuery = folderSearchInput.value.trim().toLowerCase();
       const normalizedQuery = normalizePath(folderSearchInput.value).toLowerCase();
@@ -1612,7 +1906,7 @@
         || item.displayPath.toLowerCase() === rawQuery
         || item.name.toLowerCase() === rawQuery
       ));
-      selectFolderPath((exact || folderSearchResults[0]).path, {expandTree: true, scrollIntoView: true});
+      await selectFolderPath((exact || folderSearchResults[0]).path, {expandTree: true, scrollIntoView: true});
     }
 
     function openCreateFolderModal(parentPath) {
@@ -1658,9 +1952,9 @@
           folderCreateConfirm.disabled = false;
           return;
         }
-        if (data.folders) replaceFolderTree(data.folders);
+        if (data.folders) await replaceFolderTree(data.folders);
         closeFolderCreateModal();
-        selectFolderPath(data.path || normalizePath([activeFolderCreateParent, folderName].filter(Boolean).join('/')), {
+        await selectFolderPath(data.path || normalizePath([activeFolderCreateParent, folderName].filter(Boolean).join('/')), {
           expandTree: true,
           scrollIntoView: true,
         });
@@ -1700,22 +1994,62 @@
     function renderFolderMoveTree() {
       const sourcePath = activeFolderMoveTarget?.path || '';
       const rows = collectFolderRows();
-      if (!rows.length) {
+      const rootNode = folderTreeDataFromDom();
+      if (!rootNode) {
         folderMoveTree.innerHTML = '<div class="folder-search-empty">표시된 폴더가 없습니다.</div>';
         return;
       }
-      folderMoveTree.innerHTML = rows.map(item => {
-        const disabled = isInvalidMoveDestination(item.path, sourcePath);
-        const selected = activeFolderMoveDestination !== null && activeFolderMoveDestination === item.path;
-        return `
+      folderMoveTree.innerHTML = `<ul>${renderFolderMoveTreeNode(rootNode, 0, new Set(['']), sourcePath)}</ul>`;
+      updateMoveDestinationSelection();
+    }
+
+    function folderTreeDataFromDom(node = findFolderNode('')) {
+      if (!node) return null;
+      const path = folderNodePath(node);
+      const picker = node.querySelector(':scope > .folder-row .folder-picker');
+      const name = picker?.dataset.name || picker?.querySelector('.folder-name')?.textContent.trim() || (path ? path.split('/').pop() : 'data');
+      const childNodes = Array.from(node.querySelectorAll(':scope > .folder-children > .folder-node:not([data-folder-transient])'));
+      const children = childNodes.map(child => folderTreeDataFromDom(child)).filter(Boolean);
+      return {
+        name,
+        path,
+        children,
+        has_children: node.dataset.folderHasChildren === 'true' || children.length > 0,
+        children_loaded: node.dataset.folderLoaded === 'true',
+        next_cursor: node.dataset.nextCursor || '',
+        has_more: node.dataset.hasMore === 'true',
+      };
+    }
+
+    function renderFolderMoveTreeNode(node, depth = 0, expandedPaths = new Set(), sourcePath = '') {
+      const children = Array.isArray(node.children) ? node.children : [];
+      const path = normalizePath(node.path || '');
+      const name = node.name || (path ? path.split('/').pop() : 'data');
+      const hasChildren = Boolean(node.has_children || node.hasChildren || children.length);
+      const childrenLoaded = Boolean(node.children_loaded || node.childrenLoaded || depth === 0 || !hasChildren);
+      const expanded = depth === 0 || expandedPaths.has(path);
+      const disabled = isInvalidMoveDestination(path, sourcePath);
+      const selected = activeFolderMoveDestination !== null && activeFolderMoveDestination === path;
+      const title = path ? `/data/${path}` : '/data';
+      return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}"
+          data-folder-path="${escapeHtml(path)}"
+          data-folder-loaded="${childrenLoaded ? 'true' : 'false'}"
+          data-folder-has-children="${hasChildren ? 'true' : 'false'}"
+          data-next-cursor="${escapeHtml(node.next_cursor || node.nextCursor || '')}"
+          data-has-more="${node.has_more || node.hasMore ? 'true' : 'false'}">
+        <div class="folder-row">
+          ${hasChildren
+            ? '<button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>'
+            : '<span class="folder-toggle-spacer"></span>'}
           <button type="button" class="folder-modal-row${selected ? ' selected' : ''}"
-                  data-move-destination="${escapeHtml(item.path)}" aria-selected="${selected ? 'true' : 'false'}"
-                  ${disabled ? 'disabled aria-disabled="true"' : ''}>
+                  data-move-destination="${escapeHtml(path)}" aria-selected="${selected ? 'true' : 'false'}"
+                  title="${escapeHtml(title)}" ${disabled ? 'disabled aria-disabled="true"' : ''}>
             <span class="folder-icon" aria-hidden="true"></span>
-            <span>${escapeHtml(item.displayPath)}${disabled ? ' - 선택 불가' : ''}</span>
+            <span>${escapeHtml(name)}${disabled ? ' - 선택 불가' : ''}</span>
           </button>
-        `;
-      }).join('');
+        </div>
+        ${hasChildren ? `<ul class="folder-children">${childrenLoaded ? children.map(child => renderFolderMoveTreeNode(child, depth + 1, expandedPaths, sourcePath)).join('') : ''}${node.has_more || node.hasMore ? renderFolderLoadMoreRow(true) : ''}</ul>` : ''}
+      </li>`;
     }
 
     function isInvalidMoveDestination(path, sourcePath) {
@@ -1731,7 +2065,15 @@
       activeFolderMoveDestination = destination;
       folderMoveDestination.textContent = `대상: ${destination ? `/data/${destination}` : '/data'}`;
       folderMoveConfirm.disabled = false;
-      renderFolderMoveTree();
+      updateMoveDestinationSelection();
+    }
+
+    function updateMoveDestinationSelection() {
+      folderMoveTree?.querySelectorAll('[data-move-destination]').forEach(button => {
+        const selected = activeFolderMoveDestination !== null && normalizePath(button.dataset.moveDestination || '') === activeFolderMoveDestination;
+        button.classList.toggle('selected', selected);
+        button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
     }
 
     async function submitMoveToDestination() {
@@ -1748,17 +2090,21 @@
       }
     }
 
-    function replaceFolderTree(tree, options = {}) {
+    async function replaceFolderTree(tree, options = {}) {
       const root = folderTree?.querySelector(':scope > ul');
       if (!root || !tree) return;
+      folderFallbackTree = tree;
+      folderChildrenRequests.clear();
       const selectedPath = normalizePath(targetInput?.value || activeLibraryPath || '');
       const preserveSelection = options.preserveSelection !== false && (activeLibraryPath !== null || Boolean(selectedPath));
       const expandedPaths = options.preserveExpanded === false ? new Set() : expandedFolderPaths();
       root.innerHTML = renderFolderTreeNode(tree, 0, expandedPaths);
+      for (const path of Array.from(expandedPaths).sort((left, right) => left.split('/').length - right.split('/').length)) {
+        if (path) await revealFolderPath(path);
+      }
       if (preserveSelection) {
-        const nextSelectedPath = existingFolderPath(selectedPath);
-        selectFolderPath(nextSelectedPath, {
-          switchView: activeLibraryPath !== null && nextSelectedPath !== normalizePath(activeLibraryPath || ''),
+        await selectFolderPath(selectedPath, {
+          switchView: activeLibraryPath !== null && selectedPath !== normalizePath(activeLibraryPath || ''),
           expandTree: true,
         });
       } else if (folderSearchInput && folderSearchInput.value.trim()) {
@@ -1768,11 +2114,18 @@
 
     function renderFolderTreeNode(node, depth = 0, expandedPaths = new Set()) {
       const children = Array.isArray(node.children) ? node.children : [];
-      const hasChildren = children.length > 0;
+      const hasChildren = Boolean(node.has_children || node.hasChildren || children.length);
       const path = normalizePath(node.path || '');
       const name = node.name || (path ? path.split('/').pop() : 'data');
+      const renderChildren = depth === 0 && children.length > 0;
+      const childrenLoaded = renderChildren || !hasChildren || Boolean(node.children_loaded || node.childrenLoaded);
       const expanded = depth === 0 || expandedPaths.has(path);
-      return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}">
+      return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}"
+          data-folder-path="${escapeHtml(path)}"
+          data-folder-loaded="${childrenLoaded ? 'true' : 'false'}"
+          data-folder-has-children="${hasChildren ? 'true' : 'false'}"
+          data-next-cursor="${escapeHtml(node.next_cursor || node.nextCursor || '')}"
+          data-has-more="${node.has_more || node.hasMore ? 'true' : 'false'}">
         <div class="folder-row">
           ${hasChildren
             ? '<button type="button" class="folder-toggle" aria-label="폴더 접기 또는 열기"></button>'
@@ -1782,7 +2135,7 @@
             <span class="folder-name">${escapeHtml(name)}</span>
           </button>
         </div>
-        ${hasChildren ? `<ul class="folder-children">${children.map(child => renderFolderTreeNode(child, depth + 1, expandedPaths)).join('')}</ul>` : ''}
+        ${hasChildren ? `<ul class="folder-children">${renderChildren ? children.map(child => renderFolderTreeNode(child, depth + 1, expandedPaths)).join('') : ''}${node.has_more || node.hasMore ? renderFolderLoadMoreRow(false) : ''}</ul>` : ''}
       </li>`;
     }
 
@@ -3235,7 +3588,7 @@
           const response = await fetch('/api/folders');
           if (!response.ok) return;
           const data = await response.json();
-          replaceFolderTree(data, options);
+          await replaceFolderTree(data, options);
         } catch (err) {
           console.error(err);
         } finally {
@@ -3756,7 +4109,7 @@
         return;
       }
       await refreshFolders({preserveExpanded: true});
-      selectFolderPath(path, {expandTree: true, scrollIntoView: true});
+      await selectFolderPath(path, {expandTree: true, scrollIntoView: true});
     }
 
     function renderModelInfo(job) {
@@ -6250,15 +6603,18 @@
         }
         const data = await readJsonResponse(response);
         if (data.folders) {
-          replaceFolderTree(data.folders, {preserveExpanded: true, preserveSelection: false});
+          await replaceFolderTree(data.folders, {preserveExpanded: true, preserveSelection: false});
         } else {
           await refreshFolders({preserveExpanded: true, preserveSelection: false});
         }
-        const nextPath = nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options);
+        let nextPath = nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options);
+        if (url.includes('/api/fs/delete') && affectedPath && pathMatchesFolder(nextPath, affectedPath)) {
+          nextPath = parentFolderPath(affectedPath);
+        }
         if (previousLibraryPath !== null) {
-          selectFolderPath(existingFolderPath(nextPath), {expandTree: true, scrollIntoView: true});
+          await selectFolderPath(nextPath, {expandTree: true, scrollIntoView: true});
         } else if (targetInput?.value) {
-          selectFolderPath(existingFolderPath(targetInput.value), {switchView: false, expandTree: true});
+          await selectFolderPath(nextPath || targetInput.value, {switchView: false, expandTree: true});
         }
         await Promise.all([
           refreshLibraryForActivePath({mode: 'live'}),

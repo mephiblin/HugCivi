@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -174,7 +174,7 @@ Hugging Face snapshot downloads share the same queue controls: `QUEUE_PER_PROVID
 
 Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
 
-Civitai image page archives first use the public image API. If that endpoint returns an empty `items` list for a still-renderable image page, the downloader falls back to the rendered page's `__NEXT_DATA__` and JSON-LD metadata, preserving the original image URL, generation prompt, and model-version resources before writing `_civitai_image_metadata.json` and queueing resource jobs.
+Civitai image page archives first use the public image API. If that endpoint returns an empty `items` list for a still-renderable image page, the downloader falls back to the rendered page's `__NEXT_DATA__` and JSON-LD metadata, preserving the original media URL, generation prompt, and model-version resources before writing `_civitai_image_metadata.json` and queueing resource jobs. The primary asset may be an image or a rendered-page video such as `.webm`.
 
 ASMR.one work downloads are normal external download jobs in the `asmrone` provider bucket. The handler reads work and track metadata from `ASMRONE_API_BASE`, creates Unicode-safe local track paths, then downloads file bodies from each leaf track `mediaDownloadUrl` with `action=download`; `mediaStreamUrl` is intentionally not archived. Work cover URLs such as `mainCoverUrl` are downloaded separately as `cover.jpg` when available. Output defaults under `/data/asmr.one/...` and includes ASMR.one sidecars plus `_archive_metadata.json`. `_asmrone_manifest.json` records per-file status and partial failures so the library can recover an archive when at least one file downloaded. Image attachments that resolve to Cloudflare HTML/error-placeholder responses are discarded and recorded as failed entries rather than kept as broken local images.
 
@@ -231,7 +231,7 @@ Indexer behavior:
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
-- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Live selected-folder pagination sorts a stable scan window before slicing pages so early pages do not repeat cards as later pages expand the scanned set.
+- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Live selected-folder pagination sorts a bounded stable scan window before slicing pages so early pages do not repeat cards as later pages expand the scanned set; the default small-folder window is three 50-card pages.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
 - `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
@@ -249,6 +249,14 @@ Filesystem operations from the app update related path state:
 
 Civitai model cards can be restored from `_civitai_metadata.json` even after the original job row is gone. If `_civitai_generation_metadata.json` exists, media viewer metadata uses its selected example image and generation payload; otherwise it falls back to the model metadata sidecar and reconstructs the model-details panel from stored model/version fields.
 
+## Folder Tree Navigation
+
+Folder navigation is intentionally split between a bounded compatibility tree and lazy expansion. `/api/folders` remains the initial sidebar payload and uses `initial_folder_tree()` with `FOLDER_TREE_INITIAL_MAX_DEPTH=1`, so it only preloads direct root children and marks expandable rows with `has_children`/`children_loaded`. `/api/folders/children?path=...&limit=200&cursor=...` loads direct child folder rows for an expanded folder on demand, with `FOLDER_CHILDREN_MAX_LIMIT=500` as the per-request cap.
+
+Hitomi gallery downloads are archive leaves for Tree purposes. Direct children such as `/data/hitomi/<gallery>` and listing archive folders under `/data/hitomi/listings/<listing>` are reported as non-expandable without scanning their page files; a `_hitomi_metadata.json` sidecar also marks custom-target Hitomi archives as leaves.
+
+The sidebar search box and move destination picker operate over the tree the browser has loaded so far: the initial `/api/folders` payload plus any lazy expansions the user opened. This keeps the current UI responsive without promising a full archive search. If real archives need discovery outside the loaded tree, add the server-side folder search and optional folder index described in [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md).
+
 ## API Groups
 
 Main API groups:
@@ -258,7 +266,7 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, aggregate `/api/subscriptions/items`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `GET/POST /api/folders`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
+| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |

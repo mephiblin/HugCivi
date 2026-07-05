@@ -1,5 +1,28 @@
 # 패치내역
 
+## 2026-07-06
+
+### Civitai
+
+- Civitai image page 다운로드가 public API에서 항목을 반환하지 않는 렌더링 페이지를 fallback으로 읽도록 보강했습니다.
+- `https://civitai.red/images/97376108`처럼 렌더링 페이지가 `VideoObject`와 webm asset ID를 노출하는 경우 원본 `.webm` URL을 재구성해 영상 파일로 저장합니다.
+- Civitai image archive sidecar는 이제 primary asset이 이미지 또는 영상일 수 있다는 정보를 보존하고, JSON-LD poster URL을 카드/아카이브 썸네일로 사용할 수 있습니다.
+
+### 라이브러리와 저장 폴더
+
+- 라이브러리 날짜 정렬을 `최신순`과 `오래된순`으로 분리하고, 기존 `sort=date` API 요청은 최신순 alias로 유지했습니다.
+- 선택 폴더 live library pagination이 페이지마다 다른 partial scan set을 정렬해 카드가 반복되는 문제를 줄이도록 안정 scan window를 먼저 정렬한 뒤 slicing합니다.
+- 안정 scan window의 기본값을 작은 폴더 기준 3페이지분으로 줄여, 100개 안팎 카드 폴더에서 live scan이 1000개 후보까지 확장되며 느려지는 문제를 완화했습니다.
+- 라이브러리 페이지/정렬 전환 시 기존 카드 grid를 loading 상태로 비워, 일본어/한자 제목 카드가 다음 페이지에도 남아 있는 것처럼 보이는 전환 잔상을 줄였습니다.
+- 긴 일본어/한자/혼합 CJK 카드 제목은 overlay 안에서 2줄로 clamp되도록 조정했습니다.
+- `/api/folders`는 sidebar 호환용 root-direct 초기 tree로 줄이고, `/api/folders/children`이 펼친 폴더의 direct child folder row를 `limit`/`cursor` pagination으로 on demand 불러오도록 lazy folder tree를 구현했습니다.
+- Hitomi 다운로드 결과는 아카이브 폴더라는 전제로, `/data/hitomi/<gallery>` 및 `hitomi/listings/<listing>` 폴더는 Tree에서 leaf로 처리해 페이지 파일들을 자식 폴더 확인 때문에 스캔하지 않도록 했습니다.
+
+### 문서와 배포
+
+- archive 규모의 폴더 탐색은 `max_children_per_folder`를 계속 올리는 방식이 아니라 lazy child loading을 우선 사용하고, 필요하면 server-side folder search와 optional SQLite folder index로 확장한다는 기준을 [Folder Tree Scaling Design 2026-07-06](docs/folder-tree-scaling-design-2026-07-06.md)에 정리했습니다.
+- 배포 이미지는 로컬 `linux/amd64` 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
+
 ## 2026-07-05
 
 ### 미디어 뷰어

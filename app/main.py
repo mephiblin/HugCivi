@@ -121,6 +121,12 @@ PWA_SERVICE_WORKER_PATH = BASE_DIR / "static" / "sw.js"
 FOLDER_TREE_MAX_DEPTH = 4
 FOLDER_TREE_MAX_ENTRIES = 5000
 FOLDER_TREE_MAX_CHILDREN_PER_FOLDER = 1000
+FOLDER_TREE_INITIAL_MAX_DEPTH = 1
+FOLDER_CHILDREN_DEFAULT_LIMIT = 200
+FOLDER_CHILDREN_MAX_LIMIT = 500
+HITOMI_ROUTE_ROOT = "hitomi"
+HITOMI_LISTING_CONTAINER = "listings"
+HITOMI_ARCHIVE_MARKER_FILENAMES = ("_hitomi_metadata.json",)
 INSECURE_PASSWORDS = {"", "change-this-password", "replace-with-a-strong-password"}
 IMAGE_EXTENSIONS = {".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
 VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm"}
@@ -143,7 +149,7 @@ INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL = "media_thumbnail_backfill"
 JOB_LIST_PAGE_SIZE = 50
 LIBRARY_PAGE_SIZE = 50
 LIBRARY_PAGE_MAX_SIZE = 100
-LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = 1000
+LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = LIBRARY_PAGE_SIZE * 3
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
@@ -438,7 +444,7 @@ def index(request: Request, _: str = Depends(require_auth)) -> HTMLResponse:
             "jobs_page": job_page,
             "library_items": library_page["items"],
             "library_page": library_page,
-            "folder_tree": build_folder_tree(DATA_ROOT),
+            "folder_tree": initial_folder_tree(),
             "settings": db.settings_status(),
             "storage": storage_status(),
         },
@@ -1102,7 +1108,17 @@ def api_delete_job(job_id: int, _: str = Depends(require_auth)) -> JSONResponse:
 
 @app.get("/api/folders")
 def api_folders(_: str = Depends(require_auth)) -> JSONResponse:
-    return JSONResponse(build_folder_tree(DATA_ROOT))
+    return JSONResponse(initial_folder_tree())
+
+
+@app.get("/api/folders/children")
+def api_folder_children(
+    path: str = "",
+    limit: int = FOLDER_CHILDREN_DEFAULT_LIMIT,
+    cursor: str | None = None,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    return JSONResponse(folder_children_payload(path=path, limit=limit, cursor=cursor))
 
 
 @app.post("/api/folders")
@@ -1118,7 +1134,7 @@ async def api_create_folder(request: Request, _: str = Depends(require_auth)) ->
     if target.exists():
         raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
     target.mkdir()
-    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
 @app.get("/api/library")
@@ -1511,7 +1527,7 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
     db.update_library_item_path_prefix(old_relative, new_relative)
-    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
 @app.post("/api/fs/move")
@@ -1527,7 +1543,7 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     ensure_real_directory_destination(destination)
     target = safe_join(DATA_ROOT, relative_data_path(destination), source.name)
     if target == source:
-        return JSONResponse({"ok": True, "path": relative_data_path(source), "folders": build_folder_tree(DATA_ROOT)})
+        return JSONResponse({"ok": True, "path": relative_data_path(source), "folders": initial_folder_tree()})
     if source in target.parents:
         raise HTTPException(status_code=400, detail="자기 자신의 하위 폴더로 이동할 수 없습니다.")
     if target.exists():
@@ -1540,7 +1556,7 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
     db.update_library_item_path_prefix(old_relative, new_relative)
-    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": build_folder_tree(DATA_ROOT)})
+    return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
 @app.post("/api/fs/delete")
@@ -1561,7 +1577,7 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     db.clear_favorite_path_prefix(relative_path)
     db.clear_note_path_prefix(relative_path)
     db.clear_library_item_prefix(relative_path)
-    return JSONResponse({"ok": True, "folders": build_folder_tree(DATA_ROOT)})
+    return JSONResponse({"ok": True, "folders": initial_folder_tree()})
 
 
 @app.post("/api/favorites")
@@ -1619,7 +1635,7 @@ async def api_import_workflow(
             "job_id": job_id,
             "path": display_target_path(db.get_job(job_id) or {}),
             "jobs": decorate_jobs(db.list_jobs()),
-            "folders": build_folder_tree(DATA_ROOT),
+            "folders": initial_folder_tree(),
         }
     )
 
@@ -3992,10 +4008,13 @@ def build_folder_tree(
     remaining = {"count": max_entries}
 
     def tree_node(path: Path) -> dict[str, Any]:
+        has_children = folder_tree_has_expandable_children(path)
         return {
             "name": path.name or str(path),
             "path": "" if path == root else path.relative_to(root).as_posix(),
             "children": [],
+            "has_children": has_children,
+            "children_loaded": not has_children,
         }
 
     root_node = tree_node(root)
@@ -4004,13 +4023,10 @@ def build_folder_tree(
     while index < len(queue) and remaining["count"] > 0:
         path, node, depth = queue[index]
         index += 1
-        if depth >= max_depth:
+        if depth >= max_depth or is_hitomi_archive_leaf_folder(path):
             continue
         children: list[dict[str, Any]] = []
-        try:
-            folders = sorted([item for item in path.iterdir() if item.is_dir()], key=lambda item: item.name.lower())
-        except OSError:
-            folders = []
+        folders = direct_child_directories(path)
         child_limit = len(folders) if depth == 0 else max(0, max_children_per_folder)
         for child in folders[:child_limit]:
             if remaining["count"] <= 0:
@@ -4020,8 +4036,137 @@ def build_folder_tree(
             children.append(child_node)
             queue.append((child, child_node, depth + 1))
         node["children"] = children
+        node["has_children"] = bool(folders)
+        node["children_loaded"] = len(children) == len(folders)
 
     return root_node
+
+
+def initial_folder_tree() -> dict[str, Any]:
+    return build_folder_tree(DATA_ROOT, max_depth=FOLDER_TREE_INITIAL_MAX_DEPTH)
+
+
+def folder_children_payload(*, path: str, limit: int, cursor: str | None = None) -> dict[str, Any]:
+    source = existing_data_path(path)
+    if not source.is_dir():
+        raise HTTPException(status_code=400, detail="폴더 경로를 선택하세요.")
+    ensure_real_directory_destination(source)
+
+    safe_limit = folder_child_limit(limit)
+    if is_hitomi_archive_leaf_folder(source):
+        return {
+            "ok": True,
+            "path": relative_data_path(source),
+            "items": [],
+            "limit": safe_limit,
+            "next_cursor": None,
+            "has_more": False,
+        }
+
+    folders = direct_child_directories(source)
+    start_index = 0
+    if cursor:
+        for index, child in enumerate(folders):
+            if child.name == cursor:
+                start_index = index + 1
+                break
+        else:
+            raise HTTPException(status_code=400, detail="폴더 커서를 찾을 수 없습니다.")
+
+    page = folders[start_index : start_index + safe_limit]
+    has_more = start_index + safe_limit < len(folders)
+    return {
+        "ok": True,
+        "path": relative_data_path(source),
+        "items": [folder_child_item(child) for child in page],
+        "limit": safe_limit,
+        "next_cursor": page[-1].name if has_more and page else None,
+        "has_more": has_more,
+    }
+
+
+def folder_child_limit(limit: int) -> int:
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit은 1 이상이어야 합니다.")
+    return min(FOLDER_CHILDREN_MAX_LIMIT, limit)
+
+
+def folder_child_item(path: Path) -> dict[str, Any]:
+    has_children = folder_tree_has_expandable_children(path)
+    return {
+        "name": path.name,
+        "path": relative_data_path(path),
+        "has_children": has_children,
+        "children_loaded": not has_children,
+    }
+
+
+def folder_tree_has_expandable_children(path: Path) -> bool:
+    if is_hitomi_archive_leaf_folder(path):
+        return False
+    return folder_has_child_directories(path)
+
+
+def is_hitomi_archive_leaf_folder(path: Path) -> bool:
+    if hitomi_archive_marker_exists(path):
+        return True
+    relative = relative_data_path(path)
+    if not relative:
+        return False
+    parts = Path(relative).parts
+    if len(parts) == 2 and parts[0] == HITOMI_ROUTE_ROOT and parts[1] != HITOMI_LISTING_CONTAINER:
+        return True
+    return len(parts) >= 3 and parts[0] == HITOMI_ROUTE_ROOT and parts[1] == HITOMI_LISTING_CONTAINER
+
+
+def hitomi_archive_marker_exists(path: Path) -> bool:
+    for filename in HITOMI_ARCHIVE_MARKER_FILENAMES:
+        try:
+            if (path / filename).is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def direct_child_directories(path: Path) -> list[Path]:
+    folders: list[Path] = []
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        folders.append(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return sorted(folders, key=folder_sort_key)
+
+
+def folder_has_child_directories(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return False
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        return True
+                except OSError:
+                    continue
+    except OSError:
+        return False
+    return False
+
+
+def folder_sort_key(path: Path) -> tuple[str, str]:
+    name = path.name
+    return (name.casefold(), name)
 
 
 def ensure_route_folders() -> None:

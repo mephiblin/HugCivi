@@ -1,6 +1,6 @@
 # 저장 폴더 검색창 설계 2026-07-02
 
-상태: 구현됨. `1cd733d`에서 하단 `새 폴더` 입력 영역을 폴더 검색창으로 바꾸고, 새 폴더 생성과 이동 대상 선택을 폴더 트리 기반 팝업으로 처리하도록 반영했다. `c4cefa6`의 구독 메인 작업 목록 UI와 함께 다시 확인했으며, 현재 코드 기준으로 두 UI는 충돌하지 않는다. 2026-07-03에는 폴더 검색 범위를 선택된 폴더와 하위 폴더로 제한하고, `/data` 루트에서는 전체 검색하도록 보강했다.
+상태: 구현됨. `1cd733d`에서 하단 `새 폴더` 입력 영역을 폴더 검색창으로 바꾸고, 새 폴더 생성과 이동 대상 선택을 폴더 트리 기반 팝업으로 처리하도록 반영했다. `c4cefa6`의 구독 메인 작업 목록 UI와 함께 다시 확인했으며, 현재 코드 기준으로 두 UI는 충돌하지 않는다. 2026-07-03에는 폴더 검색 범위를 선택된 폴더와 하위 폴더로 제한하고, `/data` 루트에서는 전체 검색하도록 보강했다. 2026-07-06에는 `/api/folders` 초기 payload를 root-direct tree로 줄이고, 펼친 폴더는 `/api/folders/children`으로 lazy loading하도록 바뀌었다.
 
 이 문서는 왼쪽 `저장 폴더` 패널 하단의 기존 `새 폴더` 입력 영역을 폴더 검색창으로 바꾼 구현 기준 기록이다. 사용자가 캡처에서 빨간색으로 표시한 영역은 구현 전에는 `new-folder-form`이었고, `/folders` POST로 새 폴더를 생성했다.
 
@@ -72,7 +72,7 @@
   - `POST /api/fs/move`
   - `build_folder_tree(root, max_depth=4, max_entries=5000, max_children_per_folder=1000)`
 
-현재 `build_folder_tree()`는 깊이와 개수를 제한한다. 2026-07-06 기준으로 기본 예산은 5,000개 폴더 항목과 비루트 폴더당 1,000개 자식이다. 따라서 구현된 클라이언트 필터는 "현재 로드된 폴더 트리 안에서 검색"이라는 한계가 있다. 폴더 수가 archive 규모로 커지는 경우에는 [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md)의 lazy child loading, server-side folder search, folder index 방향을 우선 검토한다.
+현재 `/api/folders`는 `initial_folder_tree()`를 통해 `/data`의 direct root children만 미리 싣고, expandable row는 `has_children`/`children_loaded` metadata로 표시한다. 사용자가 폴더를 펼치면 `/api/folders/children?path=...&limit=...&cursor=...`가 direct child rows를 lazy loading한다. 따라서 구현된 클라이언트 필터는 "현재 로드된 폴더 트리와 lazy 확장분 안에서 검색"이라는 한계가 있다. 폴더 수가 archive 규모로 커지고 로드되지 않은 경로 검색이 필요해지는 경우에는 [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md)의 server-side folder search와 folder index 방향을 우선 검토한다.
 
 구현 전 우클릭 메뉴의 `이동`은 다음처럼 텍스트 prompt를 사용했다.
 

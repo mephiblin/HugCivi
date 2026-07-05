@@ -1101,6 +1101,7 @@ def test_live_library_pagination_sorts_stable_scan_window(app_modules: tuple, mo
 
     assert first_has_next is True
     assert second_has_next is True
+    assert main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS == main.LIBRARY_PAGE_SIZE * 3
     assert scan_limits == [main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS, main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS]
     assert len(first_paths) == 50
     assert len(second_paths) == 50
@@ -1402,7 +1403,7 @@ def test_folder_tree_large_sibling_does_not_hide_later_route_roots(app_modules: 
     assert "loras" in stable_children
 
 
-def test_api_folders_default_includes_more_than_120_sibling_folders(app_modules: tuple) -> None:
+def test_api_folders_initial_tree_is_root_direct_children_only(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     parent = data_root / "stable-diffusion" / "checkpoints"
     parent.mkdir(parents=True)
@@ -1415,10 +1416,153 @@ def test_api_folders_default_includes_more_than_120_sibling_folders(app_modules:
     assert response.status_code == 200
     payload = response.json()
     stable = next(child for child in payload["children"] if child["name"] == "stable-diffusion")
-    checkpoints = next(child for child in stable["children"] if child["name"] == "checkpoints")
-    checkpoint_children = {child["name"] for child in checkpoints["children"]}
-    assert len(checkpoint_children) == 151
-    assert "model-150" in checkpoint_children
+    assert payload["has_children"] is True
+    assert payload["children_loaded"] is True
+    assert stable["children"] == []
+    assert stable["has_children"] is True
+    assert stable["children_loaded"] is False
+
+
+def test_api_folder_children_returns_direct_children_with_pagination(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    parent = data_root / "stable-diffusion" / "checkpoints"
+    parent.mkdir(parents=True)
+    for index in range(7):
+        child = parent / f"model-{index:03d}"
+        child.mkdir()
+        if index == 0:
+            (child / "nested").mkdir()
+
+    client = TestClient(main.app)
+    first_response = client.get(
+        "/api/folders/children",
+        params={"path": "stable-diffusion/checkpoints", "limit": 3},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    second_response = client.get(
+        "/api/folders/children",
+        params={"path": "stable-diffusion/checkpoints", "limit": 3, "cursor": "model-002"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    bad_cursor_response = client.get(
+        "/api/folders/children",
+        params={"path": "stable-diffusion/checkpoints", "cursor": "missing"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    assert first_payload["path"] == "stable-diffusion/checkpoints"
+    assert first_payload["limit"] == 3
+    assert first_payload["has_more"] is True
+    assert first_payload["next_cursor"] == "model-002"
+    assert [item["name"] for item in first_payload["items"]] == ["model-000", "model-001", "model-002"]
+    assert first_payload["items"][0]["path"] == "stable-diffusion/checkpoints/model-000"
+    assert first_payload["items"][0]["has_children"] is True
+    assert first_payload["items"][0]["children_loaded"] is False
+    assert "children" not in first_payload["items"][0]
+
+    assert second_response.status_code == 200
+    second_payload = second_response.json()
+    assert [item["name"] for item in second_payload["items"]] == ["model-003", "model-004", "model-005"]
+    assert second_payload["next_cursor"] == "model-005"
+    assert second_payload["has_more"] is True
+    assert bad_cursor_response.status_code == 400
+
+
+def test_api_folder_children_treats_hitomi_archives_as_leaf_without_child_scan(
+    app_modules: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    hitomi_root = data_root / "hitomi"
+    archive = hitomi_root / "123-gallery"
+    listing_archive = hitomi_root / "listings" / "artist-page"
+    archive.mkdir(parents=True)
+    listing_archive.mkdir(parents=True)
+    (archive / "_hitomi_metadata.json").write_text("{}", encoding="utf-8")
+    (archive / "001.jpg").write_bytes(b"image")
+    (listing_archive / "_hitomi_listing_metadata.json").write_text("{}", encoding="utf-8")
+
+    original_has_child_directories = main.folder_has_child_directories
+    original_direct_child_directories = main.direct_child_directories
+
+    def fail_on_archive_child_probe(path: Path) -> bool:
+        if path.resolve() in {archive.resolve(), listing_archive.resolve()}:
+            raise AssertionError("Hitomi archive folders should not be child-probed")
+        return original_has_child_directories(path)
+
+    def fail_on_archive_direct_scan(path: Path) -> list[Path]:
+        if path.resolve() == archive.resolve():
+            raise AssertionError("Hitomi archive folders should not be expanded")
+        return original_direct_child_directories(path)
+
+    monkeypatch.setattr(main, "folder_has_child_directories", fail_on_archive_child_probe)
+    monkeypatch.setattr(main, "direct_child_directories", fail_on_archive_direct_scan)
+
+    client = TestClient(main.app)
+    root_response = client.get(
+        "/api/folders/children",
+        params={"path": "hitomi"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    listing_response = client.get(
+        "/api/folders/children",
+        params={"path": "hitomi/listings"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    archive_response = client.get(
+        "/api/folders/children",
+        params={"path": "hitomi/123-gallery"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert root_response.status_code == 200
+    root_items = {item["path"]: item for item in root_response.json()["items"]}
+    assert root_items["hitomi/123-gallery"]["has_children"] is False
+    assert root_items["hitomi/123-gallery"]["children_loaded"] is True
+    assert root_items["hitomi/listings"]["has_children"] is True
+
+    assert listing_response.status_code == 200
+    listing_item = listing_response.json()["items"][0]
+    assert listing_item["path"] == "hitomi/listings/artist-page"
+    assert listing_item["has_children"] is False
+    assert listing_item["children_loaded"] is True
+
+    assert archive_response.status_code == 200
+    assert archive_response.json()["items"] == []
+
+
+def test_api_folder_children_skips_symlinks_and_rejects_symlink_parent(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, config_root = app_modules
+    parent = data_root / "folder"
+    parent.mkdir()
+    (parent / "real").mkdir()
+    internal_target = data_root / "internal-target"
+    internal_target.mkdir()
+    (parent / "internal-link").symlink_to(internal_target, target_is_directory=True)
+    (parent / "external-link").symlink_to(config_root, target_is_directory=True)
+
+    client = TestClient(main.app)
+    response = client.get(
+        "/api/folders/children",
+        params={"path": "folder"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    internal_parent_response = client.get(
+        "/api/folders/children",
+        params={"path": "folder/internal-link"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    external_parent_response = client.get(
+        "/api/folders/children",
+        params={"path": "folder/external-link"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()["items"]] == ["real"]
+    assert internal_parent_response.status_code == 400
+    assert external_parent_response.status_code == 400
 
 
 def test_api_create_folder_creates_child_and_rejects_nested_name(app_modules: tuple) -> None:
