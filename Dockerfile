@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 ARG DENO_VERSION=2.9.0
+ARG RCLONE_VERSION=1.74.3
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -26,7 +27,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DOWNLOAD_HTTP_MAX_RETRIES=3 \
     DOWNLOAD_RETRY_BACKOFF_SECONDS=5 \
     DOWNLOAD_MAX_RETRY_SLEEP_SECONDS=300 \
-    DOWNLOAD_ENABLE_HEAD_REQUESTS=1
+    DOWNLOAD_ENABLE_HEAD_REQUESTS=1 \
+    RCLONE_CONFIG=/config/rclone/rclone.conf \
+    TRANSFER_MANIFEST_DIR=/config/transfer-manifests \
+    TRANSFER_MAX_CONCURRENT=1 \
+    TRANSFER_DEFAULT_TRANSFERS=1 \
+    TRANSFER_DEFAULT_CHECKERS=2 \
+    TRANSFER_DEFAULT_BWLIMIT=40M
 
 WORKDIR /app
 
@@ -46,6 +53,19 @@ RUN set -eux; \
     chmod +x /usr/local/bin/deno; \
     rm -f /tmp/deno.zip; \
     deno --version
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) rclone_arch="amd64" ;; \
+      arm64) rclone_arch="arm64" ;; \
+      *) echo "Unsupported rclone architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}.zip" -o /tmp/rclone.zip; \
+    python -m zipfile -e /tmp/rclone.zip /tmp/rclone; \
+    install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}/rclone" /usr/local/bin/rclone; \
+    rm -rf /tmp/rclone /tmp/rclone.zip; \
+    rclone version
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

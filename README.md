@@ -29,7 +29,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - [LLM/인수인계 README](README_LLM.md)
 - [개발 Skill 세트](SKILL_Dev/SKILL.md)
 - [프로젝트 철학](docs/philosophy.md)
-- [전송 기능 설계](docs/transfer-design-2026-07-02.md)
+- [복사 전용 전송 계획](docs/transfer-copy-production-plan-2026-07-06.md)
 
 ## 이런 용도입니다
 
@@ -37,6 +37,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - Hugging Face 모델, Civitai 모델, 일반 파일 URL을 한 화면에서 받고 싶을 때
 - Hitomi, ASMR.one, gallery-dl 지원 사이트, YouTube 영상을 폴더로 보관하고 필요할 때 받고 싶을 때
 - ComfyUI용 `loras`, `checkpoints`, `embeddings` 같은 폴더 구조로 정리하고 싶을 때
+- NAS에 보관한 모델 파일을 등록된 PC ComfyUI 폴더로 전송하고 싶을 때
 - ComfyUI 워크플로우 공유 PNG 또는 JSON을 NAS에 저장하고 나중에 다시 보고 싶을 때
 - 다운로드 기록, 진행률, 모델 썸네일과 메타데이터를 같이 보고 싶을 때
 
@@ -65,6 +66,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
+- 폴더 또는 카드 우클릭으로 등록된 rclone 대상에 copy-only 전송 작업 생성
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
 - 작업 목록에서 다운로드 정지, 재개, 삭제, 저장 폴더 이동, 50개 단위 페이지 전환, 소스별 필터
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
@@ -489,6 +491,21 @@ Upscaler: stable-diffusion/upscalers
 - 실행 중이거나 대기 중인 다운로드가 들어있는 폴더는 이동, 이름 변경, 삭제를 차단합니다.
 - 모든 작업은 `/data` 안에서만 허용됩니다.
 
+## 전송
+
+HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 rclone 대상으로 보내는 복사 전용 전송 작업을 만들 수 있습니다. 예를 들면 NAS의 `/data/stable-diffusion/checkpoints`에 있는 checkpoint 파일을 내부망 PC의 `ComfyUI/models/checkpoints` 공유 폴더로 보낼 수 있습니다.
+
+운영자는 먼저 `/config/rclone/rclone.conf`에 rclone remote를 준비하고, HugCivi에는 remote 이름, base path, 허용 source prefix, include pattern 같은 전송 대상 정책을 등록합니다. UI는 임의 remote 주소 입력을 받지 않고, 등록된 대상만 선택하게 합니다.
+
+사용 흐름:
+
+1. 라이브러리 카드나 폴더를 우클릭합니다.
+2. `전송`을 선택합니다.
+3. 등록된 대상을 고르고 사전 확인 결과를 봅니다.
+4. `전송 큐에 추가`를 누릅니다.
+
+전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. rclone 설정과 NAS-to-PC 권장값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
+
 ## 토큰 및 인증 입력
 
 ### Hugging Face Token
@@ -582,6 +599,12 @@ MEDIA_CACHE_TTL_SECONDS=2592000
 MEDIA_CACHE_MAX_BYTES=0
 MEDIA_THUMBNAIL_BACKFILL_WORKERS=3
 MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS=5000
+RCLONE_CONFIG=/config/rclone/rclone.conf
+TRANSFER_MANIFEST_DIR=/config/transfer-manifests
+TRANSFER_MAX_CONCURRENT=1
+TRANSFER_DEFAULT_TRANSFERS=1
+TRANSFER_DEFAULT_CHECKERS=2
+TRANSFER_DEFAULT_BWLIMIT=40M
 HITOMI_BACKEND=auto
 HITOMI_LISTING_QUEUE_MODE=auto
 GALLERY_DL_AUTO_UPDATE=1
@@ -635,7 +658,7 @@ YT_DLP_EXTRA_OPTIONS=
 - [LLM/인수인계 README](README_LLM.md)
 - [개발 Skill 세트](SKILL_Dev/SKILL.md)
 - [프로젝트 철학](docs/philosophy.md)
-- [전송 기능 설계](docs/transfer-design-2026-07-02.md)
+- [복사 전용 전송 계획](docs/transfer-copy-production-plan-2026-07-06.md)
 - [gallery-dl 인증 분류](docs/gallery-dl-auth.md)
 - [2026-06-30 코드 검토 결과](docs/code-review-findings-2026-06-30.md)
 

@@ -48,6 +48,12 @@ services:
       DOWNLOAD_RETRY_BACKOFF_SECONDS: "5"
       DOWNLOAD_MAX_RETRY_SLEEP_SECONDS: "300"
       DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
+      RCLONE_CONFIG: "/config/rclone/rclone.conf"
+      TRANSFER_MANIFEST_DIR: "/config/transfer-manifests"
+      TRANSFER_MAX_CONCURRENT: "1"
+      TRANSFER_DEFAULT_TRANSFERS: "1"
+      TRANSFER_DEFAULT_CHECKERS: "2"
+      TRANSFER_DEFAULT_BWLIMIT: "40M"
     volumes:
       - ${HUGCIVI_DATA_DIR:-./data}:/data
       - ${HUGCIVI_CONFIG_DIR:-./config}:/config

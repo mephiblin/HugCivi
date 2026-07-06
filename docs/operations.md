@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -87,6 +87,44 @@ Internal server-local jobs use a separate limit:
 | `INTERNAL_JOB_MAX_CONCURRENT` | Concurrent ZIP/transcode/poster jobs. Default is `2`; `1` is recommended on modest NAS hardware. |
 
 Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
+
+## Copy-Only Transfer
+
+The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`.
+
+rclone remote credentials live outside SQLite:
+
+```text
+/config/rclone/rclone.conf
+```
+
+Prepare this file through `rclone config --config /config/rclone/rclone.conf` inside the container or by mounting a prepared config file. Transfer target rows store the rclone remote name, base path, enabled state, and policy only; do not put passwords or raw host details into target names or notes.
+
+Useful defaults:
+
+```text
+RCLONE_CONFIG=/config/rclone/rclone.conf
+TRANSFER_MANIFEST_DIR=/config/transfer-manifests
+TRANSFER_MAX_CONCURRENT=1
+TRANSFER_DEFAULT_TRANSFERS=1
+TRANSFER_DEFAULT_CHECKERS=2
+TRANSFER_DEFAULT_BWLIMIT=40M
+```
+
+Recommended NAS-to-PC setup for ComfyUI checkpoints:
+
+```text
+Windows folder: D:\ComfyUI\models
+SMB share: ComfyUI
+Dedicated account: hugcivi_transfer
+Permission: write under ComfyUI/models
+PC IP: DHCP reservation or static IP
+HugCivi source prefix: stable-diffusion/checkpoints
+Remote base path: ComfyUI/models/checkpoints
+Include patterns: *.safetensors, *.ckpt
+```
+
+Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the SMB share and PC disk behavior are proven stable. If the PC is asleep or unavailable, the transfer job fails without changing local `/data` files; fix the share/network condition and retry the job.
 
 ## Civitai Model Archives
 

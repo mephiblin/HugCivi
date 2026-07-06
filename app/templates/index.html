@@ -359,6 +359,14 @@
           </span>
           폴더
         </button>
+        <button type="button" class="settings-nav-item" data-settings-pane="settings-transfer">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M4 7a3 3 0 0 1 3-3h7v2H7a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h7v2H7a3 3 0 0 1-3-3V7Zm12.6 1.4L20.2 12l-3.6 3.6-1.4-1.4L16.4 13H10v-2h6.4l-1.2-1.2 1.4-1.4Z"/>
+            </svg>
+          </span>
+          전송 대상
+        </button>
       </nav>
 
       <form class="settings-form" method="post" action="/settings">
@@ -587,6 +595,56 @@
             </label>
           </div>
         </section>
+
+        <section class="settings-block settings-pane" id="settings-transfer"
+                 data-settings-title="전송 대상"
+                 data-settings-description="등록된 rclone remote로 복사 전용 전송 대상을 관리합니다.">
+          <div class="settings-block-copy">
+            <h3>전송 대상</h3>
+            <p>rclone remote는 <code>/config/rclone/rclone.conf</code>에 먼저 준비하고, 여기에는 remote 이름과 복사 정책만 저장합니다.</p>
+          </div>
+
+          <div class="settings-grid two-cols">
+            <label class="setting-field" for="transfer-setting-name">
+              <span>표시 이름</span>
+              <input id="transfer-setting-name" type="text" autocomplete="off" placeholder="PC ComfyUI Checkpoints">
+            </label>
+            <label class="setting-field" for="transfer-setting-remote">
+              <span>rclone remote</span>
+              <input id="transfer-setting-remote" type="text" autocomplete="off" placeholder="pc-comfyui">
+            </label>
+            <label class="setting-field" for="transfer-setting-path">
+              <span>remote base path</span>
+              <input id="transfer-setting-path" type="text" autocomplete="off" placeholder="ComfyUI/models/checkpoints">
+            </label>
+            <label class="setting-field" for="transfer-setting-prefixes">
+              <span>허용 원본 prefix</span>
+              <input id="transfer-setting-prefixes" type="text" autocomplete="off" value="stable-diffusion/checkpoints">
+            </label>
+            <label class="setting-field" for="transfer-setting-includes">
+              <span>포함 패턴</span>
+              <input id="transfer-setting-includes" type="text" autocomplete="off" value="*.safetensors, *.ckpt">
+            </label>
+            <label class="setting-field" for="transfer-setting-bwlimit">
+              <span>전송 속도 제한</span>
+              <input id="transfer-setting-bwlimit" type="text" autocomplete="off" value="40M">
+            </label>
+            <label class="setting-field" for="transfer-setting-transfers">
+              <span>transfers</span>
+              <input id="transfer-setting-transfers" type="number" min="1" max="4" step="1" value="1">
+            </label>
+            <label class="setting-field" for="transfer-setting-checkers">
+              <span>checkers</span>
+              <input id="transfer-setting-checkers" type="number" min="1" max="8" step="1" value="2">
+            </label>
+          </div>
+          <div class="settings-inline-actions">
+            <button type="button" class="settings-save" id="transfer-setting-save">대상 저장</button>
+            <button type="button" class="settings-cancel" id="transfer-setting-refresh">새로고침</button>
+          </div>
+          <div class="bulk-add-status" id="transfer-setting-status" role="status" aria-live="polite"></div>
+          <div class="transfer-target-list" id="transfer-setting-list"></div>
+        </section>
         </div>
 
         <footer class="settings-footer">
@@ -713,6 +771,37 @@
     </div>
   </section>
 
+  <section class="bulk-add-modal transfer-modal" id="transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-title" hidden>
+    <form class="bulk-add-panel transfer-modal-panel" id="transfer-form">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="transfer-title">전송</h2>
+          <p id="transfer-summary">대상 선택</p>
+        </div>
+        <button type="button" class="bulk-add-close" id="transfer-close" aria-label="전송 닫기">×</button>
+      </header>
+      <div class="transfer-form-body">
+        <label class="setting-field" for="transfer-target">
+          <span>대상</span>
+          <select id="transfer-target" required>
+            <option value="">대상을 불러오는 중</option>
+          </select>
+        </label>
+        <div class="transfer-source-row">
+          <span>원본</span>
+          <strong id="transfer-source">/data</strong>
+        </div>
+        <div class="transfer-policy-list" id="transfer-policy"></div>
+        <div class="transfer-preflight" id="transfer-preflight" role="status" aria-live="polite"></div>
+      </div>
+      <div class="bulk-add-status" id="transfer-status" role="status" aria-live="polite"></div>
+      <footer class="bulk-add-footer">
+        <button type="button" class="settings-cancel" id="transfer-cancel">취소</button>
+        <button type="submit" class="settings-save" id="transfer-submit" disabled>전송 큐에 추가</button>
+      </footer>
+    </form>
+  </section>
+
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
     <button type="button" data-action="create-folder" data-folder-only role="menuitem" hidden>새 폴더</button>
@@ -721,6 +810,7 @@
     <button type="button" data-action="civitai-refresh" data-civitai-refresh-only role="menuitem" hidden>갱신</button>
     <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
+    <button type="button" data-action="transfer" role="menuitem">전송</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
     <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
@@ -970,6 +1060,28 @@
     const folderMoveDestination = document.getElementById('folder-move-destination');
     const folderMoveConfirm = document.getElementById('folder-move-confirm');
     const folderMoveCancel = document.getElementById('folder-move-cancel');
+    const transferModal = document.getElementById('transfer-modal');
+    const transferForm = document.getElementById('transfer-form');
+    const transferClose = document.getElementById('transfer-close');
+    const transferCancel = document.getElementById('transfer-cancel');
+    const transferTargetSelect = document.getElementById('transfer-target');
+    const transferSource = document.getElementById('transfer-source');
+    const transferPolicy = document.getElementById('transfer-policy');
+    const transferPreflight = document.getElementById('transfer-preflight');
+    const transferStatus = document.getElementById('transfer-status');
+    const transferSubmit = document.getElementById('transfer-submit');
+    const transferSettingName = document.getElementById('transfer-setting-name');
+    const transferSettingRemote = document.getElementById('transfer-setting-remote');
+    const transferSettingPath = document.getElementById('transfer-setting-path');
+    const transferSettingPrefixes = document.getElementById('transfer-setting-prefixes');
+    const transferSettingIncludes = document.getElementById('transfer-setting-includes');
+    const transferSettingBwlimit = document.getElementById('transfer-setting-bwlimit');
+    const transferSettingTransfers = document.getElementById('transfer-setting-transfers');
+    const transferSettingCheckers = document.getElementById('transfer-setting-checkers');
+    const transferSettingSave = document.getElementById('transfer-setting-save');
+    const transferSettingRefresh = document.getElementById('transfer-setting-refresh');
+    const transferSettingStatus = document.getElementById('transfer-setting-status');
+    const transferSettingList = document.getElementById('transfer-setting-list');
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
@@ -1022,6 +1134,9 @@
     let activeFolderCreateParent = '';
     let activeFolderMoveTarget = null;
     let activeFolderMoveDestination = null;
+    let activeTransferTarget = null;
+    let transferTargets = [];
+    let transferPreflightRequestId = 0;
     let downloadQueue = [];
     let downloadQueueActive = false;
     let downloadQueueId = 1;
@@ -1254,6 +1369,7 @@
       closeHitomiListingModal();
       closeFolderCreateModal();
       closeFolderMoveModal();
+      closeTransferModal();
       closePropertiesModal();
       closeMediaViewer();
       closeWorkflowViewer();
@@ -1271,6 +1387,7 @@
         closeHitomiListingModal();
         closeFolderCreateModal();
         closeFolderMoveModal();
+        closeTransferModal();
         closePropertiesModal();
         closeMediaViewer();
         closeWorkflowViewer();
@@ -1339,6 +1456,24 @@
     });
     folderMoveConfirm.addEventListener('click', submitMoveToDestination);
     folderMoveCancel.addEventListener('click', closeFolderMoveModal);
+    transferModal.addEventListener('click', event => {
+      if (event.target === transferModal) {
+        closeTransferModal();
+      }
+      event.stopPropagation();
+    });
+    transferClose.addEventListener('click', closeTransferModal);
+    transferCancel.addEventListener('click', closeTransferModal);
+    transferTargetSelect.addEventListener('change', refreshTransferPreflight);
+    transferForm.addEventListener('submit', submitTransferJob);
+    transferSettingSave.addEventListener('click', saveTransferSettingTarget);
+    transferSettingRefresh.addEventListener('click', loadTransferSettingTargets);
+    transferSettingList.addEventListener('click', event => {
+      const button = event.target.closest('[data-transfer-target-delete]');
+      if (button) {
+        deleteTransferSettingTarget(button.dataset.transferTargetDelete);
+      }
+    });
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -2088,6 +2223,335 @@
       } else {
         folderMoveConfirm.disabled = false;
       }
+    }
+
+    function openTransferModal(target) {
+      const path = normalizePath(target?.path || '');
+      if (!path) return;
+      activeTransferTarget = {...target, path};
+      transferSource.textContent = `/data/${path}`;
+      transferStatus.textContent = '';
+      transferPreflight.textContent = '';
+      transferPolicy.textContent = '';
+      transferSubmit.disabled = true;
+      transferTargetSelect.disabled = true;
+      transferTargetSelect.innerHTML = '<option value="">대상을 불러오는 중</option>';
+      transferModal.hidden = false;
+      document.body.classList.add('modal-open');
+      loadTransferTargets();
+      window.setTimeout(() => transferTargetSelect.focus(), 0);
+    }
+
+    function closeTransferModal() {
+      if (transferModal.hidden) return;
+      transferModal.hidden = true;
+      activeTransferTarget = null;
+      transferTargets = [];
+      transferPreflightRequestId += 1;
+      transferSubmit.disabled = true;
+      document.body.classList.remove('modal-open');
+    }
+
+    async function loadTransferTargets() {
+      transferStatus.textContent = '전송 대상을 불러오는 중';
+      try {
+        const response = await fetch('/api/transfer/targets');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferStatus.textContent = data.detail || '전송 대상을 불러오지 못했습니다.';
+          renderTransferTargets([]);
+          return;
+        }
+        transferTargets = normalizeTransferTargets(data);
+        renderTransferTargets(transferTargets);
+        transferStatus.textContent = transferTargets.length ? '' : '등록된 전송 대상이 없습니다.';
+        await refreshTransferPreflight();
+      } catch (err) {
+        transferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+        renderTransferTargets([]);
+      }
+    }
+
+    function normalizeTransferTargets(data) {
+      const rows = Array.isArray(data) ? data : (Array.isArray(data?.targets) ? data.targets : []);
+      return rows
+        .filter(target => target && target.id !== undefined && target.id !== null)
+        .map(target => {
+          const policy = transferTargetPolicy(target);
+          return {
+            ...target,
+            id: String(target.id),
+            name: String(target.name || target.label || `Target ${target.id}`),
+            enabled: isTransferTargetEnabled(target),
+            policy,
+          };
+        });
+    }
+
+    function transferTargetPolicy(target) {
+      if (target?.policy && typeof target.policy === 'object') return target.policy;
+      if (typeof target?.policy_json === 'string' && target.policy_json.trim()) {
+        try {
+          const parsed = JSON.parse(target.policy_json);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (err) {
+          return {};
+        }
+      }
+      return {};
+    }
+
+    function isTransferTargetEnabled(target) {
+      const value = target?.enabled;
+      return !(value === false || value === 0 || value === '0' || String(value).toLowerCase() === 'false');
+    }
+
+    function renderTransferTargets(targets) {
+      const enabledTargets = targets.filter(target => target.enabled);
+      if (!enabledTargets.length) {
+        transferTargetSelect.innerHTML = '<option value="">등록된 대상 없음</option>';
+        transferTargetSelect.disabled = true;
+        transferSubmit.disabled = true;
+        renderTransferPolicy(null);
+        return;
+      }
+      transferTargetSelect.disabled = false;
+      transferTargetSelect.innerHTML = enabledTargets.map(target => (
+        `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`
+      )).join('');
+      renderTransferPolicy(selectedTransferTarget());
+    }
+
+    function selectedTransferTarget() {
+      const selectedId = String(transferTargetSelect.value || '');
+      return transferTargets.find(target => target.enabled && target.id === selectedId) || null;
+    }
+
+    function renderTransferPolicy(target) {
+      if (!target) {
+        transferPolicy.innerHTML = '<div class="transfer-policy-row"><span>대상</span><strong>-</strong></div>';
+        return;
+      }
+      const policy = target.policy || {};
+      const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes);
+      const includes = arrayText(policy.include_patterns || policy.includePatterns);
+      const limits = [
+        policy.bwlimit ? `bw ${policy.bwlimit}` : '',
+        policy.transfers ? `transfers ${policy.transfers}` : '',
+        policy.checkers ? `checkers ${policy.checkers}` : '',
+      ].filter(Boolean).join(' · ');
+      const rows = [
+        ['허용 경로', prefixes || '-'],
+        ['포함', includes || '-'],
+        ['제한', limits || '-'],
+      ];
+      transferPolicy.innerHTML = rows.map(([label, value]) => `
+        <div class="transfer-policy-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join('');
+    }
+
+    function arrayText(value) {
+      return (Array.isArray(value) ? value : [])
+        .filter(item => item !== undefined && item !== null && String(item).trim())
+        .map(item => String(item).trim())
+        .join(', ');
+    }
+
+    async function refreshTransferPreflight() {
+      if (transferModal.hidden) return;
+      const requestId = ++transferPreflightRequestId;
+      const target = selectedTransferTarget();
+      renderTransferPolicy(target);
+      transferSubmit.disabled = true;
+      if (!target || !activeTransferTarget?.path) {
+        transferPreflight.textContent = '';
+        return;
+      }
+      transferPreflight.textContent = '확인 중';
+      transferStatus.textContent = '';
+      try {
+        const response = await fetch('/api/transfer/preflight', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(transferJobPayload(target)),
+        });
+        const data = await readJsonResponse(response);
+        if (requestId !== transferPreflightRequestId) return;
+        if (!response.ok) {
+          transferPreflight.textContent = data.detail || '전송할 수 없습니다.';
+          transferSubmit.disabled = true;
+          return;
+        }
+        transferPreflight.innerHTML = renderTransferPreflight(data);
+        transferSubmit.disabled = false;
+      } catch (err) {
+        if (requestId !== transferPreflightRequestId) return;
+        transferPreflight.textContent = '전송 확인을 완료하지 못했습니다.';
+        transferSubmit.disabled = true;
+      }
+    }
+
+    function transferJobPayload(target = selectedTransferTarget()) {
+      const numericId = Number(target?.id);
+      return {
+        target_id: Number.isFinite(numericId) ? numericId : target?.id,
+        source_path: normalizePath(activeTransferTarget?.path || ''),
+      };
+    }
+
+    function renderTransferPreflight(data) {
+      const fileCount = data.file_count ?? data.files_count ?? data.files;
+      const sizeText = data.source_human || data.size_human || data.total_human || (
+        data.source_bytes !== undefined ? formatFileSize(data.source_bytes) : (
+          data.total_bytes !== undefined ? formatFileSize(data.total_bytes) : ''
+        )
+      );
+      const destination = data.destination_preview || data.destination || data.remote_destination || '';
+      const rows = [
+        destination ? ['대상 위치', destination] : null,
+        fileCount !== undefined && fileCount !== null ? ['예상 파일', `${formatCount(fileCount)}개`] : null,
+        sizeText ? ['예상 용량', sizeText] : null,
+      ].filter(Boolean);
+      if (!rows.length) return '<div class="transfer-policy-row"><span>상태</span><strong>전송할 수 있습니다.</strong></div>';
+      return rows.map(([label, value]) => `
+        <div class="transfer-policy-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join('');
+    }
+
+    async function submitTransferJob(event) {
+      event.preventDefault();
+      const target = selectedTransferTarget();
+      if (!target || !activeTransferTarget?.path) return;
+      transferSubmit.disabled = true;
+      transferStatus.textContent = '전송 작업을 추가하는 중';
+      try {
+        const response = await fetch('/api/transfer/jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(transferJobPayload(target)),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferStatus.textContent = data.detail || '전송 작업을 추가하지 못했습니다.';
+          transferSubmit.disabled = false;
+          return;
+        }
+        activeJobSource = 'transfer';
+        closeTransferModal();
+        await refreshJobs({page: 1, source: 'transfer'});
+      } catch (err) {
+        transferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+        transferSubmit.disabled = false;
+      }
+    }
+
+    async function loadTransferSettingTargets() {
+      if (!transferSettingList) return;
+      transferSettingStatus.textContent = '전송 대상을 불러오는 중';
+      try {
+        const response = await fetch('/api/transfer/targets');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferSettingStatus.textContent = data.detail || '전송 대상을 불러오지 못했습니다.';
+          renderTransferSettingTargets([]);
+          return;
+        }
+        const targets = normalizeTransferTargets(data);
+        renderTransferSettingTargets(targets);
+        transferSettingStatus.textContent = targets.length ? '' : '등록된 전송 대상이 없습니다.';
+      } catch (err) {
+        transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    function renderTransferSettingTargets(targets) {
+      if (!targets.length) {
+        transferSettingList.innerHTML = '';
+        return;
+      }
+      transferSettingList.innerHTML = targets.map(target => {
+        const policy = target.policy || {};
+        const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes) || '-';
+        const includes = arrayText(policy.include_patterns || policy.includePatterns) || '-';
+        const remotePath = target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`;
+        return `
+          <div class="transfer-target-item">
+            <div>
+              <strong>${escapeHtml(target.name)}</strong>
+              <span>${escapeHtml(remotePath)}</span>
+              <small>${escapeHtml(prefixes)} · ${escapeHtml(includes)}</small>
+            </div>
+            <button type="button" class="settings-cancel" data-transfer-target-delete="${escapeHtml(target.id)}">삭제</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function saveTransferSettingTarget() {
+      const payload = {
+        name: transferSettingName.value.trim(),
+        remote_name: transferSettingRemote.value.trim(),
+        remote_path: transferSettingPath.value.trim(),
+        enabled: true,
+        policy: {
+          allowed_source_prefixes: splitCsv(transferSettingPrefixes.value),
+          include_patterns: splitCsv(transferSettingIncludes.value),
+          bwlimit: transferSettingBwlimit.value.trim(),
+          transfers: Number(transferSettingTransfers.value || 1),
+          checkers: Number(transferSettingCheckers.value || 2),
+          preserve_folder_name: true,
+          require_check: false,
+        },
+      };
+      transferSettingSave.disabled = true;
+      transferSettingStatus.textContent = '전송 대상을 저장하는 중';
+      try {
+        const response = await fetch('/api/transfer/targets', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferSettingStatus.textContent = data.detail || '전송 대상을 저장하지 못했습니다.';
+          return;
+        }
+        transferSettingStatus.textContent = '전송 대상이 저장되었습니다.';
+        await loadTransferSettingTargets();
+      } catch (err) {
+        transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      } finally {
+        transferSettingSave.disabled = false;
+      }
+    }
+
+    async function deleteTransferSettingTarget(targetId) {
+      if (!targetId) return;
+      transferSettingStatus.textContent = '전송 대상을 삭제하는 중';
+      try {
+        const response = await fetch(`/api/transfer/targets/${encodeURIComponent(targetId)}`, {method: 'DELETE'});
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferSettingStatus.textContent = data.detail || '전송 대상을 삭제하지 못했습니다.';
+          return;
+        }
+        await loadTransferSettingTargets();
+      } catch (err) {
+        transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    function splitCsv(value) {
+      return String(value || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
     }
 
     async function replaceFolderTree(tree, options = {}) {
@@ -3279,6 +3743,9 @@
       if (settingsContent) {
         settingsContent.scrollTop = 0;
       }
+      if (targetId === 'settings-transfer') {
+        loadTransferSettingTargets();
+      }
     }
 
     function switchToLibrary(path) {
@@ -3869,7 +4336,7 @@
           <td data-label="ID">${job.id}</td>
           <td data-label="상태"><span class="status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</span></td>
           <td data-label="정보">${renderModelInfo(job)}</td>
-          <td data-label="소스">${escapeHtml(job.source || '-')}</td>
+          <td data-label="소스">${escapeHtml(jobDisplaySource(job))}</td>
           <td data-label="입력" class="input-cell">${escapeHtml(job.input_text || '')}</td>
           <td data-label="파일" class="file-cell">${escapeHtml(job.filename || '-')}</td>
           <td data-label="진행률" class="progress-cell"><div class="progress-readout">${progress}</div></td>
@@ -3902,7 +4369,7 @@
     }
 
     function sortedJobSourceCounts(counts) {
-      const order = ['civitai', 'huggingface', 'hitomi', 'asmrone', 'gallerydl', 'comfyui', 'generic'];
+      const order = ['transfer', 'civitai', 'huggingface', 'hitomi', 'asmrone', 'gallerydl', 'comfyui', 'generic'];
       return [...counts].sort((left, right) => {
         const leftIndex = order.indexOf(left.source);
         const rightIndex = order.indexOf(right.source);
@@ -3928,6 +4395,8 @@
         gallerydl: 'gallery-dl',
         comfyui: 'ComfyUI',
         generic: 'URL',
+        transfer: 'Transfer',
+        transfer_copy: 'Transfer',
         archive_zip: 'Archive',
         media_transcode: 'Transcode',
         media_poster: 'Poster',
@@ -3936,6 +4405,13 @@
       const value = normalizeJobSource(source);
       if (labels[value]) return labels[value];
       return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) || 'Unknown';
+    }
+
+    function jobDisplaySource(job) {
+      const source = normalizeJobSource(job?.source || '');
+      const kind = normalizeJobSource(job?.job_kind || job?.kind || '');
+      if (source === 'transfer' || kind === 'transfer_copy') return 'Transfer';
+      return jobSourceLabel(source || kind);
     }
 
     function renderJobsPagination() {
@@ -3999,7 +4475,7 @@
           <div class="mobile-job-copy">
             <div class="mobile-job-topline">
               <span class="status ${escapeHtml(job.status || '')}">${escapeHtml(job.status || '-')}</span>
-              <small>#${escapeHtml(job.id)} · ${escapeHtml(job.source || '-')}</small>
+              <small>#${escapeHtml(job.id)} · ${escapeHtml(jobDisplaySource(job))}</small>
             </div>
             <strong>${escapeHtml(title)}</strong>
             <span>${escapeHtml(detail)}</span>
@@ -4119,7 +4595,7 @@
         ${image}
         <div>
           <strong>${escapeHtml(job.model_title || job.filename || job.input_text || '-')}</strong>
-          <span>${escapeHtml(job.model_category || job.model_type || job.source || '-')}</span>
+          <span>${escapeHtml(job.model_category || job.model_type || jobDisplaySource(job))}</span>
           <small>${details}</small>
         </div>
       </div>`;
@@ -4501,6 +4977,11 @@
 
       if (action === 'download') {
         enqueueLocalDownload(target);
+        return;
+      }
+
+      if (action === 'transfer') {
+        openTransferModal(target);
         return;
       }
 
@@ -6654,6 +7135,7 @@
       if (source === 'hitomi') return 'HT';
       if (source === 'gallerydl') return 'GDL';
       if (source === 'asmrone') return 'ASMR';
+      if (source === 'transfer' || source === 'transfer_copy') return 'TR';
       return 'URL';
     }
 

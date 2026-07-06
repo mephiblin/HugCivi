@@ -1,6 +1,6 @@
 # HugCivi Configuration Reference
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 This document lists the configuration knobs a developer or operator is likely to meet. Values can come from environment variables, Docker/Portainer stack settings, or the web UI settings table depending on the key.
 
@@ -32,6 +32,8 @@ Path and startup settings are usually read from environment variables at import 
 | `MEDIA_CACHE_DIR` | `/config/media-cache` | env | Browser transcodes, poster cache, and lazy card thumbnails under `thumbnails/`. |
 | `HUGCIVI_CHROME_EXTENSION_DIR` | app parent `chrome-extension` | env | Source folder zipped by `/api/addon/chrome-extension`. |
 | `HUGCIVI_STARTUP_CONFIG_FILE` | `/config/startup.env` | env | Startup file used by the entrypoint for gallery-dl auto-update. |
+| `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | env | rclone config file used by copy-only transfer jobs. Keep remote credentials here, not in transfer target rows. |
+| `TRANSFER_MANIFEST_DIR` | `/config/transfer-manifests` | env | Manifest artifact directory for completed copy-only transfer jobs. |
 | `HUGCIVI_DATA_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/data`. |
 | `HUGCIVI_CONFIG_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/config`. |
 
@@ -107,6 +109,17 @@ The authenticated settings modal renders these credential and option values in p
 | `DOWNLOAD_PROGRESS_SCAN_MAX_FILES` | `2000` | env | Limits progress directory scans. |
 | `DOWNLOAD_WATCHDOG_SCAN_MAX_FILES` | `2000` | env | Limits watchdog directory scans. |
 | `PROCESS_OUTPUT_QUEUE_MAX_LINES` | `1000` | env | Bounded subprocess output queue size. |
+
+## Transfer Copy
+
+Transfer targets are stored in SQLite and refer to rclone remotes by name. Remote credentials and host details live in `RCLONE_CONFIG`.
+
+| Key | Default | Source | Notes |
+| --- | --- | --- | --- |
+| `TRANSFER_MAX_CONCURRENT` | `1` | env | Max copy-only transfer jobs allowed to run at once inside the internal job scheduler. |
+| `TRANSFER_DEFAULT_TRANSFERS` | `1` | env | Default rclone `--transfers` value when the target policy does not override it. |
+| `TRANSFER_DEFAULT_CHECKERS` | `2` | env | Default rclone `--checkers` value when the target policy does not override it. |
+| `TRANSFER_DEFAULT_BWLIMIT` | `40M` | env | Default rclone bandwidth limit when the target policy does not override it. Empty disables the default limit. |
 
 ## Provider-Specific Runtime
 

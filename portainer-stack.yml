@@ -63,6 +63,14 @@ services:
       DOWNLOAD_RETRY_BACKOFF_SECONDS: "5"
       DOWNLOAD_MAX_RETRY_SLEEP_SECONDS: "300"
       DOWNLOAD_ENABLE_HEAD_REQUESTS: "1"
+
+      # Copy-only outbound transfer defaults.
+      RCLONE_CONFIG: "${RCLONE_CONFIG:-/config/rclone/rclone.conf}"
+      TRANSFER_MANIFEST_DIR: "${TRANSFER_MANIFEST_DIR:-/config/transfer-manifests}"
+      TRANSFER_MAX_CONCURRENT: "${TRANSFER_MAX_CONCURRENT:-1}"
+      TRANSFER_DEFAULT_TRANSFERS: "${TRANSFER_DEFAULT_TRANSFERS:-1}"
+      TRANSFER_DEFAULT_CHECKERS: "${TRANSFER_DEFAULT_CHECKERS:-2}"
+      TRANSFER_DEFAULT_BWLIMIT: "${TRANSFER_DEFAULT_BWLIMIT:-40M}"
     volumes:
       - type: bind
         source: "${HUGCIVI_DATA_DIR:-/volume1/docker/nas-model-archiver/models}"

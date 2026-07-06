@@ -12,7 +12,7 @@ Runtime topology:
 - SQLite at `/config/jobs.sqlite3` is the authoritative state store for jobs, settings, favorites, notes, library index rows, artifacts, and maintenance history.
 - `/data` is the durable archive root. Model files, images, videos, audio, comics, workflows, sidecar metadata, and user-managed folders stay on the filesystem.
 - Background work runs as in-process scheduler threads. HugCivi intentionally avoids Redis, Celery, Elasticsearch, or a second service for the current personal NAS target.
-- ffmpeg, gallery-dl, yt-dlp, Deno, and the Hugging Face CLI paths are invoked only where the matching source type needs them.
+- ffmpeg, gallery-dl, yt-dlp, Deno, rclone, and the Hugging Face CLI paths are invoked only where the matching source type needs them.
 
 The core split is:
 
@@ -23,6 +23,7 @@ Browser
       -> /data archive tree
       -> download scheduler app/downloader.py
       -> internal job scheduler app/internal_jobs.py
+      -> copy-only transfer helpers app/transfer.py
       -> library indexer thread in app/main.py
 ```
 
@@ -36,6 +37,8 @@ Important paths:
 | `/config/jobs.sqlite3` | SQLite DB with jobs, settings, favorites, notes, library index, artifacts, and maintenance history. |
 | `/config/downloads` | Temporary ZIP artifacts prepared for folder downloads. |
 | `/config/media-cache` | Browser-playable video transcodes, poster images, and disposable card thumbnails. |
+| `/config/rclone/rclone.conf` | Operator-managed rclone remote definitions for copy-only transfer targets. |
+| `/config/transfer-manifests` | Copy-only transfer job manifests. Job logs stay in SQLite job log rows. |
 | `/config/startup.env` | Startup setting overrides that must affect the next container boot, currently gallery-dl auto-update. |
 | `/config/backups` | Online SQLite backup output from the maintenance API. |
 
@@ -49,6 +52,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
 | `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
+| `app/transfer.py` | Copy-only rclone target validation, destination resolution, argv construction, policy sanitization, and output redaction helpers. |
 | `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
 | `app/parsers.py` | Input parsing and source routing. |
@@ -101,6 +105,7 @@ SQLite tables created by `db.init_db()`:
 | `library_items` | DB-backed library index rows. Each row stores a serialized UI payload in `payload_json`. |
 | `library_scan_state` | Cursor/status values for incremental indexing and cached storage-usage scan state. |
 | `maintenance_runs` | WAL, checkpoint, optimize, compact, and backup run history. |
+| `transfer_targets` | Registered outbound transfer targets with rclone remote names, base paths, enabled state, and copy policy JSON. |
 | `subscriptions` | YouTube subscription sources and scheduling metadata. Manual `check now` and the subscription check scheduler update these rows. |
 | `subscription_items` | Discovered/queued/download state model for YouTube subscription media. Manual/scheduled discovery and the subscription download worker update these rows. |
 
@@ -150,6 +155,9 @@ Internal jobs:
   - `media_transcode`
   - `media_poster`
   - `media_thumbnail_backfill`
+  - `transfer_copy`
+
+Transfer jobs use the internal scheduler because they operate on files already under `/data`. Their visible source is `transfer`, while their `parsed_json` payload keeps the selected target ID, source path, and request snapshot.
 
 Restart handling is conservative. `running` jobs are requeued, `pausing` becomes `paused`, `canceling` becomes `canceled`, and `deleting` rows are deleted or cleaned up according to their job family.
 
@@ -218,6 +226,15 @@ Card thumbnail generation:
 - ordinary image thumbnail requests do not create one internal job row per image; the endpoint either serves a cache hit or generates the file during the request
 - `/api/fs/preview`, `/api/media/file`, and `/api/media/poster` remain available for compatibility and media-viewer/full-size use
 
+Transfer copy:
+
+- the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
+- `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
+- `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
+- `app/transfer.py` builds rclone argv lists from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
+- `app/main.py` runs the rclone subprocess through the internal job handler, writes the SQLite job log, and records a manifest under `/config/transfer-manifests`
+- remote credentials should remain in `/config/rclone/rclone.conf`
+
 The UI polls job status and then swaps to the artifact URL when the job is done.
 
 ## Library Index
@@ -268,6 +285,7 @@ Main API groups:
 | Settings | `/settings` |
 | Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
+| Transfer | `/api/transfer/targets`, `/api/transfer/preflight`, `/api/transfer/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
@@ -290,6 +308,8 @@ Important invariants for future changes:
 - `/data` root itself is not downloadable as a ZIP and cannot be renamed, moved, or deleted.
 - Symlink folders are not accepted as archive roots. ZIP preflight rejects symlinks that leave `/data`.
 - Internal jobs must not be enqueued into the external download scheduler.
+- Transfer is copy-only outbound work: jobs must use registered target IDs, validated `/data` source paths, target allowed source prefixes, and argv-list subprocess execution.
+- Transfer target rows store rclone remote names and policy, not remote credentials; credentials belong in `/config/rclone/rclone.conf`.
 - External download jobs must keep `job_kind='download'`.
 - YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.

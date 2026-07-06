@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 _DB_LOCK = threading.RLock()
 JOB_KIND_DOWNLOAD = "download"
 ACTIVE_JOB_STATUSES = ("queued", "running", "paused", "pausing", "canceling", "deleting")
+JOB_SOURCE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 ROUTE_SETTING_BY_TYPE = {
     "llm": "ROUTE_LLM_ROOT",
     "lora": "ROUTE_LORA_ROOT",
@@ -179,6 +181,20 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transfer_targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                remote_name TEXT NOT NULL,
+                remote_path TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                policy_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         ensure_subscription_tables(conn)
         conn.commit()
 
@@ -330,6 +346,7 @@ def create_internal_job(
     *,
     input_text: str,
     payload: dict[str, Any] | None = None,
+    source: str = "internal",
     target_dir: str | Path | None = None,
     filename: str | None = None,
     total_bytes: int | None = None,
@@ -341,6 +358,7 @@ def create_internal_job(
     kind = normalized_job_kind(job_kind)
     if kind == JOB_KIND_DOWNLOAD:
         raise ValueError("create_internal_job cannot create download jobs")
+    job_source = normalized_job_source(source)
     now = utc_now()
     parsed_payload = {
         "job_kind": kind,
@@ -356,13 +374,14 @@ def create_internal_job(
                 target_dir, filename, total_bytes, metadata_json, log, job_kind,
                 artifact_path, artifact_url, artifact_expires_at
             )
-            VALUES (?, ?, ?, ?, 'internal', 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now,
                 now,
                 redact_sensitive_text(input_text),
                 json.dumps(parsed_payload, ensure_ascii=False),
+                job_source,
                 str(target_dir) if target_dir is not None else None,
                 filename,
                 total_bytes,
@@ -380,9 +399,145 @@ def create_internal_job(
         return int(cur.lastrowid)
 
 
+def create_transfer_target(
+    *,
+    name: str,
+    remote_name: str,
+    remote_path: str = "",
+    enabled: bool = True,
+    policy: dict[str, Any] | None = None,
+    policy_json: str | None = None,
+) -> int:
+    clean_name = str(name).strip()
+    clean_remote_name = str(remote_name).strip()
+    if not clean_name:
+        raise ValueError("Transfer target name is required")
+    if not clean_remote_name:
+        raise ValueError("Transfer target remote_name is required")
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO transfer_targets (
+                name, remote_name, remote_path, enabled, policy_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                clean_name,
+                clean_remote_name,
+                str(remote_path or "").strip(),
+                1 if enabled else 0,
+                transfer_policy_json(policy=policy, policy_json=policy_json),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("Failed to create transfer target")
+        return int(cur.lastrowid)
+
+
+def get_transfer_target(target_id: int) -> dict[str, Any] | None:
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT * FROM transfer_targets WHERE id = ?", (target_id,)).fetchone()
+    return transfer_target_from_row(row) if row else None
+
+
+def list_transfer_targets(*, include_disabled: bool = True) -> list[dict[str, Any]]:
+    where = "" if include_disabled else "WHERE enabled = 1"
+    with _DB_LOCK, connect() as conn:
+        rows = conn.execute(f"SELECT * FROM transfer_targets {where} ORDER BY id ASC").fetchall()
+    return [transfer_target_from_row(row) for row in rows]
+
+
+def update_transfer_target(target_id: int, **fields: Any) -> bool:
+    allowed = {"name", "remote_name", "remote_path", "enabled"}
+    clean_fields: dict[str, Any] = {}
+    for key in allowed:
+        if key not in fields:
+            continue
+        value = fields[key]
+        if key == "enabled":
+            clean_fields[key] = 1 if value else 0
+        else:
+            clean_fields[key] = str(value or "").strip()
+    has_policy = "policy" in fields
+    has_policy_json = "policy_json" in fields
+    if has_policy or has_policy_json:
+        clean_fields["policy_json"] = transfer_policy_json(
+            policy=fields.get("policy"),
+            policy_json=fields.get("policy_json"),
+        )
+    if not clean_fields:
+        return False
+    if "name" in clean_fields and not clean_fields["name"]:
+        raise ValueError("Transfer target name is required")
+    if "remote_name" in clean_fields and not clean_fields["remote_name"]:
+        raise ValueError("Transfer target remote_name is required")
+    clean_fields["updated_at"] = utc_now()
+    keys = list(clean_fields.keys())
+    values = [clean_fields[key] for key in keys]
+    set_clause = ", ".join(f"{key} = ?" for key in keys)
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(f"UPDATE transfer_targets SET {set_clause} WHERE id = ?", values + [target_id])
+        conn.commit()
+        return bool(cur.rowcount)
+
+
+def delete_transfer_target(target_id: int) -> bool:
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute("DELETE FROM transfer_targets WHERE id = ?", (target_id,))
+        conn.commit()
+        return bool(cur.rowcount)
+
+
+def transfer_policy_json(
+    *,
+    policy: dict[str, Any] | None = None,
+    policy_json: str | None = None,
+) -> str:
+    if policy is not None and policy_json is not None:
+        raise ValueError("Use policy or policy_json, not both")
+    raw_policy: Any = policy if policy is not None else policy_json
+    if raw_policy is None or raw_policy == "":
+        raw_policy = {}
+    if isinstance(raw_policy, str):
+        try:
+            raw_policy = json.loads(raw_policy)
+        except json.JSONDecodeError as exc:
+            raise ValueError("policy_json must be valid JSON") from exc
+    if not isinstance(raw_policy, dict):
+        raise ValueError("policy_json must encode an object")
+    return json.dumps(raw_policy, ensure_ascii=False)
+
+
+def transfer_target_from_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    target = dict(row)
+    target["enabled"] = bool(target.get("enabled"))
+    try:
+        policy = json.loads(str(target.get("policy_json") or "{}"))
+    except json.JSONDecodeError:
+        policy = {}
+    target["policy"] = policy if isinstance(policy, dict) else {}
+    return target
+
+
 def normalized_job_kind(value: Any) -> str:
     text = str(value or "").strip()
     return text or JOB_KIND_DOWNLOAD
+
+
+def normalized_job_source(value: Any) -> str:
+    redacted = redact_sensitive_text(str(value or "internal"))
+    text = str(redacted or "").strip().lower()
+    if not text:
+        return "internal"
+    if not JOB_SOURCE_PATTERN.fullmatch(text):
+        raise ValueError("Invalid job source")
+    return text
 
 
 def is_download_job(job: dict[str, Any]) -> bool:

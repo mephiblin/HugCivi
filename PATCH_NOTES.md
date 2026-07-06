@@ -18,9 +18,17 @@
 - `/api/folders`는 sidebar 호환용 root-direct 초기 tree로 줄이고, `/api/folders/children`이 펼친 폴더의 direct child folder row를 `limit`/`cursor` pagination으로 on demand 불러오도록 lazy folder tree를 구현했습니다.
 - Hitomi 다운로드 결과는 아카이브 폴더라는 전제로, `/data/hitomi/<gallery>` 및 `hitomi/listings/<listing>` 폴더는 Tree에서 leaf로 처리해 페이지 파일들을 자식 폴더 확인 때문에 스캔하지 않도록 했습니다.
 
+### 복사 전용 전송
+
+- `/data`에 보관된 파일/폴더를 등록된 rclone remote로 보내는 copy-only 전송 기능을 추가했습니다.
+- 전송 대상은 이름, rclone remote, base path, 허용 source prefix, include pattern, 보수적 rclone 옵션만 DB에 저장하며 credential은 `/config/rclone/rclone.conf`에 남깁니다.
+- 라이브러리 카드/폴더 우클릭 `전송`에서 preflight 후 `transfer_copy` 내부 작업을 만들고, 작업 목록에서는 `Transfer`로 필터/표시됩니다.
+- API와 UI는 `mode`를 받지 않고 sync/move/delete 계열 입력을 거부하며, rclone 명령은 `copy` 또는 `copyto` argv list로만 생성합니다.
+
 ### 문서와 배포
 
 - archive 규모의 폴더 탐색은 `max_children_per_folder`를 계속 올리는 방식이 아니라 lazy child loading을 우선 사용하고, 필요하면 server-side folder search와 optional SQLite folder index로 확장한다는 기준을 [Folder Tree Scaling Design 2026-07-06](docs/folder-tree-scaling-design-2026-07-06.md)에 정리했습니다.
+- copy-only 전송 운영 기준과 rclone 설정 경로를 README, Architecture, Feature Map, Configuration, Operations, 패치 노트에 반영했습니다.
 - 배포 이미지는 로컬 `linux/amd64` 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
 
 ## 2026-07-05
