@@ -22,6 +22,7 @@
 
 - PC 수신용 별도 프로젝트 `/home/inri/문서/HugCivi-Receiver`를 추가했습니다.
 - Receiver는 FastAPI/SQLite/Docker 기반이며, PC 로컬 폴더를 `/receive`로 마운트하고 대기/수신중/완료/실패 상태를 웹 UI에서 보여줍니다.
+- Receiver가 `/receive` 아래 폴더 tree를 제공하고, HugCivi 우클릭 `전송` 모달에서 Receiver의 마운트된 폴더를 탐색해 목적지를 선택할 수 있습니다.
 - HugCivi 본체의 전송 대상에 `receiver` 타입을 추가해, rclone 없이 Receiver URL/token으로 내부망 HTTP 복사 전송을 할 수 있습니다.
 - 기존 rclone 전송은 유지하며, 외부망/범용 원격지 대응용으로 계속 사용할 수 있습니다.
 - Receiver token은 업로드 HTTP 헤더로만 사용하고 대상 목록, job payload, manifest에는 노출하지 않습니다.

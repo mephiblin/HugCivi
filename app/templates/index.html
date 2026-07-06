@@ -806,6 +806,15 @@
           <span>원본</span>
           <strong id="transfer-source">/data</strong>
         </div>
+        <div class="transfer-receiver-browser" id="transfer-receiver-browser" hidden>
+          <div class="transfer-receiver-head">
+            <span>Receiver 저장 위치</span>
+            <strong id="transfer-receiver-destination">/receive</strong>
+          </div>
+          <div class="transfer-receiver-tree" id="transfer-receiver-tree" role="tree">
+            <div class="folder-search-empty">Receiver 폴더를 불러오는 중</div>
+          </div>
+        </div>
         <div class="transfer-policy-list" id="transfer-policy"></div>
         <div class="transfer-preflight" id="transfer-preflight" role="status" aria-live="polite"></div>
       </div>
@@ -1081,6 +1090,9 @@
     const transferCancel = document.getElementById('transfer-cancel');
     const transferTargetSelect = document.getElementById('transfer-target');
     const transferSource = document.getElementById('transfer-source');
+    const transferReceiverBrowser = document.getElementById('transfer-receiver-browser');
+    const transferReceiverDestination = document.getElementById('transfer-receiver-destination');
+    const transferReceiverTree = document.getElementById('transfer-receiver-tree');
     const transferPolicy = document.getElementById('transfer-policy');
     const transferPreflight = document.getElementById('transfer-preflight');
     const transferStatus = document.getElementById('transfer-status');
@@ -1153,8 +1165,12 @@
     let activeFolderMoveTarget = null;
     let activeFolderMoveDestination = null;
     let activeTransferTarget = null;
+    let activeTransferDestinationSubpath = '';
     let transferTargets = [];
     let transferPreflightRequestId = 0;
+    let transferReceiverBrowseRequestId = 0;
+    let transferReceiverNodeCache = new Map();
+    let transferReceiverExpandedPaths = new Set();
     let downloadQueue = [];
     let downloadQueueActive = false;
     let downloadQueueId = 1;
@@ -1482,7 +1498,23 @@
     });
     transferClose.addEventListener('click', closeTransferModal);
     transferCancel.addEventListener('click', closeTransferModal);
-    transferTargetSelect.addEventListener('change', refreshTransferPreflight);
+    transferTargetSelect.addEventListener('change', async () => {
+      activeTransferDestinationSubpath = '';
+      await refreshTransferReceiverBrowser();
+      await refreshTransferPreflight();
+    });
+    transferReceiverTree.addEventListener('click', async event => {
+      const toggle = event.target.closest('[data-receiver-toggle]');
+      if (toggle) {
+        event.preventDefault();
+        await toggleTransferReceiverNode(toggle.dataset.receiverToggle || '');
+        return;
+      }
+      const button = event.target.closest('[data-receiver-destination]');
+      if (!button) return;
+      event.preventDefault();
+      selectTransferReceiverDestination(button.dataset.receiverDestination || '');
+    });
     transferForm.addEventListener('submit', submitTransferJob);
     transferSettingKind.addEventListener('change', updateTransferSettingKindFields);
     transferSettingSave.addEventListener('click', saveTransferSettingTarget);
@@ -2248,10 +2280,16 @@
       const path = normalizePath(target?.path || '');
       if (!path) return;
       activeTransferTarget = {...target, path};
+      activeTransferDestinationSubpath = '';
+      transferReceiverNodeCache = new Map();
+      transferReceiverExpandedPaths = new Set();
       transferSource.textContent = `/data/${path}`;
       transferStatus.textContent = '';
       transferPreflight.textContent = '';
       transferPolicy.textContent = '';
+      transferReceiverBrowser.hidden = true;
+      transferReceiverTree.innerHTML = '';
+      transferReceiverDestination.textContent = '/receive';
       transferSubmit.disabled = true;
       transferTargetSelect.disabled = true;
       transferTargetSelect.innerHTML = '<option value="">대상을 불러오는 중</option>';
@@ -2265,8 +2303,12 @@
       if (transferModal.hidden) return;
       transferModal.hidden = true;
       activeTransferTarget = null;
+      activeTransferDestinationSubpath = '';
       transferTargets = [];
       transferPreflightRequestId += 1;
+      transferReceiverBrowseRequestId += 1;
+      transferReceiverNodeCache = new Map();
+      transferReceiverExpandedPaths = new Set();
       transferSubmit.disabled = true;
       document.body.classList.remove('modal-open');
     }
@@ -2284,6 +2326,7 @@
         transferTargets = normalizeTransferTargets(data);
         renderTransferTargets(transferTargets);
         transferStatus.textContent = transferTargets.length ? '' : '등록된 전송 대상이 없습니다.';
+        await refreshTransferReceiverBrowser();
         await refreshTransferPreflight();
       } catch (err) {
         transferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
@@ -2387,6 +2430,171 @@
         .join(', ');
     }
 
+    async function refreshTransferReceiverBrowser() {
+      const target = selectedTransferTarget();
+      transferReceiverBrowseRequestId += 1;
+      const requestId = transferReceiverBrowseRequestId;
+      activeTransferDestinationSubpath = '';
+      transferReceiverNodeCache = new Map();
+      transferReceiverExpandedPaths = new Set();
+      if (!target || target.kind !== 'receiver') {
+        transferReceiverBrowser.hidden = true;
+        transferReceiverTree.innerHTML = '';
+        transferReceiverDestination.textContent = '/receive';
+        return;
+      }
+      transferReceiverBrowser.hidden = false;
+      const basePath = transferReceiverBasePath(target);
+      transferReceiverExpandedPaths.add(basePath);
+      transferReceiverDestination.textContent = receiverDisplayPath(basePath);
+      transferReceiverTree.innerHTML = '<div class="folder-search-empty">Receiver 폴더를 불러오는 중</div>';
+      try {
+        await loadTransferReceiverNode(basePath);
+        if (requestId !== transferReceiverBrowseRequestId) return;
+        renderTransferReceiverTree();
+      } catch (err) {
+        if (requestId !== transferReceiverBrowseRequestId) return;
+        transferReceiverTree.innerHTML = `<div class="folder-search-empty">${escapeHtml(err.message || 'Receiver 폴더를 불러오지 못했습니다.')}</div>`;
+      }
+    }
+
+    async function loadTransferReceiverNode(path) {
+      const target = selectedTransferTarget();
+      if (!target || target.kind !== 'receiver') return null;
+      const targetId = target.id;
+      const cleanPath = normalizePath(path || '');
+      const response = await fetch(`/api/transfer/targets/${encodeURIComponent(targetId)}/receiver/tree?path=${encodeURIComponent(cleanPath)}`);
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        throw new Error(data.detail || 'Receiver 폴더를 불러오지 못했습니다.');
+      }
+      if (selectedTransferTarget()?.id !== targetId) return null;
+      const node = normalizeTransferReceiverNode(data.root || {}, cleanPath, true);
+      cacheTransferReceiverNode(node);
+      return node;
+    }
+
+    function normalizeTransferReceiverNode(raw, fallbackPath = '', loaded = false) {
+      const path = normalizePath(raw?.path ?? fallbackPath);
+      const children = Array.isArray(raw?.children)
+        ? raw.children.map(child => normalizeTransferReceiverNode(child, '', Boolean(child.children_loaded || child.childrenLoaded)))
+        : [];
+      return {
+        name: String(raw?.name || (path ? path.split('/').pop() : 'receive')),
+        path,
+        kind: 'directory',
+        has_children: Boolean(raw?.has_children || raw?.hasChildren || children.length),
+        children,
+        children_loaded: loaded || Array.isArray(raw?.children),
+        truncated: Boolean(raw?.truncated),
+      };
+    }
+
+    function cacheTransferReceiverNode(node) {
+      if (!node) return;
+      transferReceiverNodeCache.set(node.path, node);
+      (node.children || []).forEach(child => {
+        if (!transferReceiverNodeCache.has(child.path)) {
+          transferReceiverNodeCache.set(child.path, child);
+        }
+      });
+    }
+
+    function renderTransferReceiverTree() {
+      const target = selectedTransferTarget();
+      if (!target || target.kind !== 'receiver') return;
+      const basePath = transferReceiverBasePath(target);
+      const root = transferReceiverNodeCache.get(basePath);
+      if (!root) {
+        transferReceiverTree.innerHTML = '<div class="folder-search-empty">Receiver 폴더를 불러오는 중</div>';
+        return;
+      }
+      transferReceiverDestination.textContent = receiverDisplayPath(transferReceiverSelectedFullPath(target));
+      transferReceiverTree.innerHTML = `<ul>${renderTransferReceiverNode(root, 0)}</ul>`;
+    }
+
+    function renderTransferReceiverNode(node, depth = 0) {
+      const path = normalizePath(node.path || '');
+      const cached = transferReceiverNodeCache.get(path) || node;
+      const children = Array.isArray(cached.children) ? cached.children : [];
+      const hasChildren = Boolean(cached.has_children || cached.hasChildren || children.length);
+      const expanded = depth === 0 || transferReceiverExpandedPaths.has(path);
+      const selected = transferReceiverSelectedFullPath(selectedTransferTarget()) === path;
+      const title = receiverDisplayPath(path);
+      return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}"
+          data-folder-path="${escapeHtml(path)}"
+          data-folder-loaded="${cached.children_loaded ? 'true' : 'false'}"
+          data-folder-has-children="${hasChildren ? 'true' : 'false'}">
+        <div class="folder-row">
+          ${hasChildren && depth > 0
+            ? `<button type="button" class="folder-toggle" data-receiver-toggle="${escapeHtml(path)}" aria-label="폴더 접기 또는 열기"></button>`
+            : '<span class="folder-toggle-spacer"></span>'}
+          <button type="button" class="folder-modal-row${selected ? ' selected' : ''}"
+                  data-receiver-destination="${escapeHtml(path)}" aria-selected="${selected ? 'true' : 'false'}"
+                  title="${escapeHtml(title)}">
+            <span class="folder-icon" aria-hidden="true"></span>
+            <span>${escapeHtml(cached.name || (path ? path.split('/').pop() : 'receive'))}</span>
+          </button>
+        </div>
+        ${hasChildren ? `<ul class="folder-children">${expanded ? children.map(child => renderTransferReceiverNode(child, depth + 1)).join('') : ''}${cached.truncated ? '<li class="folder-search-empty">표시 한도를 초과했습니다.</li>' : ''}</ul>` : ''}
+      </li>`;
+    }
+
+    async function toggleTransferReceiverNode(path) {
+      const cleanPath = normalizePath(path || '');
+      if (!cleanPath) return;
+      if (transferReceiverExpandedPaths.has(cleanPath)) {
+        transferReceiverExpandedPaths.delete(cleanPath);
+        renderTransferReceiverTree();
+        return;
+      }
+      transferReceiverExpandedPaths.add(cleanPath);
+      const node = transferReceiverNodeCache.get(cleanPath);
+      if (!node?.children_loaded) {
+        try {
+          await loadTransferReceiverNode(cleanPath);
+        } catch (err) {
+          transferStatus.textContent = err.message || 'Receiver 폴더를 불러오지 못했습니다.';
+        }
+      }
+      renderTransferReceiverTree();
+    }
+
+    function selectTransferReceiverDestination(path) {
+      const target = selectedTransferTarget();
+      if (!target || target.kind !== 'receiver') return;
+      const subpath = receiverDestinationSubpathForPath(target, path);
+      if (subpath === null) return;
+      activeTransferDestinationSubpath = subpath;
+      renderTransferReceiverTree();
+      refreshTransferPreflight();
+    }
+
+    function transferReceiverBasePath(target) {
+      return normalizePath(target?.remote_path || '');
+    }
+
+    function transferReceiverSelectedFullPath(target) {
+      if (!target || target.kind !== 'receiver') return '';
+      const basePath = transferReceiverBasePath(target);
+      const subpath = normalizePath(activeTransferDestinationSubpath || '');
+      return [basePath, subpath].filter(Boolean).join('/');
+    }
+
+    function receiverDestinationSubpathForPath(target, path) {
+      const basePath = transferReceiverBasePath(target);
+      const cleanPath = normalizePath(path || '');
+      if (!basePath) return cleanPath;
+      if (cleanPath === basePath) return '';
+      if (cleanPath.startsWith(`${basePath}/`)) return cleanPath.slice(basePath.length + 1);
+      return null;
+    }
+
+    function receiverDisplayPath(path) {
+      const cleanPath = normalizePath(path || '');
+      return cleanPath ? `/receive/${cleanPath}` : '/receive';
+    }
+
     async function refreshTransferPreflight() {
       if (transferModal.hidden) return;
       const requestId = ++transferPreflightRequestId;
@@ -2423,10 +2631,14 @@
 
     function transferJobPayload(target = selectedTransferTarget()) {
       const numericId = Number(target?.id);
-      return {
+      const payload = {
         target_id: Number.isFinite(numericId) ? numericId : target?.id,
         source_path: normalizePath(activeTransferTarget?.path || ''),
       };
+      if (target?.kind === 'receiver') {
+        payload.destination_subpath = normalizePath(activeTransferDestinationSubpath || '');
+      }
+      return payload;
     }
 
     function renderTransferPreflight(data) {

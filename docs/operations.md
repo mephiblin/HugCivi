@@ -92,7 +92,7 @@ Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS
 
 The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`.
 
-Recommended internal-LAN PC receiving is the sibling HugCivi Receiver project at `/home/inri/문서/HugCivi-Receiver`. Run it on the PC as a Docker container, mount the PC folder to `/receive`, then register a `HugCivi Receiver` target in HugCivi with the Receiver URL, token, base path, allowed source prefix, and include patterns. The PC browser UI shows waiting, receiving, done, and failed jobs. Docker still cannot let the web UI pick arbitrary Windows folders; the local folder must be mounted in compose first.
+Recommended internal-LAN PC receiving is the sibling HugCivi Receiver project at `/home/inri/문서/HugCivi-Receiver`. Run it on the PC as a Docker container, mount the PC folder to `/receive`, then register a `HugCivi Receiver` target in HugCivi with the Receiver URL, token, base path, allowed source prefix, and include patterns. The PC browser UI shows waiting, receiving, done, and failed jobs. Docker still cannot let the web UI pick arbitrary Windows folders; the local folder must be mounted in compose first. Once mounted, HugCivi can query the Receiver folder tree through `/api/transfer/targets/{target_id}/receiver/tree` and the `전송` modal lets the user pick a destination under that mounted receive root.
 
 Receiver compose shape:
 
@@ -110,6 +110,18 @@ services:
       - "./receiver-config:/config"
       - "D:/ComfyUI/models:/receive"
 ```
+
+For mixed destinations, mount several host folders under `/receive` and leave the HugCivi target base path broad enough for selection:
+
+```yaml
+volumes:
+  - "./receiver-config:/config"
+  - "D:/ComfyUI/models:/receive/comfyui"
+  - "E:/Videos/YouTube:/receive/youtube"
+  - "E:/Archive/Gallery:/receive/gallery"
+```
+
+Mounting a very high-level folder such as a drive root also works mechanically, but it gives the Receiver write access to that whole tree. Prefer the narrowest common parent that still gives the desired transfer UX.
 
 rclone remote credentials live outside SQLite:
 

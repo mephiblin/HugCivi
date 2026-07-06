@@ -179,11 +179,70 @@ def test_receiver_transfer_target_api_hides_token_and_preflights(app_modules: tu
 
     preflight_response = client.post(
         "/api/transfer/preflight",
-        json={"target_id": target["id"], "source_path": "stable-diffusion/checkpoints/Model.safetensors"},
+        json={
+            "target_id": target["id"],
+            "source_path": "stable-diffusion/checkpoints/Model.safetensors",
+            "destination_subpath": "picked/folder",
+        },
         auth=("admin", "test-password-that-is-long"),
     )
     assert preflight_response.status_code == 200
-    assert preflight_response.json()["destination"] == "receiver:/checkpoints/Model.safetensors"
+    assert preflight_response.json()["destination"] == "receiver:/checkpoints/picked/folder/Model.safetensors"
+
+
+def test_receiver_tree_api_proxies_registered_target_token(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    db, main, _data_root, _config_root = app_modules
+    target_id = create_receiver_target(db)
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"ok": true}'
+        content = b'{"ok": true}'
+
+        def json(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "path": "checkpoints",
+                "root": {
+                    "name": "checkpoints",
+                    "path": "checkpoints",
+                    "kind": "directory",
+                    "has_children": True,
+                    "children": [
+                        {
+                            "name": "anime",
+                            "path": "checkpoints/anime",
+                            "kind": "directory",
+                            "has_children": False,
+                        }
+                    ],
+                },
+            }
+
+    def fake_get(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(main.requests, "get", fake_get)
+    client = TestClient(main.app)
+
+    response = client.get(
+        f"/api/transfer/targets/{target_id}/receiver/tree?path=checkpoints",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["children"][0]["path"] == "checkpoints/anime"
+    assert calls == [
+        {
+            "url": "http://receiver.local:8088/api/browse",
+            "params": {"path": "checkpoints", "limit": 500},
+            "headers": {"X-Receiver-Token": "receiver-secret"},
+            "timeout": 15,
+        }
+    ]
 
 
 def test_transfer_api_rejects_non_copy_mode_and_disallowed_source(app_modules: tuple) -> None:
@@ -386,6 +445,7 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'id="transfer-setting-receiver-url"' in template
     assert 'data-action="transfer"' in template
     assert "fetch('/api/transfer/targets')" in template
+    assert "/receiver/tree?path=" in template
     assert "fetch('/api/transfer/preflight'" in template
     assert "fetch('/api/transfer/jobs'" in template
     payload_start = template.index("function transferJobPayload")
@@ -393,4 +453,5 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     payload_block = template[payload_start:payload_end]
     assert "target_id" in payload_block
     assert "source_path" in payload_block
+    assert "destination_subpath" in payload_block
     assert "mode" not in payload_block

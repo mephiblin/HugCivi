@@ -746,6 +746,25 @@ def api_delete_transfer_target(target_id: int, _: str = Depends(require_auth)) -
     return JSONResponse({"ok": True, "deleted": True})
 
 
+@app.get("/api/transfer/targets/{target_id}/receiver/tree")
+def api_transfer_receiver_tree(
+    target_id: int,
+    path: str = "",
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    target = db.get_transfer_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if transfer_target_kind(target) != transfer.TARGET_KIND_RECEIVER:
+        raise HTTPException(status_code=400, detail="Receiver 대상만 탐색할 수 있습니다.")
+    try:
+        clean_path = transfer.validate_destination_subpath(path)
+        tree = fetch_receiver_tree(target, clean_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "target": transfer_target_payload(target), **tree})
+
+
 @app.post("/api/transfer/preflight")
 async def api_transfer_preflight(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     payload = await request.json()
@@ -1317,6 +1336,40 @@ def transfer_preflight_payload(
 
 def transfer_target_kind(target: dict[str, Any]) -> str:
     return transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE))
+
+
+def fetch_receiver_tree(target: dict[str, Any], path: str) -> dict[str, Any]:
+    base_url = transfer.normalize_receiver_url(str(target.get("receiver_url") or ""))
+    headers = receiver_auth_headers(str(target.get("receiver_token") or ""))
+    try:
+        response = requests.get(
+            f"{base_url}/api/browse",
+            params={"path": path, "limit": 500},
+            headers=headers,
+            timeout=min(15, transfer.receiver_timeout_seconds()),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Receiver에 연결하지 못했습니다: {exc}") from exc
+
+    if response.status_code != 200:
+        detail = receiver_error_detail(response)
+        if response.status_code == 401:
+            detail = "Receiver token이 거부되었습니다."
+        raise HTTPException(status_code=502, detail=f"Receiver 폴더를 불러오지 못했습니다: {detail}")
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Receiver가 JSON이 아닌 응답을 반환했습니다.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("root"), dict):
+        raise HTTPException(status_code=502, detail="Receiver 폴더 응답 형식이 올바르지 않습니다.")
+    root = payload["root"]
+    children = root.get("children") if isinstance(root.get("children"), list) else []
+    return {
+        "path": str(payload.get("path") or root.get("path") or path),
+        "root": root,
+        "children": children,
+    }
 
 
 def transfer_source_stats(source: Path, policy: dict[str, Any]) -> tuple[int, int]:

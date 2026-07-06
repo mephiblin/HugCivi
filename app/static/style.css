@@ -774,7 +774,7 @@ a:hover {
 
 .transfer-modal-panel {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
-  width: min(520px, calc(100vw - 48px));
+  width: min(640px, calc(100vw - 48px));
 }
 
 .folder-modal-path {
@@ -1002,6 +1002,57 @@ a:hover {
 .transfer-preflight:empty,
 .transfer-policy-list:empty {
   display: none;
+}
+
+.transfer-receiver-browser {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  border: 1px solid #d7dde8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfe;
+}
+
+.transfer-receiver-browser[hidden] {
+  display: none;
+}
+
+.transfer-receiver-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.transfer-receiver-head strong {
+  min-width: 0;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.transfer-receiver-tree {
+  max-height: min(300px, 42dvh);
+  min-height: 170px;
+  overflow: auto;
+  border: 1px solid #edf1f7;
+  border-radius: 7px;
+  padding: 6px;
+  background: #ffffff;
+}
+
+.transfer-receiver-tree ul {
+  margin: 0;
+  padding-left: 16px;
+  list-style: none;
+}
+
+.transfer-receiver-tree > ul {
+  padding-left: 0;
 }
 
 .settings-inline-actions {

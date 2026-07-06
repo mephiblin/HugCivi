@@ -229,6 +229,7 @@ Card thumbnail generation:
 Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
+- for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
 - rclone targets use argv lists built from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
