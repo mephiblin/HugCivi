@@ -5989,7 +5989,73 @@
 
     function generationResources(generation) {
       const resources = generation.resources || generation.resources_used || generation.resourcesUsed;
-      return Array.isArray(resources) ? resources.filter(resource => resource && typeof resource === 'object') : [];
+      const normalized = Array.isArray(resources) ? resources.filter(resource => resource && typeof resource === 'object') : [];
+      return dedupeGenerationResources(normalized);
+    }
+
+    function generationResourceKeyPart(value) {
+      return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+    }
+
+    function generationResourceDedupeKey(resource) {
+      const versionId = resourceModelVersionId(resource);
+      if (versionId) return `version:${versionId}`;
+      const hash = generationScalar(resource.hash || resource.modelVersionHash || resource.model_version_hash).trim();
+      if (hash) return `hash:${hash.toLowerCase()}`;
+      const name = generationScalar(resource.name || resource.model_name || resource.modelName).trim();
+      const normalizedName = generationResourceKeyPart(name);
+      if (!normalizedName || ['unknownresource', 'resource'].includes(normalizedName)) return '';
+      const modelId = generationScalar(resource.model_id || resource.modelId).trim();
+      const version = generationScalar(resource.version || resource.modelVersionName || resource.version_name).trim();
+      const type = generationScalar(resource.type || resource.model_type || resource.modelType).trim();
+      const baseModel = generationScalar(resource.base_model || resource.baseModel).trim();
+      if (modelId) {
+        return [
+          'model',
+          modelId,
+          normalizedName,
+          generationResourceKeyPart(version),
+          generationResourceKeyPart(type),
+        ].join(':');
+      }
+      return [
+        'label',
+        normalizedName,
+        generationResourceKeyPart(version),
+        generationResourceKeyPart(type),
+        generationResourceKeyPart(baseModel),
+      ].join(':');
+    }
+
+    function mergeGenerationResource(existing, duplicate) {
+      const merged = {...existing};
+      const versionId = resourceModelVersionId(merged) || resourceModelVersionId(duplicate);
+      Object.entries(duplicate).forEach(([key, value]) => {
+        const text = generationScalar(value).trim();
+        if (!text) return;
+        const current = generationScalar(merged[key]).trim();
+        const placeholderName = key === 'name'
+          && versionId
+          && [`modelVersion ${versionId}`, `Version ${versionId}`].includes(current);
+        if (!current || placeholderName) merged[key] = value;
+      });
+      return merged;
+    }
+
+    function dedupeGenerationResources(resources) {
+      const deduped = [];
+      const positions = new Map();
+      resources.forEach(resource => {
+        const key = generationResourceDedupeKey(resource);
+        if (key && positions.has(key)) {
+          const index = positions.get(key);
+          deduped[index] = mergeGenerationResource(deduped[index], resource);
+          return;
+        }
+        if (key) positions.set(key, deduped.length);
+        deduped.push(resource);
+      });
+      return deduped;
     }
 
     function generationMetadataRows(generation) {

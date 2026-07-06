@@ -334,3 +334,14 @@ MVP 이후 같은 copy-only 원칙으로 확장한다.
 - optional `rclone check`, 단 이것도 삭제 없는 검증만 허용.
 
 자동 전송은 Civitai/Hugging Face download handler 내부에 직접 rclone을 넣지 않는다. 다운로드 완료 후 별도의 `transfer_copy` internal job을 생성하는 방식으로 연결한다.
+
+## `/data_remote` 후속 방향
+
+Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 방향은 별도 후속 설계인 [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md)를 기준으로 검토한다.
+
+핵심 차이:
+
+- 이 문서의 구현 baseline은 rclone/Receiver target으로 "내 `/data` 파일을 등록된 대상에게 보내는 copy-only outbound 작업"이다.
+- `/data_remote` 후속안은 host가 이미 마운트한 PC/Synology/원격 공유 폴더를 Docker에 `/data_remote/<target>`으로 연결하고, HugCivi가 이를 `local_mount` transfer target으로만 다루는 작업이다.
+- `/data_remote`는 보관함이 아니며 라이브러리 index, rename, move, delete UI에 섞지 않는다.
+- 세 방식 모두 sync/move/delete를 금지하고, 전송 source는 `/data` 내부 path로 제한한다.

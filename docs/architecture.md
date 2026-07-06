@@ -287,7 +287,7 @@ Main API groups:
 | Settings | `/settings` |
 | Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
-| Transfer | `/api/transfer/targets`, `/api/transfer/preflight`, `/api/transfer/jobs` |
+| Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/preflight`, `/api/transfer/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |

@@ -2793,6 +2793,60 @@ def merge_civitai_resource(existing: dict[str, str], enriched: dict[str, str]) -
     return merged
 
 
+def civitai_resource_dedupe_key(resource: dict[str, str]) -> str | None:
+    version_id = id_value(resource.get("model_version_id"))
+    if version_id:
+        return f"version:{version_id}"
+
+    hash_value = text_value(resource.get("hash"))
+    if hash_value:
+        return f"hash:{hash_value.lower()}"
+
+    name = text_value(resource.get("name"))
+    normalized_name = normalized_generation_meta_key(name)
+    if not name or normalized_name in {"unknownresource", "resource"}:
+        return None
+
+    model_id = id_value(resource.get("model_id"))
+    version = text_value(resource.get("version"))
+    resource_type = text_value(resource.get("type"))
+    base_model = text_value(resource.get("base_model"))
+    if model_id:
+        return ":".join(
+            [
+                "model",
+                model_id,
+                normalized_name,
+                normalized_generation_meta_key(version),
+                normalized_generation_meta_key(resource_type),
+            ]
+        )
+    return ":".join(
+        [
+            "label",
+            normalized_name,
+            normalized_generation_meta_key(version),
+            normalized_generation_meta_key(resource_type),
+            normalized_generation_meta_key(base_model),
+        ]
+    )
+
+
+def dedupe_civitai_resources(resources: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    positions: dict[str, int] = {}
+    for resource in resources:
+        key = civitai_resource_dedupe_key(resource)
+        if key and key in positions:
+            index = positions[key]
+            deduped[index] = merge_civitai_resource(deduped[index], resource)
+            continue
+        if key:
+            positions[key] = len(deduped)
+        deduped.append(resource)
+    return deduped
+
+
 def enrich_civitai_image_resources(
     session: requests.Session,
     job_id: int,
@@ -2831,6 +2885,7 @@ def enrich_civitai_image_resources(
 def normalize_civitai_image_resources(item: dict[str, Any], meta: dict[str, Any]) -> list[dict[str, str]]:
     resources = [normalize_civitai_resource(resource) for resource in civitai_raw_resource_lists(item, meta)]
     resources = [resource for resource in resources if any(resource.values())]
+    resources = dedupe_civitai_resources(resources)
 
     existing_ids = {resource.get("model_version_id") for resource in resources if resource.get("model_version_id")}
     for version_id in civitai_image_model_version_ids(item, resources):

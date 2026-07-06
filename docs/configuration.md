@@ -117,6 +117,8 @@ Transfer targets are stored in SQLite and can use either `rclone` or `receiver` 
 - `receiver` targets send files to the PC-side HugCivi Receiver HTTP API. They store the Receiver URL, optional token, base path, and copy policy. The token is used only for outbound HTTP headers and is not returned in target list payloads or job payloads.
 - `rclone` targets refer to rclone remotes by name. rclone credentials and host details live in `RCLONE_CONFIG`.
 
+For Receiver targets, the `remote_path` field is the starting folder under the Receiver's mounted `/receive` root. During the `전송` modal flow, HugCivi proxies `GET /api/browse` through `/api/transfer/targets/{target_id}/receiver/tree` with the stored token, then sends the user-selected child folder as `destination_subpath`. Docker mount scope still determines what folders can appear.
+
 | Key | Default | Source | Notes |
 | --- | --- | --- | --- |
 | `TRANSFER_MAX_CONCURRENT` | `1` | env | Max copy-only transfer jobs allowed to run at once inside the internal job scheduler. |

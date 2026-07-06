@@ -817,6 +817,62 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertEqual(fake_db.job["filename"], "existing.safetensors")
             self.assertTrue(any("existing model file kept" in message for message in fake_db.logs))
 
+    def test_civitai_image_resources_are_deduped_across_raw_sources(self) -> None:
+        meta = {
+            "resources": [
+                {
+                    "name": "WAI-illustrious-SDXL",
+                    "type": "Checkpoint",
+                    "modelId": 100,
+                    "modelVersionId": 2883731,
+                    "baseModel": "Illustrious",
+                },
+                {
+                    "name": "Kiryu-sketchbook style (Foot/Feet pose) Anima/illustriousXL",
+                    "type": "LORA",
+                    "modelId": 200,
+                    "modelVersionId": 1488820,
+                    "weight": 0.7,
+                },
+            ],
+            "civitaiResources": [
+                {
+                    "name": "WAI-illustrious-SDXL",
+                    "type": "checkpoint",
+                    "modelId": 100,
+                    "modelVersionId": 2883731,
+                    "weight": 1,
+                },
+                {
+                    "name": "Kiryu-sketchbook style (Foot/Feet pose) Anima/illustriousXL",
+                    "type": "lora",
+                    "modelId": 200,
+                    "modelVersionId": 1488820,
+                    "weight": 0.7,
+                },
+            ],
+        }
+        item = {
+            "resources": [
+                {
+                    "name": "Illustrious-XL-v2.0",
+                    "type": "vae",
+                    "modelId": 300,
+                    "modelVersionId": 1906483,
+                }
+            ]
+        }
+
+        resources = downloader.normalize_civitai_image_resources(item, meta)
+
+        self.assertEqual(
+            [resource.get("model_version_id") for resource in resources],
+            ["2883731", "1488820", "1906483"],
+        )
+        self.assertEqual(resources[0]["type"], "Checkpoint")
+        self.assertEqual(resources[0]["weight"], "1")
+        self.assertEqual(resources[1]["type"], "LORA")
+
     def test_civitai_image_page_archives_image_and_queues_unique_resources(self) -> None:
         raw_input = "https://civitai.com/images/135240496?token=secret-token"
         parsed = ParsedDownload(
@@ -927,6 +983,8 @@ class DownloaderRuntimeTests(unittest.TestCase):
             self.assertEqual(generation["negative_prompt"]["text"], "low quality")
             self.assertIn("Negative prompt: low quality", generation["copy_all_text"])
             self.assertEqual(generation["model_version_ids"], ["3059910"])
+            self.assertEqual([resource["name"] for resource in generation["resources"]], ["Example LoRA", "No version"])
+            self.assertEqual(generation["resources"][0]["weight"], "0.44")
             self.assertEqual(payload["resource_downloads"][0]["child_job_id"], 501)
             self.assertEqual(payload["resource_downloads"][0]["model_version_id"], "3059910")
 

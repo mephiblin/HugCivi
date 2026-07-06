@@ -35,6 +35,7 @@
 
 - archive 규모의 폴더 탐색은 `max_children_per_folder`를 계속 올리는 방식이 아니라 lazy child loading을 우선 사용하고, 필요하면 server-side folder search와 optional SQLite folder index로 확장한다는 기준을 [Folder Tree Scaling Design 2026-07-06](docs/folder-tree-scaling-design-2026-07-06.md)에 정리했습니다.
 - copy-only 전송 운영 기준, HugCivi Receiver 구성, rclone 설정 경로를 README, Architecture, Feature Map, Configuration, Operations, 패치 노트에 반영했습니다.
+- Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 `/data_remote` 연결 폴더 방향을 [`/data_remote` Connected Transfer Design 2026-07-06](docs/data-remote-transfer-design-2026-07-06.md)에 proposal로 문서화했습니다. 이는 현재 구현된 Receiver/rclone 전송과 별도 후속 기능입니다.
 - 배포 이미지는 로컬 `linux/amd64` 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
 
 ## 2026-07-05

@@ -99,7 +99,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | Settings/folders | `POST /settings`, legacy `POST /folders`, `GET/POST /api/folders`, `GET /api/folders/children` | `save_settings`, `create_folder`, `api_folders`, `api_folder_children`, `api_create_folder`, `initial_folder_tree`, `build_folder_tree`, `folder_children_payload` |
 | Library | `GET /api/library`, paged `GET /api/library?limit=50&page=N`, `POST /api/library/reindex`, `POST /api/favorites` | library index and favorite helpers |
 | Filesystem | `/api/fs/rename`, move, delete, preview, properties, note, download info/download jobs/download | filesystem helpers near `existing_data_path` and archive helpers |
-| Transfer | `GET/POST /api/transfer/targets`, `PATCH/DELETE /api/transfer/targets/{target_id}`, `POST /api/transfer/preflight`, `POST /api/transfer/jobs` | copy-only transfer target validation, preflight, and `transfer_copy` internal job creation |
+| Transfer | `GET/POST /api/transfer/targets`, `PATCH/DELETE /api/transfer/targets/{target_id}`, `GET /api/transfer/targets/{target_id}/receiver/tree`, `POST /api/transfer/preflight`, `POST /api/transfer/jobs` | copy-only transfer target validation, Receiver folder tree proxying, preflight, and `transfer_copy` internal job creation |
 | Media | `/api/media/list`, archive, file, thumbnail, thumbnail backfill jobs, play, subtitle, poster, transcode/poster jobs | media helpers and internal job handlers |
 | Workflows | `/api/workflows/import`, view, preview | workflow helpers and `app/workflows.py` |
 | Hitomi listing | `/api/hitomi/listing/{id}`, `/queue` | listing metadata and queue helpers from downloader |
@@ -134,7 +134,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | `tests/test_hitomi_listing.py` | Hitomi listing parse, discovery, confirm mode, selected/all queueing, dedupe, caps. |
 | `tests/test_main_urls.py` | Display source URL behavior for wrapped yt-dlp/gallery-dl jobs. |
 | `tests/test_review_fixes.py` | Security and regression coverage across settings, path safety, archive/media internal jobs, lifespan, DB backup, library index, PWA, storage, addon zip, subtitles. |
-| `tests/test_transfer_api.py` | Transfer API target CRUD, copy-only API validation, source/path safety, internal job creation, manifest writing, and transfer template affordances. |
+| `tests/test_transfer_api.py` | Transfer API target CRUD, Receiver tree proxying, copy-only API validation, source/path safety, internal job creation, manifest writing, and transfer template affordances. |
 | `tests/test_transfer_core.py` | rclone remote/path validation, copy/copyto argv construction, env defaults, policy clamping, and sync/move/delete rejection. |
 | `tests/test_transfer_db.py` | Transfer target schema/CRUD/policy persistence and `create_internal_job(source='transfer')` behavior. |
 | `tests/test_youtube_parser.py` | YouTube and yt-dlp routing, wrapped `ytdl:` handling, preferred host behavior. |

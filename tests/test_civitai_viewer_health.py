@@ -392,6 +392,7 @@ def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules:
     assert "value === 'civitai image page'" in template
     assert "civitai_model_generation_metadata" in template
     assert "function renderCivitaiModelDetails(details)" in template
+    assert "function dedupeGenerationResources(resources)" in template
     assert "Model page body" in template
     assert "Model stats" in template
     assert "Published" in template
