@@ -2,7 +2,7 @@
 
 작성일: 2026-07-06
 
-상태: proposal. 아직 구현되지 않은 설계 기록이다. 현재 구현된 기능은 copy-only transfer, rclone target, HugCivi Receiver target, Receiver destination folder picker까지이다.
+상태: implemented baseline. 현재 구현된 범위는 destination-only `local_mount` transfer target, `/data_remote` target-relative folder tree, preflight writable/offline checks, temp-file local copy, skip-existing behavior, settings-pane `/data` root clone to local mount, and transfer manifests이다. read-only import, friend-library UX, mount management, sync/move/delete는 구현하지 않았다.
 
 ## 결론
 
@@ -62,7 +62,7 @@ HugCivi
 | --- | --- | --- |
 | `rclone` | implemented | 범용 remote, SMB/WebDAV/SFTP/cloud 등 운영자 관리 원격지. |
 | `receiver` | implemented | PC에 HugCivi Receiver를 띄워 HTTP로 수신하고 수신 UI를 보여주는 방식. |
-| `local_mount` | proposal | `/data_remote` 아래 이미 마운트된 폴더를 copy-only 대상처럼 쓰는 방식. |
+| `local_mount` | implemented baseline | `/data_remote` 아래 이미 마운트된 폴더를 copy-only 대상처럼 쓰는 방식. |
 
 관계:
 
@@ -157,7 +157,8 @@ services:
 
 - `/data_remote`는 라이브러리 index 대상으로 자동 포함하지 않는다.
 - `/data_remote`는 파일관리 메뉴의 rename/move/delete 대상이 아니다.
-- 전송 source는 여전히 `/data` 내부 existing path만 허용한다.
+- 일반 전송 source는 여전히 `/data` 내부 existing path만 허용하고 `/data` root는 금지한다.
+- `/data` root 전체 복제는 설정 화면의 전용 local mount clone endpoint에서만 허용하며, browser-provided `source_path`를 받지 않는다.
 - 전송 destination은 등록된 `local_mount` target의 base path 아래만 허용한다.
 - `/data_remote` root 전체를 target으로 등록하지 않는다.
 - target base path는 `/data_remote` 하위 direct child 또는 그 아래 좁은 폴더여야 한다.
@@ -211,6 +212,8 @@ DELETE /api/transfer/targets/{target_id}
 GET    /api/transfer/targets/{target_id}/local-mount/tree
 POST   /api/transfer/preflight
 POST   /api/transfer/jobs
+POST   /api/transfer/data-root/preflight
+POST   /api/transfer/data-root/jobs
 ```
 
 새 tree endpoint는 `/data_remote`의 token이 필요 없는 local filesystem browse다. 그래도 browser에는 `/data_remote` absolute path를 주지 않고 target-relative path만 준다.
@@ -275,6 +278,16 @@ POST   /api/transfer/jobs
 }
 ```
 
+`/data` root clone job payload는 서버 내부에서만 source를 고정한다.
+
+```json
+{
+  "target_id": 3,
+  "destination_subpath": "backup/latest",
+  "data_root_clone": true
+}
+```
+
 ## 실행 방식
 
 `local_mount` job은 rclone subprocess가 아니라 Python filesystem copy helper로 시작하는 것이 자연스럽다.
@@ -291,6 +304,13 @@ POST   /api/transfer/jobs
 ```text
 /data/<source-folder>
   -> /data_remote/<target-base>/<destination_subpath>/<source-folder-name>
+```
+
+`/data` root clone:
+
+```text
+/data/*
+  -> /data_remote/<target-base>/<destination_subpath>/*
 ```
 
 복사 규칙:
@@ -480,7 +500,8 @@ Backend:
 - `/data_remote` root target 거부.
 - `remote_path` absolute, traversal, backslash escape 거부.
 - symlink base path 또는 symlink child traversal 거부.
-- source는 `/data` 내부 existing path만 허용.
+- 일반 source는 `/data` 내부 existing path만 허용하고 `/data` root는 거부.
+- `/api/transfer/data-root/*`는 local mount target만 허용하고 browser-provided `source_path` 없이 `/data` contents clone job을 생성.
 - allowed source prefix 밖 source 거부.
 - local mount tree endpoint가 token 없이도 auth 뒤에서 target-relative folders만 반환.
 - tree endpoint가 files와 symlink folders를 건너뜀.

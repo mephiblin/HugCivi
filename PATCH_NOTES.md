@@ -26,6 +26,9 @@
 - HugCivi 본체의 전송 대상에 `receiver` 타입을 추가해, rclone 없이 Receiver URL/token으로 내부망 HTTP 복사 전송을 할 수 있습니다.
 - 기존 rclone 전송은 유지하며, 외부망/범용 원격지 대응용으로 계속 사용할 수 있습니다.
 - Receiver token은 업로드 HTTP 헤더로만 사용하고 대상 목록, job payload, manifest에는 노출하지 않습니다.
+- `/data_remote` 아래 host-mounted PC/Synology/원격 공유 폴더를 `local_mount` 전송 대상으로 등록하고, 우클릭 `전송` 모달에서 target-relative 폴더 tree를 탐색해 copy-only 전송할 수 있습니다.
+- 설정의 `전송 대상` 탭에서 `local_mount` 대상으로 `/data` 전체 내용 복제 작업을 큐에 추가할 수 있습니다. 이 경로는 별도 `/api/transfer/data-root/*` API를 쓰며 browser가 source path를 보내지 않습니다.
+- `local_mount` 전송은 `/data_remote`와 `/data` root 겹침, `/data_remote` root target, path traversal, backslash escape, symlink escape, offline/unwritable destination을 거부하고, temp file 후 rename으로 복사하며 기존 파일은 기본 skip합니다.
 - `/data`에 보관된 파일/폴더를 등록된 rclone remote로 보내는 copy-only 전송 기능을 추가했습니다.
 - 전송 대상은 이름, rclone remote, base path, 허용 source prefix, include pattern, 보수적 rclone 옵션만 DB에 저장하며 rclone credential은 `/config/rclone/rclone.conf`에 남깁니다.
 - 라이브러리 카드/폴더 우클릭 `전송`에서 preflight 후 `transfer_copy` 내부 작업을 만들고, 작업 목록에서는 `Transfer`로 필터/표시됩니다.
@@ -35,7 +38,7 @@
 
 - archive 규모의 폴더 탐색은 `max_children_per_folder`를 계속 올리는 방식이 아니라 lazy child loading을 우선 사용하고, 필요하면 server-side folder search와 optional SQLite folder index로 확장한다는 기준을 [Folder Tree Scaling Design 2026-07-06](docs/folder-tree-scaling-design-2026-07-06.md)에 정리했습니다.
 - copy-only 전송 운영 기준, HugCivi Receiver 구성, rclone 설정 경로를 README, Architecture, Feature Map, Configuration, Operations, 패치 노트에 반영했습니다.
-- Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 `/data_remote` 연결 폴더 방향을 [`/data_remote` Connected Transfer Design 2026-07-06](docs/data-remote-transfer-design-2026-07-06.md)에 proposal로 문서화했습니다. 이는 현재 구현된 Receiver/rclone 전송과 별도 후속 기능입니다.
+- Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 `/data_remote` 연결 폴더 방향을 [`/data_remote` Connected Transfer Design 2026-07-06](docs/data-remote-transfer-design-2026-07-06.md)에 destination-only baseline으로 구현하고 문서화했습니다.
 - 배포 이미지는 로컬 `linux/amd64` 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
 
 ## 2026-07-05

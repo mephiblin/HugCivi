@@ -152,6 +152,58 @@ def test_receiver_transfer_target_round_trip(transfer_db) -> None:
     assert target["receiver_token"] == "secret-token"
 
 
+def test_local_mount_transfer_target_round_trip_and_sanitizes_receiver_fields(transfer_db) -> None:
+    db = transfer_db
+
+    target_id = db.create_transfer_target(
+        name="PC Mounted Checkpoints",
+        kind="local_mount",
+        remote_name="display-only",
+        remote_path="pc-comfyui//checkpoints/.",
+        receiver_url="http://receiver.local:8088",
+        receiver_token="secret-token",
+        policy={
+            "allowed_source_prefixes": ["stable-diffusion/checkpoints"],
+            "include_patterns": ["*.safetensors"],
+            "skip_existing": True,
+        },
+    )
+
+    target = db.get_transfer_target(target_id)
+    assert target is not None
+    assert target["kind"] == "local_mount"
+    assert target["remote_name"] == "display-only"
+    assert target["remote_path"] == "pc-comfyui/checkpoints"
+    assert target["receiver_url"] == ""
+    assert target["receiver_token"] == ""
+    assert target["policy"]["skip_existing"] is True
+
+    assert db.update_transfer_target(target_id, remote_path="pc-comfyui/loras")
+    updated = db.get_transfer_target(target_id)
+    assert updated is not None
+    assert updated["remote_path"] == "pc-comfyui/loras"
+
+
+def test_transfer_target_kind_and_local_mount_path_validation(transfer_db) -> None:
+    db = transfer_db
+
+    with pytest.raises(ValueError):
+        db.create_transfer_target(name="Bad", kind="mirror", remote_name="remote")
+
+    for remote_path in ("", ".", "/absolute", "../escape", "pc/../escape", r"pc\escape"):
+        with pytest.raises(ValueError):
+            db.create_transfer_target(name="Bad Mount", kind="local_mount", remote_path=remote_path)
+
+    rclone_id = db.create_transfer_target(name="Rclone", kind="rclone", remote_name="pc-comfyui")
+    receiver_id = db.create_transfer_target(
+        name="Receiver",
+        kind="receiver",
+        receiver_url="http://192.168.0.50:8088",
+    )
+    assert db.get_transfer_target(rclone_id)["kind"] == "rclone"
+    assert db.get_transfer_target(receiver_id)["kind"] == "receiver"
+
+
 def test_transfer_target_policy_json_requires_object(transfer_db) -> None:
     db = transfer_db
 

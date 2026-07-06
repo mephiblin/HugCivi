@@ -33,6 +33,7 @@ Path and startup settings are usually read from environment variables at import 
 | `HUGCIVI_CHROME_EXTENSION_DIR` | app parent `chrome-extension` | env | Source folder zipped by `/api/addon/chrome-extension`. |
 | `HUGCIVI_STARTUP_CONFIG_FILE` | `/config/startup.env` | env | Startup file used by the entrypoint for gallery-dl auto-update. |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | env | rclone config file used by rclone copy-only transfer targets. Keep rclone remote credentials here, not in rclone target rows. |
+| `DATA_REMOTE_DIR` | `/data_remote` | env | Optional connected-folder root for `local_mount` copy-only transfer targets. Mount host-managed PC/Synology/remote folders here; HugCivi does not index it as a library root. |
 | `TRANSFER_MANIFEST_DIR` | `/config/transfer-manifests` | env | Manifest artifact directory for completed copy-only transfer jobs, including Receiver jobs. |
 | `HUGCIVI_DATA_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/data`. |
 | `HUGCIVI_CONFIG_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/config`. |
@@ -112,10 +113,15 @@ The authenticated settings modal renders these credential and option values in p
 
 ## Transfer Copy
 
-Transfer targets are stored in SQLite and can use either `rclone` or `receiver` kind.
+Transfer targets are stored in SQLite and can use `local_mount`, `receiver`, or `rclone` kind.
 
+- `local_mount` targets copy to a folder already mounted under `DATA_REMOTE_DIR`. The target `remote_path` is relative to `/data_remote`, for example `pc-comfyui/checkpoints`; the browser sees target-relative folder paths only.
 - `receiver` targets send files to the PC-side HugCivi Receiver HTTP API. They store the Receiver URL, optional token, base path, and copy policy. The token is used only for outbound HTTP headers and is not returned in target list payloads or job payloads.
 - `rclone` targets refer to rclone remotes by name. rclone credentials and host details live in `RCLONE_CONFIG`.
+
+For `local_mount` targets, HugCivi requires `DATA_REMOTE_DIR` to be separate from `DATA_ROOT`, refuses `/data_remote` root as a target, rejects symlink escapes, and uses temp-file plus rename copies with existing files skipped by default. It never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
+
+The settings transfer pane also has a `/data` root clone action for `local_mount` targets. It uses dedicated `/api/transfer/data-root/*` endpoints, does not accept browser-provided `source_path`, copies the contents of `/data` into the selected target/subfolder, and leaves existing destination files in place by default.
 
 For Receiver targets, the `remote_path` field is the starting folder under the Receiver's mounted `/receive` root. During the `전송` modal flow, HugCivi proxies `GET /api/browse` through `/api/transfer/targets/{target_id}/receiver/tree` with the stored token, then sends the user-selected child folder as `destination_subpath`. Docker mount scope still determines what folders can appear.
 

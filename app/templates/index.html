@@ -598,10 +598,10 @@
 
         <section class="settings-block settings-pane" id="settings-transfer"
                  data-settings-title="전송 대상"
-                 data-settings-description="rclone remote 또는 HugCivi Receiver로 복사 전용 전송 대상을 관리합니다.">
+                 data-settings-description="연결 폴더, HugCivi Receiver, rclone remote 복사 전용 전송 대상을 관리합니다.">
           <div class="settings-block-copy">
             <h3>전송 대상</h3>
-            <p>PC 수신 앱은 Receiver URL과 token을 저장하고, rclone remote는 <code>/config/rclone/rclone.conf</code>의 remote 이름과 복사 정책만 저장합니다.</p>
+            <p>연결 폴더는 Docker에 연결된 상대 경로를 저장하고, Receiver token과 rclone credential은 필요한 대상에서만 사용합니다.</p>
           </div>
 
           <div class="settings-grid two-cols">
@@ -612,6 +612,7 @@
             <label class="setting-field" for="transfer-setting-kind">
               <span>대상 타입</span>
               <select id="transfer-setting-kind">
+                <option value="local_mount">연결 폴더 (/data_remote)</option>
                 <option value="receiver">HugCivi Receiver</option>
                 <option value="rclone">rclone remote</option>
               </select>
@@ -659,6 +660,28 @@
           </div>
           <div class="bulk-add-status" id="transfer-setting-status" role="status" aria-live="polite"></div>
           <div class="transfer-target-list" id="transfer-setting-list"></div>
+
+          <div class="settings-block-copy">
+            <h3>/data 전체 복제</h3>
+          </div>
+          <div class="settings-grid two-cols">
+            <label class="setting-field" for="transfer-root-target">
+              <span>연결 폴더 대상</span>
+              <select id="transfer-root-target">
+                <option value="">연결 폴더 대상 없음</option>
+              </select>
+            </label>
+            <label class="setting-field" for="transfer-root-destination">
+              <span>하위 폴더</span>
+              <input id="transfer-root-destination" type="text" autocomplete="off" placeholder="backup/latest">
+            </label>
+          </div>
+          <div class="settings-inline-actions">
+            <button type="button" class="settings-cancel" id="transfer-root-preflight-button">미리 확인</button>
+            <button type="button" class="settings-save" id="transfer-root-submit">복제 작업 추가</button>
+          </div>
+          <div class="transfer-policy-list" id="transfer-root-preflight"></div>
+          <div class="bulk-add-status" id="transfer-root-status" role="status" aria-live="polite"></div>
         </section>
         </div>
 
@@ -808,7 +831,7 @@
         </div>
         <div class="transfer-receiver-browser" id="transfer-receiver-browser" hidden>
           <div class="transfer-receiver-head">
-            <span>Receiver 저장 위치</span>
+            <span id="transfer-receiver-label">Receiver 저장 위치</span>
             <strong id="transfer-receiver-destination">/receive</strong>
           </div>
           <div class="transfer-receiver-tree" id="transfer-receiver-tree" role="tree">
@@ -1091,6 +1114,7 @@
     const transferTargetSelect = document.getElementById('transfer-target');
     const transferSource = document.getElementById('transfer-source');
     const transferReceiverBrowser = document.getElementById('transfer-receiver-browser');
+    const transferReceiverLabel = document.getElementById('transfer-receiver-label');
     const transferReceiverDestination = document.getElementById('transfer-receiver-destination');
     const transferReceiverTree = document.getElementById('transfer-receiver-tree');
     const transferPolicy = document.getElementById('transfer-policy');
@@ -1112,6 +1136,12 @@
     const transferSettingRefresh = document.getElementById('transfer-setting-refresh');
     const transferSettingStatus = document.getElementById('transfer-setting-status');
     const transferSettingList = document.getElementById('transfer-setting-list');
+    const transferRootTarget = document.getElementById('transfer-root-target');
+    const transferRootDestination = document.getElementById('transfer-root-destination');
+    const transferRootPreflightButton = document.getElementById('transfer-root-preflight-button');
+    const transferRootSubmit = document.getElementById('transfer-root-submit');
+    const transferRootPreflight = document.getElementById('transfer-root-preflight');
+    const transferRootStatus = document.getElementById('transfer-root-status');
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
@@ -1167,7 +1197,9 @@
     let activeTransferTarget = null;
     let activeTransferDestinationSubpath = '';
     let transferTargets = [];
+    let transferSettingTargets = [];
     let transferPreflightRequestId = 0;
+    let transferRootPreflightRequestId = 0;
     let transferReceiverBrowseRequestId = 0;
     let transferReceiverNodeCache = new Map();
     let transferReceiverExpandedPaths = new Set();
@@ -1525,6 +1557,10 @@
         deleteTransferSettingTarget(button.dataset.transferTargetDelete);
       }
     });
+    transferRootTarget.addEventListener('change', clearTransferDataRootPreflight);
+    transferRootDestination.addEventListener('input', clearTransferDataRootPreflight);
+    transferRootPreflightButton.addEventListener('click', refreshTransferDataRootPreflight);
+    transferRootSubmit.addEventListener('click', submitTransferDataRootClone);
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -2289,6 +2325,7 @@
       transferPolicy.textContent = '';
       transferReceiverBrowser.hidden = true;
       transferReceiverTree.innerHTML = '';
+      transferReceiverLabel.textContent = 'Receiver 저장 위치';
       transferReceiverDestination.textContent = '/receive';
       transferSubmit.disabled = true;
       transferTargetSelect.disabled = true;
@@ -2353,6 +2390,7 @@
 
     function transferTargetKind(target) {
       const kind = String(target?.kind || 'rclone').toLowerCase();
+      if (kind === 'local_mount') return 'local_mount';
       return kind === 'receiver' ? 'receiver' : 'rclone';
     }
 
@@ -2401,7 +2439,9 @@
         return;
       }
       const policy = target.policy || {};
-      const kindLabel = target.kind === 'receiver' ? 'HugCivi Receiver' : 'rclone';
+      const kindLabel = target.kind === 'local_mount'
+        ? '연결 폴더'
+        : (target.kind === 'receiver' ? 'HugCivi Receiver' : 'rclone');
       const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes);
       const includes = arrayText(policy.include_patterns || policy.includePatterns);
       const limits = [
@@ -2437,36 +2477,39 @@
       activeTransferDestinationSubpath = '';
       transferReceiverNodeCache = new Map();
       transferReceiverExpandedPaths = new Set();
-      if (!target || target.kind !== 'receiver') {
+      if (!target || !transferTargetUsesDestinationTree(target)) {
         transferReceiverBrowser.hidden = true;
         transferReceiverTree.innerHTML = '';
+        transferReceiverLabel.textContent = 'Receiver 저장 위치';
         transferReceiverDestination.textContent = '/receive';
         return;
       }
       transferReceiverBrowser.hidden = false;
       const basePath = transferReceiverBasePath(target);
       transferReceiverExpandedPaths.add(basePath);
-      transferReceiverDestination.textContent = receiverDisplayPath(basePath);
-      transferReceiverTree.innerHTML = '<div class="folder-search-empty">Receiver 폴더를 불러오는 중</div>';
+      transferReceiverLabel.textContent = target.kind === 'local_mount' ? '연결 폴더 저장 위치' : 'Receiver 저장 위치';
+      transferReceiverDestination.textContent = transferDestinationDisplayPath(target, basePath);
+      transferReceiverTree.innerHTML = `<div class="folder-search-empty">${target.kind === 'local_mount' ? '연결 폴더를 불러오는 중' : 'Receiver 폴더를 불러오는 중'}</div>`;
       try {
         await loadTransferReceiverNode(basePath);
         if (requestId !== transferReceiverBrowseRequestId) return;
         renderTransferReceiverTree();
       } catch (err) {
         if (requestId !== transferReceiverBrowseRequestId) return;
-        transferReceiverTree.innerHTML = `<div class="folder-search-empty">${escapeHtml(err.message || 'Receiver 폴더를 불러오지 못했습니다.')}</div>`;
+        transferReceiverTree.innerHTML = `<div class="folder-search-empty">${escapeHtml(err.message || '폴더를 불러오지 못했습니다.')}</div>`;
       }
     }
 
     async function loadTransferReceiverNode(path) {
       const target = selectedTransferTarget();
-      if (!target || target.kind !== 'receiver') return null;
+      if (!target || !transferTargetUsesDestinationTree(target)) return null;
       const targetId = target.id;
       const cleanPath = normalizePath(path || '');
-      const response = await fetch(`/api/transfer/targets/${encodeURIComponent(targetId)}/receiver/tree?path=${encodeURIComponent(cleanPath)}`);
+      const treeKind = target.kind === 'local_mount' ? 'local-mount' : 'receiver';
+      const response = await fetch(`/api/transfer/targets/${encodeURIComponent(targetId)}/${treeKind}/tree?path=${encodeURIComponent(cleanPath)}`);
       const data = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(data.detail || 'Receiver 폴더를 불러오지 못했습니다.');
+        throw new Error(data.detail || '폴더를 불러오지 못했습니다.');
       }
       if (selectedTransferTarget()?.id !== targetId) return null;
       const node = normalizeTransferReceiverNode(data.root || {}, cleanPath, true);
@@ -2502,14 +2545,14 @@
 
     function renderTransferReceiverTree() {
       const target = selectedTransferTarget();
-      if (!target || target.kind !== 'receiver') return;
+      if (!target || !transferTargetUsesDestinationTree(target)) return;
       const basePath = transferReceiverBasePath(target);
       const root = transferReceiverNodeCache.get(basePath);
       if (!root) {
-        transferReceiverTree.innerHTML = '<div class="folder-search-empty">Receiver 폴더를 불러오는 중</div>';
+        transferReceiverTree.innerHTML = '<div class="folder-search-empty">폴더를 불러오는 중</div>';
         return;
       }
-      transferReceiverDestination.textContent = receiverDisplayPath(transferReceiverSelectedFullPath(target));
+      transferReceiverDestination.textContent = transferDestinationDisplayPath(target, transferReceiverSelectedFullPath(target));
       transferReceiverTree.innerHTML = `<ul>${renderTransferReceiverNode(root, 0)}</ul>`;
     }
 
@@ -2520,7 +2563,7 @@
       const hasChildren = Boolean(cached.has_children || cached.hasChildren || children.length);
       const expanded = depth === 0 || transferReceiverExpandedPaths.has(path);
       const selected = transferReceiverSelectedFullPath(selectedTransferTarget()) === path;
-      const title = receiverDisplayPath(path);
+      const title = transferDestinationDisplayPath(selectedTransferTarget(), path);
       return `<li class="folder-node ${hasChildren ? 'has-children' : ''}${expanded ? ' expanded' : ''}"
           data-folder-path="${escapeHtml(path)}"
           data-folder-loaded="${cached.children_loaded ? 'true' : 'false'}"
@@ -2554,7 +2597,7 @@
         try {
           await loadTransferReceiverNode(cleanPath);
         } catch (err) {
-          transferStatus.textContent = err.message || 'Receiver 폴더를 불러오지 못했습니다.';
+          transferStatus.textContent = err.message || '폴더를 불러오지 못했습니다.';
         }
       }
       renderTransferReceiverTree();
@@ -2562,7 +2605,7 @@
 
     function selectTransferReceiverDestination(path) {
       const target = selectedTransferTarget();
-      if (!target || target.kind !== 'receiver') return;
+      if (!target || !transferTargetUsesDestinationTree(target)) return;
       const subpath = receiverDestinationSubpathForPath(target, path);
       if (subpath === null) return;
       activeTransferDestinationSubpath = subpath;
@@ -2570,24 +2613,38 @@
       refreshTransferPreflight();
     }
 
+    function transferTargetUsesDestinationTree(target) {
+      return target?.kind === 'receiver' || target?.kind === 'local_mount';
+    }
+
     function transferReceiverBasePath(target) {
+      if (target?.kind === 'local_mount') return '';
       return normalizePath(target?.remote_path || '');
     }
 
     function transferReceiverSelectedFullPath(target) {
-      if (!target || target.kind !== 'receiver') return '';
+      if (!target || !transferTargetUsesDestinationTree(target)) return '';
       const basePath = transferReceiverBasePath(target);
       const subpath = normalizePath(activeTransferDestinationSubpath || '');
       return [basePath, subpath].filter(Boolean).join('/');
     }
 
     function receiverDestinationSubpathForPath(target, path) {
+      if (target?.kind === 'local_mount') return normalizePath(path || '');
       const basePath = transferReceiverBasePath(target);
       const cleanPath = normalizePath(path || '');
       if (!basePath) return cleanPath;
       if (cleanPath === basePath) return '';
       if (cleanPath.startsWith(`${basePath}/`)) return cleanPath.slice(basePath.length + 1);
       return null;
+    }
+
+    function transferDestinationDisplayPath(target, path) {
+      if (target?.kind === 'local_mount') {
+        const cleanPath = normalizePath(path || '');
+        return cleanPath ? `${target.name}/${cleanPath}` : target.name;
+      }
+      return receiverDisplayPath(path);
     }
 
     function receiverDisplayPath(path) {
@@ -2635,7 +2692,7 @@
         target_id: Number.isFinite(numericId) ? numericId : target?.id,
         source_path: normalizePath(activeTransferTarget?.path || ''),
       };
-      if (target?.kind === 'receiver') {
+      if (transferTargetUsesDestinationTree(target)) {
         payload.destination_subpath = normalizePath(activeTransferDestinationSubpath || '');
       }
       return payload;
@@ -2699,14 +2756,20 @@
         const data = await readJsonResponse(response);
         if (!response.ok) {
           transferSettingStatus.textContent = data.detail || '전송 대상을 불러오지 못했습니다.';
+          transferSettingTargets = [];
           renderTransferSettingTargets([]);
+          renderTransferDataRootTargets([]);
           return;
         }
         const targets = normalizeTransferTargets(data);
+        transferSettingTargets = targets;
         renderTransferSettingTargets(targets);
+        renderTransferDataRootTargets(targets);
         transferSettingStatus.textContent = targets.length ? '' : '등록된 전송 대상이 없습니다.';
       } catch (err) {
         transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+        transferSettingTargets = [];
+        renderTransferDataRootTargets([]);
       }
     }
 
@@ -2720,10 +2783,14 @@
         const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes) || '-';
         const includes = arrayText(policy.include_patterns || policy.includePatterns) || '-';
         const kind = transferTargetKind(target);
-        const remotePath = kind === 'receiver'
-          ? `${target.receiver_url || 'Receiver'}${target.remote_path ? `/${target.remote_path}` : ''}`
-          : (target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`);
-        const tokenText = kind === 'receiver' ? (target.receiver_token_set ? 'token set' : 'no token') : 'rclone';
+        const remotePath = kind === 'local_mount'
+          ? (target.remote_path || '연결 폴더')
+          : (kind === 'receiver'
+            ? `${target.receiver_url || 'Receiver'}${target.remote_path ? `/${target.remote_path}` : ''}`
+            : (target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`));
+        const tokenText = kind === 'local_mount'
+          ? '연결 폴더'
+          : (kind === 'receiver' ? (target.receiver_token_set ? 'token set' : 'no token') : 'rclone');
         return `
           <div class="transfer-target-item">
             <div>
@@ -2737,19 +2804,139 @@
       }).join('');
     }
 
+    function renderTransferDataRootTargets(targets = transferSettingTargets) {
+      const localTargets = (Array.isArray(targets) ? targets : [])
+        .filter(target => target.enabled && transferTargetKind(target) === 'local_mount');
+      const previousId = String(transferRootTarget.value || '');
+      if (!localTargets.length) {
+        transferRootTarget.innerHTML = '<option value="">연결 폴더 대상 없음</option>';
+        transferRootTarget.disabled = true;
+        transferRootPreflightButton.disabled = true;
+        transferRootSubmit.disabled = true;
+        transferRootPreflight.textContent = '';
+        transferRootStatus.textContent = '연결 폴더 대상이 없습니다.';
+        return;
+      }
+      transferRootTarget.disabled = false;
+      transferRootTarget.innerHTML = localTargets.map(target => (
+        `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`
+      )).join('');
+      if (localTargets.some(target => target.id === previousId)) {
+        transferRootTarget.value = previousId;
+      }
+      transferRootPreflightButton.disabled = false;
+      transferRootSubmit.disabled = false;
+      if (transferRootStatus.textContent === '연결 폴더 대상이 없습니다.') {
+        transferRootStatus.textContent = '';
+      }
+    }
+
+    function selectedTransferDataRootTarget() {
+      const selectedId = String(transferRootTarget.value || '');
+      return transferSettingTargets.find(target => (
+        target.enabled && transferTargetKind(target) === 'local_mount' && target.id === selectedId
+      )) || null;
+    }
+
+    function transferDataRootPayload() {
+      const target = selectedTransferDataRootTarget();
+      const numericId = Number(target?.id);
+      return {
+        target_id: Number.isFinite(numericId) ? numericId : target?.id,
+        destination_subpath: normalizePath(transferRootDestination.value || ''),
+      };
+    }
+
+    function clearTransferDataRootPreflight() {
+      transferRootPreflightRequestId += 1;
+      transferRootPreflight.textContent = '';
+      transferRootStatus.textContent = '';
+    }
+
+    async function refreshTransferDataRootPreflight() {
+      const target = selectedTransferDataRootTarget();
+      const requestId = ++transferRootPreflightRequestId;
+      transferRootSubmit.disabled = true;
+      if (!target) {
+        transferRootPreflight.textContent = '';
+        transferRootStatus.textContent = '연결 폴더 대상을 선택하세요.';
+        transferRootSubmit.disabled = transferRootTarget.disabled;
+        return;
+      }
+      transferRootPreflight.textContent = '확인 중';
+      transferRootStatus.textContent = '';
+      try {
+        const response = await fetch('/api/transfer/data-root/preflight', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(transferDataRootPayload()),
+        });
+        const data = await readJsonResponse(response);
+        if (requestId !== transferRootPreflightRequestId) return;
+        if (!response.ok) {
+          transferRootPreflight.textContent = data.detail || '복제할 수 없습니다.';
+          transferRootSubmit.disabled = false;
+          return;
+        }
+        transferRootPreflight.innerHTML = renderTransferPreflight(data);
+        transferRootSubmit.disabled = false;
+      } catch (err) {
+        if (requestId !== transferRootPreflightRequestId) return;
+        transferRootPreflight.textContent = '복제 확인을 완료하지 못했습니다.';
+        transferRootSubmit.disabled = false;
+      }
+    }
+
+    async function submitTransferDataRootClone() {
+      const target = selectedTransferDataRootTarget();
+      if (!target) {
+        transferRootStatus.textContent = '연결 폴더 대상을 선택하세요.';
+        return;
+      }
+      transferRootSubmit.disabled = true;
+      transferRootStatus.textContent = '복제 작업을 추가하는 중';
+      try {
+        const response = await fetch('/api/transfer/data-root/jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(transferDataRootPayload()),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          transferRootStatus.textContent = data.detail || '복제 작업을 추가하지 못했습니다.';
+          transferRootSubmit.disabled = false;
+          return;
+        }
+        transferRootPreflight.innerHTML = renderTransferPreflight(data);
+        transferRootStatus.textContent = '복제 작업을 추가했습니다.';
+        activeJobSource = 'transfer';
+        await refreshJobs({page: 1, source: 'transfer'});
+      } catch (err) {
+        transferRootStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      } finally {
+        transferRootSubmit.disabled = transferRootTarget.disabled;
+      }
+    }
+
     function updateTransferSettingKindFields() {
-      const kind = transferSettingKind.value === 'rclone' ? 'rclone' : 'receiver';
+      const kind = transferSettingKind.value === 'rclone'
+        ? 'rclone'
+        : (transferSettingKind.value === 'receiver' ? 'receiver' : 'local_mount');
       const remoteField = transferSettingRemote.closest('.setting-field');
       const receiverUrlField = transferSettingReceiverUrl.closest('.setting-field');
       const receiverTokenField = transferSettingReceiverToken.closest('.setting-field');
       if (remoteField) remoteField.hidden = kind !== 'rclone';
       if (receiverUrlField) receiverUrlField.hidden = kind !== 'receiver';
       if (receiverTokenField) receiverTokenField.hidden = kind !== 'receiver';
-      transferSettingPath.placeholder = kind === 'receiver' ? 'checkpoints 또는 loras' : 'ComfyUI/models/checkpoints';
+      transferSettingPath.placeholder = kind === 'local_mount'
+        ? 'pc-comfyui/checkpoints'
+        : (kind === 'receiver' ? 'checkpoints 또는 loras' : 'ComfyUI/models/checkpoints');
     }
 
     async function saveTransferSettingTarget() {
-      const kind = transferSettingKind.value === 'rclone' ? 'rclone' : 'receiver';
+      const kind = transferSettingKind.value === 'rclone'
+        ? 'rclone'
+        : (transferSettingKind.value === 'receiver' ? 'receiver' : 'local_mount');
       const payload = {
         name: transferSettingName.value.trim(),
         kind,
@@ -2768,6 +2955,8 @@
       if (kind === 'receiver') {
         payload.receiver_url = transferSettingReceiverUrl.value.trim();
         payload.receiver_token = transferSettingReceiverToken.value.trim();
+        payload.remote_name = '';
+      } else if (kind === 'local_mount') {
         payload.remote_name = '';
       } else {
         payload.remote_name = transferSettingRemote.value.trim();

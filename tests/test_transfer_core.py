@@ -5,17 +5,27 @@ from pathlib import Path
 import pytest
 
 from app.transfer import (
+    DEFAULT_DATA_REMOTE_DIR,
     DEFAULT_RCLONE_CONFIG,
     TRANSFER_MAX_CHECKERS,
     TRANSFER_MAX_CONCURRENT_HARD_LIMIT,
     TRANSFER_MAX_TRANSFERS,
+    TARGET_KIND_LOCAL_MOUNT,
     TARGET_KIND_RECEIVER,
     build_receiver_destination_path,
+    copy_to_local_mount,
+    data_remote_dir,
+    ensure_data_remote_is_separate,
+    local_mount_preflight,
+    local_mount_tree,
     build_remote_destination,
     build_rclone_copy_command,
     normalize_receiver_url,
+    normalize_local_mount_remote_path,
     normalize_remote_path,
     receiver_timeout_seconds,
+    resolve_data_source_path,
+    resolve_local_mount_base,
     rclone_config_path,
     sanitize_policy,
     transfer_max_concurrent,
@@ -52,6 +62,198 @@ def test_destination_subpath_rejects_escape_inputs() -> None:
     for subpath in ("/absolute", "../escape", "models/../escape", r"models\escape", "other:raw"):
         with pytest.raises(ValueError):
             validate_destination_subpath(subpath)
+
+
+def test_local_mount_target_path_validation_and_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATA_REMOTE_DIR", raising=False)
+    data_remote_root = tmp_path / "data_remote"
+    (data_remote_root / "pc-comfyui" / "checkpoints").mkdir(parents=True)
+
+    assert data_remote_dir() == Path(DEFAULT_DATA_REMOTE_DIR)
+    assert validate_target_kind("local_mount") == TARGET_KIND_LOCAL_MOUNT
+    assert normalize_local_mount_remote_path("pc-comfyui//checkpoints/.") == "pc-comfyui/checkpoints"
+    assert resolve_local_mount_base(
+        "pc-comfyui/checkpoints",
+        data_remote_root=data_remote_root,
+        require_exists=True,
+    ) == data_remote_root / "pc-comfyui" / "checkpoints"
+
+    for remote_path in ("", ".", "/", "/absolute", "../escape", "pc/../escape", r"pc\escape", "smb://host/share"):
+        with pytest.raises(ValueError):
+            normalize_local_mount_remote_path(remote_path)
+
+
+def test_local_mount_rejects_symlink_base_and_unsafe_source(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_remote_root = tmp_path / "data_remote"
+    outside = tmp_path / "outside"
+    source = data_root / "folder" / "model.safetensors"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"model")
+    data_remote_root.mkdir()
+    outside.mkdir()
+    try:
+        (data_remote_root / "escape").symlink_to(outside, target_is_directory=True)
+        (data_root / "folder" / "link.safetensors").symlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is not available: {exc}")
+
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_local_mount_base("escape", data_remote_root=data_remote_root, require_exists=True)
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_data_source_path("folder/link.safetensors", data_root=data_root)
+    with pytest.raises(ValueError):
+        resolve_data_source_path("../outside", data_root=data_root)
+    with pytest.raises(ValueError, match="data root"):
+        resolve_data_source_path(data_root, data_root=data_root)
+    assert resolve_data_source_path("", data_root=data_root, allow_data_root=True) == data_root
+
+
+def test_local_mount_rejects_overlapping_data_roots(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_remote_root = data_root / "remote"
+    data_remote_parent = tmp_path
+    data_root.mkdir()
+
+    with pytest.raises(ValueError, match="separate"):
+        ensure_data_remote_is_separate(data_root=data_root, data_remote_root=data_root)
+    with pytest.raises(ValueError, match="overlap"):
+        ensure_data_remote_is_separate(data_root=data_root, data_remote_root=data_remote_root)
+    with pytest.raises(ValueError, match="overlap"):
+        ensure_data_remote_is_separate(data_root=data_root, data_remote_root=data_remote_parent)
+
+
+def test_local_mount_tree_returns_target_relative_folders_and_cursor(tmp_path: Path) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    base = data_remote_root / "pc-comfyui"
+    (base / "alpha" / "nested").mkdir(parents=True)
+    (base / "beta").mkdir()
+    (base / "file.txt").write_text("skip", encoding="utf-8")
+    try:
+        (base / "linked").symlink_to(base / "alpha", target_is_directory=True)
+    except OSError:
+        pass
+
+    first = local_mount_tree("pc-comfyui", data_remote_root=data_remote_root, limit=1)
+    assert first["path"] == ""
+    assert [child["path"] for child in first["children"]] == ["alpha"]
+    assert first["next_cursor"] == "alpha"
+    assert first["has_more"] is True
+
+    second = local_mount_tree("pc-comfyui", data_remote_root=data_remote_root, limit=10, cursor="alpha")
+    assert [child["path"] for child in second["children"]] == ["beta"]
+    assert second["next_cursor"] is None
+
+    nested = local_mount_tree("pc-comfyui", path="alpha", data_remote_root=data_remote_root)
+    assert nested["root"]["path"] == "alpha"
+    assert [child["path"] for child in nested["children"]] == ["alpha/nested"]
+
+
+def test_local_mount_preflight_and_copy_skip_existing_with_manifest_entries(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_remote_root = tmp_path / "data_remote"
+    source = data_root / "stable-diffusion" / "checkpoints"
+    target_base = data_remote_root / "pc-comfyui" / "drop"
+    source.mkdir(parents=True)
+    target_base.mkdir(parents=True)
+    (source / "Model.ckpt").write_bytes(b"checkpoint")
+    (source / "ignore.txt").write_text("skip", encoding="utf-8")
+    (source / "nested").mkdir()
+    (source / "nested" / "Extra.safetensors").write_bytes(b"extra")
+    existing = target_base / "picked" / "checkpoints" / "Model.ckpt"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"old")
+
+    policy = {
+        "include_patterns": ["*.ckpt", "*.safetensors"],
+        "allowed_source_prefixes": ["stable-diffusion/checkpoints"],
+    }
+    preflight = local_mount_preflight(
+        "stable-diffusion/checkpoints",
+        remote_path="pc-comfyui/drop",
+        destination_subpath="picked",
+        policy=policy,
+        data_root=data_root,
+        data_remote_root=data_remote_root,
+    )
+    assert preflight["file_count"] == 2
+    assert preflight["destination"] == "local_mount:/picked/checkpoints"
+
+    logs: list[str] = []
+    result = copy_to_local_mount(
+        "stable-diffusion/checkpoints",
+        remote_path="pc-comfyui/drop",
+        destination_subpath="picked",
+        policy=policy,
+        data_root=data_root,
+        data_remote_root=data_remote_root,
+        job_id=42,
+        log=logs.append,
+    )
+
+    assert existing.read_bytes() == b"old"
+    assert (target_base / "picked" / "checkpoints" / "nested" / "Extra.safetensors").read_bytes() == b"extra"
+    assert not (target_base / "picked" / "checkpoints" / "ignore.txt").exists()
+    assert result["copied_files"] == 1
+    assert result["skipped_files"] == 1
+    assert {entry["action"] for entry in result["entries"]} == {"copied", "skipped_existing"}
+    assert all(not part.name.startswith(".") or ".part." not in part.name for part in target_base.rglob("*"))
+    assert str(data_root) not in str(result)
+    assert str(data_remote_root) not in str(result)
+    assert logs and all(str(data_remote_root) not in line for line in logs)
+
+
+def test_local_mount_data_root_clone_copies_contents_without_data_folder(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    data_remote_root = tmp_path / "data_remote"
+    target_base = data_remote_root / "pc-comfyui" / "backup"
+    (data_root / "stable-diffusion" / "checkpoints").mkdir(parents=True)
+    target_base.mkdir(parents=True)
+    (data_root / "stable-diffusion" / "checkpoints" / "Model.ckpt").write_bytes(b"checkpoint")
+    (data_root / "notes.txt").write_text("notes", encoding="utf-8")
+    existing = target_base / "snapshot" / "notes.txt"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("old", encoding="utf-8")
+    try:
+        (data_root / "linked").symlink_to(data_root / "notes.txt")
+    except OSError:
+        pass
+
+    policy = {"preserve_folder_name": False, "skip_existing": True}
+    preflight = local_mount_preflight(
+        "",
+        remote_path="pc-comfyui/backup",
+        destination_subpath="snapshot",
+        policy=policy,
+        data_root=data_root,
+        data_remote_root=data_remote_root,
+        allow_data_root=True,
+    )
+    assert preflight["source_path"] == ""
+    assert preflight["source_name"] == "data"
+    assert preflight["destination"] == "local_mount:/snapshot"
+    assert preflight["file_count"] == 2
+
+    result = copy_to_local_mount(
+        data_root,
+        remote_path="pc-comfyui/backup",
+        destination_subpath="snapshot",
+        policy=policy,
+        data_root=data_root,
+        data_remote_root=data_remote_root,
+        allow_data_root=True,
+    )
+
+    assert (target_base / "snapshot" / "stable-diffusion" / "checkpoints" / "Model.ckpt").read_bytes() == b"checkpoint"
+    assert existing.read_text(encoding="utf-8") == "old"
+    assert not (target_base / "snapshot" / "data").exists()
+    assert result["copied_files"] == 1
+    assert result["skipped_files"] == 1
+    assert str(data_root) not in str(result)
+    assert str(data_remote_root) not in str(result)
 
 
 def test_receiver_target_validation_and_destination(monkeypatch: pytest.MonkeyPatch) -> None:

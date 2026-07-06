@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import transfer
 from .defaults import (
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
     JOB_LOG_MAX_CHARS_DEFAULT,
@@ -428,12 +429,16 @@ def create_transfer_target(
     policy_json: str | None = None,
 ) -> int:
     clean_name = str(name).strip()
-    clean_kind = str(kind or "rclone").strip() or "rclone"
-    clean_remote_name = str(remote_name).strip()
+    clean_kind = transfer.validate_target_kind(str(kind or transfer.TARGET_KIND_RCLONE).strip() or transfer.TARGET_KIND_RCLONE)
     if not clean_name:
         raise ValueError("Transfer target name is required")
-    if clean_kind == "rclone" and not clean_remote_name:
-        raise ValueError("Transfer target remote_name is required")
+    target_fields = _clean_transfer_target_storage_fields(
+        kind=clean_kind,
+        remote_name=remote_name,
+        remote_path=remote_path,
+        receiver_url=receiver_url,
+        receiver_token=receiver_token,
+    )
     now = utc_now()
     with _DB_LOCK, connect() as conn:
         cur = conn.execute(
@@ -446,11 +451,11 @@ def create_transfer_target(
             """,
             (
                 clean_name,
-                clean_kind,
-                clean_remote_name,
-                str(remote_path or "").strip(),
-                str(receiver_url or "").strip(),
-                str(receiver_token or "").strip(),
+                target_fields["kind"],
+                target_fields["remote_name"],
+                target_fields["remote_path"],
+                target_fields["receiver_url"],
+                target_fields["receiver_token"],
                 1 if enabled else 0,
                 transfer_policy_json(policy=policy, policy_json=policy_json),
                 now,
@@ -499,10 +504,16 @@ def update_transfer_target(target_id: int, **fields: Any) -> bool:
     if "name" in clean_fields and not clean_fields["name"]:
         raise ValueError("Transfer target name is required")
     current = get_transfer_target(target_id) or {}
-    target_kind = str(clean_fields.get("kind", current.get("kind") or "rclone") or "rclone")
-    target_remote_name = str(clean_fields.get("remote_name", current.get("remote_name") or "") or "")
-    if target_kind == "rclone" and not target_remote_name:
-        raise ValueError("Transfer target remote_name is required")
+    transfer_field_keys = {"kind", "remote_name", "remote_path", "receiver_url", "receiver_token"}
+    if any(key in clean_fields for key in transfer_field_keys):
+        target_fields = _clean_transfer_target_storage_fields(
+            kind=clean_fields.get("kind", current.get("kind") or transfer.TARGET_KIND_RCLONE),
+            remote_name=clean_fields.get("remote_name", current.get("remote_name") or ""),
+            remote_path=clean_fields.get("remote_path", current.get("remote_path") or ""),
+            receiver_url=clean_fields.get("receiver_url", current.get("receiver_url") or ""),
+            receiver_token=clean_fields.get("receiver_token", current.get("receiver_token") or ""),
+        )
+        clean_fields.update(target_fields)
     clean_fields["updated_at"] = utc_now()
     keys = list(clean_fields.keys())
     values = [clean_fields[key] for key in keys]
@@ -518,6 +529,42 @@ def delete_transfer_target(target_id: int) -> bool:
         cur = conn.execute("DELETE FROM transfer_targets WHERE id = ?", (target_id,))
         conn.commit()
         return bool(cur.rowcount)
+
+
+def _clean_transfer_target_storage_fields(
+    *,
+    kind: str,
+    remote_name: str = "",
+    remote_path: str = "",
+    receiver_url: str = "",
+    receiver_token: str = "",
+) -> dict[str, str]:
+    clean_kind = transfer.validate_target_kind(kind)
+    clean_remote_name = str(remote_name or "").strip()
+    clean_remote_path = str(remote_path or "").strip()
+    clean_receiver_url = str(receiver_url or "").strip()
+    clean_receiver_token = str(receiver_token or "").strip()
+
+    if clean_kind == transfer.TARGET_KIND_RCLONE:
+        clean_remote_name = transfer.validate_remote_name(clean_remote_name)
+        clean_remote_path = transfer.normalize_remote_path(clean_remote_path)
+        clean_receiver_url = ""
+        clean_receiver_token = ""
+    elif clean_kind == transfer.TARGET_KIND_RECEIVER:
+        clean_remote_name = ""
+        clean_remote_path = transfer.normalize_remote_path(clean_remote_path)
+        clean_receiver_url = transfer.normalize_receiver_url(clean_receiver_url)
+    elif clean_kind == transfer.TARGET_KIND_LOCAL_MOUNT:
+        clean_remote_path = transfer.normalize_local_mount_remote_path(clean_remote_path)
+        clean_receiver_url = ""
+        clean_receiver_token = ""
+    return {
+        "kind": clean_kind,
+        "remote_name": clean_remote_name,
+        "remote_path": clean_remote_path,
+        "receiver_url": clean_receiver_url,
+        "receiver_token": clean_receiver_token,
+    }
 
 
 def transfer_policy_json(

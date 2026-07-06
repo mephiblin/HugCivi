@@ -25,7 +25,8 @@ HugCivi 전송 기능은 `copy`만 지원한다.
 - 금지: HugCivi 자체를 인터넷 파일 서버로 공개.
 - 금지: rclone serve 자동 실행.
 - 금지: job 생성 시 임의 host, IP, URL, raw remote string 입력.
-- 금지: `/data` root 전체 전송.
+- 금지: 일반 전송 job에서 `/data` root 전체 전송.
+- 예외: settings-pane 전용 `/data` root clone은 `local_mount` target만 허용하고 browser-provided `source_path` 없이 서버가 source를 고정한다.
 - 필수: 등록된 target id만 사용.
 - 필수: source path는 기존 `/data` 안전 helper로 검증.
 - 필수: target별 allowed source prefix를 강제.
@@ -337,11 +338,11 @@ MVP 이후 같은 copy-only 원칙으로 확장한다.
 
 ## `/data_remote` 후속 방향
 
-Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 방향은 별도 후속 설계인 [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md)를 기준으로 검토한다.
+Receiver 없이 내부망 PC/Synology/원격 공유 폴더를 전송 대상으로 쓰는 방향은 별도 후속 설계인 [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md)를 기준으로 destination-only `local_mount` baseline까지 구현됐다.
 
 핵심 차이:
 
 - 이 문서의 구현 baseline은 rclone/Receiver target으로 "내 `/data` 파일을 등록된 대상에게 보내는 copy-only outbound 작업"이다.
-- `/data_remote` 후속안은 host가 이미 마운트한 PC/Synology/원격 공유 폴더를 Docker에 `/data_remote/<target>`으로 연결하고, HugCivi가 이를 `local_mount` transfer target으로만 다루는 작업이다.
+- `/data_remote` 구현은 host가 이미 마운트한 PC/Synology/원격 공유 폴더를 Docker에 `/data_remote/<target>`으로 연결하고, HugCivi가 이를 `local_mount` transfer target으로만 다루는 작업이다.
 - `/data_remote`는 보관함이 아니며 라이브러리 index, rename, move, delete UI에 섞지 않는다.
-- 세 방식 모두 sync/move/delete를 금지하고, 전송 source는 `/data` 내부 path로 제한한다.
+- 세 방식 모두 sync/move/delete를 금지하고, 일반 전송 source는 `/data` 내부 path로 제한한다. `/data` root clone은 `local_mount` 전용 settings flow에서만 허용한다.

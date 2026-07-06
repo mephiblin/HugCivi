@@ -92,7 +92,43 @@ Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS
 
 The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`.
 
-Recommended internal-LAN PC receiving is the sibling HugCivi Receiver project at `/home/inri/문서/HugCivi-Receiver`. Run it on the PC as a Docker container, mount the PC folder to `/receive`, then register a `HugCivi Receiver` target in HugCivi with the Receiver URL, token, base path, allowed source prefix, and include patterns. The PC browser UI shows waiting, receiving, done, and failed jobs. Docker still cannot let the web UI pick arbitrary Windows folders; the local folder must be mounted in compose first. Once mounted, HugCivi can query the Receiver folder tree through `/api/transfer/targets/{target_id}/receiver/tree` and the `전송` modal lets the user pick a destination under that mounted receive root.
+Recommended internal-LAN PC/NAS transfer is a `연결 폴더 (/data_remote)` target. Mount PC SMB shares, Synology remote folders, or other host-managed folders under a host directory, bind that directory to `/data_remote`, then register one or more `local_mount` targets with a `/data_remote`-relative base path. HugCivi browses only the registered target base through `/api/transfer/targets/{target_id}/local-mount/tree`, sends only `target_id`, `/data` `source_path`, and `destination_subpath`, and never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
+
+For a one-shot archive clone, open Settings -> `전송 대상` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
+
+Local mount compose shape:
+
+```yaml
+services:
+  hugcivi:
+    volumes:
+      - /volume1/hugcivi/data:/data
+      - /volume1/hugcivi/config:/config
+      - /volume1/hugcivi/remotes:/data_remote
+```
+
+Host layout example:
+
+```text
+/volume1/hugcivi/remotes/
+  pc-comfyui/
+    checkpoints/
+    loras/
+  studio-nas/
+  friend-drop/
+```
+
+Register separate targets for narrow destinations and policies:
+
+```text
+PC ComfyUI Checkpoints -> kind=local_mount, remote_path=pc-comfyui/checkpoints
+PC ComfyUI LoRA        -> kind=local_mount, remote_path=pc-comfyui/loras
+Studio NAS Models      -> kind=local_mount, remote_path=studio-nas/models
+```
+
+`/data_remote` is not a second library root. It is destination-only for copy jobs, must stay separate from `/data`, and should be mounted as narrowly as practical. HugCivi refuses the `/data_remote` root as a target, rejects symlink escapes, checks writable/offline state during preflight, writes files through temporary names before rename, and skips existing destination files by default.
+
+Use the sibling HugCivi Receiver project at `/home/inri/문서/HugCivi-Receiver` when the PC-side receiving UI or HTTP token boundary is useful. Run it on the PC as a Docker container, mount the PC folder to `/receive`, then register a `HugCivi Receiver` target in HugCivi with the Receiver URL, token, base path, allowed source prefix, and include patterns. The PC browser UI shows waiting, receiving, done, and failed jobs. Docker still cannot let the web UI pick arbitrary Windows folders; the local folder must be mounted in compose first. Once mounted, HugCivi can query the Receiver folder tree through `/api/transfer/targets/{target_id}/receiver/tree` and the `전송` modal lets the user pick a destination under that mounted receive root.
 
 Receiver compose shape:
 
@@ -135,6 +171,7 @@ Useful defaults:
 
 ```text
 RCLONE_CONFIG=/config/rclone/rclone.conf
+DATA_REMOTE_DIR=/data_remote
 TRANSFER_MANIFEST_DIR=/config/transfer-manifests
 TRANSFER_MAX_CONCURRENT=1
 TRANSFER_DEFAULT_TRANSFERS=1
@@ -156,7 +193,7 @@ Receiver base path: checkpoints
 Include patterns: *.safetensors, *.ckpt
 ```
 
-Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the PC disk behavior is proven stable. If the PC is asleep or unavailable, the transfer job fails without changing local `/data` files; fix the Receiver/network condition and retry the job. For broader external-network remotes, keep using rclone targets.
+Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the destination disk behavior is proven stable. If the PC is asleep, a mount is offline, or a Receiver is unavailable, the transfer job fails without changing local `/data` files; fix the mount/Receiver/network condition and retry the job. For broader external-network remotes, keep using rclone targets.
 
 ## Civitai Model Archives
 

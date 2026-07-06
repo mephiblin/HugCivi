@@ -66,7 +66,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
-- 폴더 또는 카드 우클릭으로 HugCivi Receiver 또는 rclone 대상에 copy-only 전송 작업 생성
+- 폴더 또는 카드 우클릭으로 연결 폴더(`/data_remote`), HugCivi Receiver, rclone 대상에 copy-only 전송 작업 생성
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
 - 작업 목록에서 다운로드 정지, 재개, 삭제, 저장 폴더 이동, 50개 단위 페이지 전환, 소스별 필터
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
@@ -493,19 +493,21 @@ Upscaler: stable-diffusion/upscalers
 
 ## 전송
 
-HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상으로 보내는 복사 전용 전송 작업을 만들 수 있습니다. 내부망 PC에는 별도 프로젝트인 `/home/inri/문서/HugCivi-Receiver`의 Docker 수신 앱을 올릴 수 있고, PC 브라우저에서는 대기/수신중/완료/실패 상태를 토렌트 클라이언트처럼 확인합니다.
+HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상으로 보내는 복사 전용 전송 작업을 만들 수 있습니다. 내부망 PC/Synology/공유 폴더는 host가 미리 마운트한 폴더를 Docker에 `/data_remote/<target>`으로 연결한 뒤 `연결 폴더` 대상으로 등록할 수 있습니다. 별도 수신 UI가 필요하면 `/home/inri/문서/HugCivi-Receiver`의 Docker 수신 앱도 계속 사용할 수 있습니다.
 
-권장 내부망 구성은 HugCivi Receiver 대상입니다. Receiver는 PC 로컬 폴더를 Docker volume으로 `/receive`에 마운트하고, HugCivi에는 Receiver URL, token, base path, 허용 source prefix, include pattern을 등록합니다. Receiver 대상은 우클릭 `전송` 모달에서 `/receive` 아래 폴더 tree를 보여주므로, 사용자는 마운트된 PC 폴더 안을 탐색해 저장 위치를 고를 수 있습니다. rclone 대상도 계속 지원되며, 외부망이나 범용 원격지 전송을 위해 `/config/rclone/rclone.conf`의 remote 이름을 등록하는 방식으로 사용합니다.
+권장 내부망 구성은 `연결 폴더 (/data_remote)` 대상입니다. 운영자가 PC SMB share, 다른 Synology remote folder, 외장/공유 폴더를 host에 마운트하고 Docker에 `/data_remote`로 연결하면, HugCivi 우클릭 `전송` 모달에서 해당 target 아래 폴더 tree를 탐색해 저장 위치를 고를 수 있습니다. Receiver 대상은 PC 쪽 수신 상태 UI와 token 보호가 필요할 때 쓰고, rclone 대상은 외부망이나 범용 원격지 전송을 위해 `/config/rclone/rclone.conf`의 remote 이름을 등록하는 방식으로 사용합니다.
 
 사용 흐름:
 
 1. 라이브러리 카드나 폴더를 우클릭합니다.
 2. `전송`을 선택합니다.
 3. 등록된 대상을 고릅니다.
-4. Receiver 대상이면 마운트된 PC 폴더 tree에서 목적지 폴더를 선택합니다.
+4. 연결 폴더 또는 Receiver 대상이면 마운트된 폴더 tree에서 목적지 폴더를 선택합니다.
 5. 사전 확인 결과를 보고 `전송 큐에 추가`를 누릅니다.
 
-전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. Receiver와 rclone 운영값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
+설정의 `전송 대상` 탭에는 `/data 전체 복제` 작업도 있습니다. 등록된 `연결 폴더 (/data_remote)` 대상과 선택 하위 폴더를 고르면 `/data` 루트의 내용물을 대상 아래로 복사하는 전용 `transfer_copy` 작업을 만듭니다. 이 경로는 `/data` 전체 다운로드나 파일관리 루트 조작을 열지 않으며, 기존 대상 파일은 기본적으로 건너뜁니다.
+
+전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. 연결 폴더, Receiver, rclone 운영값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
 
 ## 토큰 및 인증 입력
 
@@ -601,6 +603,7 @@ MEDIA_CACHE_MAX_BYTES=0
 MEDIA_THUMBNAIL_BACKFILL_WORKERS=3
 MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS=5000
 RCLONE_CONFIG=/config/rclone/rclone.conf
+DATA_REMOTE_DIR=/data_remote
 TRANSFER_MANIFEST_DIR=/config/transfer-manifests
 TRANSFER_MAX_CONCURRENT=1
 TRANSFER_DEFAULT_TRANSFERS=1

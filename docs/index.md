@@ -32,7 +32,7 @@ The dated documents below are useful context, but code and current reference doc
 | Document | Status |
 | --- | --- |
 | [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md) | partially implemented reference. Current code has root-direct `/api/folders` plus lazy `/api/folders/children`; server-side folder search and optional folder indexing remain future work. |
-| [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md) | proposal. Future connected-folder transfer target design with `/data_remote` and `local_mount`; not implemented in current code. |
+| [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md) | implemented reference for destination-only `local_mount` transfer targets. Current code supports `/data_remote` tree browsing, preflight, temp-file copy, skip-existing behavior, and settings-pane `/data` root clone; read-only import/friend-library ideas remain future work. |
 | [Library Card Performance Plan 2026-07-05](library-card-performance-plan-2026-07-05.md) | implemented planning record. Current behavior is documented in Architecture, Feature and Code Map, Operations, and the 2026-07-05 patch notes. |
 | [Transfer Copy Production Plan 2026-07-06](transfer-copy-production-plan-2026-07-06.md) | implemented planning record for the copy-only NAS-to-PC/remote transfer baseline. Current behavior also includes HugCivi Receiver targets and Receiver destination folder picking, documented in Architecture, Feature and Code Map, Configuration, and Operations. |
 | [Transfer Design 2026-07-02](transfer-design-2026-07-02.md) | future design, not implemented unless code later proves otherwise. |

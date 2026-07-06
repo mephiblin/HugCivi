@@ -34,6 +34,7 @@ Important paths:
 | Path | Role |
 | --- | --- |
 | `/data` | Long-lived archive content. This is the volume to protect if the downloaded files are the priority. |
+| `/data_remote` | Optional connected-folder root for copy-only `local_mount` transfer destinations. It is not a library root and must stay separate from `/data`. |
 | `/config/jobs.sqlite3` | SQLite DB with jobs, settings, favorites, notes, library index, artifacts, and maintenance history. |
 | `/config/downloads` | Temporary ZIP artifacts prepared for folder downloads. |
 | `/config/media-cache` | Browser-playable video transcodes, poster images, and disposable card thumbnails. |
@@ -52,7 +53,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
 | `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
-| `app/transfer.py` | Copy-only transfer target validation, rclone destination/argv construction, HugCivi Receiver destination validation, policy sanitization, and output redaction helpers. |
+| `app/transfer.py` | Copy-only transfer target validation, local mount path/copy safety, rclone destination/argv construction, HugCivi Receiver destination validation, policy sanitization, and output redaction helpers. |
 | `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
 | `app/parsers.py` | Input parsing and source routing. |
@@ -105,7 +106,7 @@ SQLite tables created by `db.init_db()`:
 | `library_items` | DB-backed library index rows. Each row stores a serialized UI payload in `payload_json`. |
 | `library_scan_state` | Cursor/status values for incremental indexing and cached storage-usage scan state. |
 | `maintenance_runs` | WAL, checkpoint, optimize, compact, and backup run history. |
-| `transfer_targets` | Registered outbound transfer targets with `rclone` or `receiver` kind, base paths, enabled state, copy policy JSON, and Receiver URL/token when applicable. |
+| `transfer_targets` | Registered outbound transfer targets with `local_mount`, `rclone`, or `receiver` kind, base paths, enabled state, copy policy JSON, and Receiver URL/token when applicable. |
 | `subscriptions` | YouTube subscription sources and scheduling metadata. Manual `check now` and the subscription check scheduler update these rows. |
 | `subscription_items` | Discovered/queued/download state model for YouTube subscription media. Manual/scheduled discovery and the subscription download worker update these rows. |
 
@@ -229,9 +230,12 @@ Card thumbnail generation:
 Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
+- for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
 - for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
+- `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs` are the settings-pane-only `/data` root clone flow for `local_mount` targets; they do not accept browser-controlled source paths and copy `/data` contents into the selected target/subfolder
+- local mount targets copy with Python filesystem helpers to registered `/data_remote` target bases, using temp files and rename, skipping existing files by default, and recording target-relative manifest entries
 - rclone targets use argv lists built from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
 - HugCivi Receiver targets create a remote receive job, upload matching files by HTTP, then mark the PC-side job done or failed; Receiver tokens are used only in headers and are not logged or copied into job payloads
 - `app/main.py` runs the selected transfer backend through the internal job handler, writes the SQLite job log, and records a manifest under `/config/transfer-manifests`
@@ -287,7 +291,7 @@ Main API groups:
 | Settings | `/settings` |
 | Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
-| Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/preflight`, `/api/transfer/jobs` |
+| Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
@@ -310,8 +314,8 @@ Important invariants for future changes:
 - `/data` root itself is not downloadable as a ZIP and cannot be renamed, moved, or deleted.
 - Symlink folders are not accepted as archive roots. ZIP preflight rejects symlinks that leave `/data`.
 - Internal jobs must not be enqueued into the external download scheduler.
-- Transfer is copy-only outbound work: jobs must use registered target IDs, validated `/data` source paths, target allowed source prefixes, and argv-list subprocess execution.
-- Transfer target rows store copy policy and either rclone remote names or Receiver URL/token. rclone credentials belong in `/config/rclone/rclone.conf`; Receiver tokens must not be returned in list/job payloads or logs.
+- Transfer is copy-only outbound work: jobs must use registered target IDs, validated `/data` source paths, and target allowed source prefixes. Browser payloads must not include modes, raw host paths, remotes, credentials, or command arguments.
+- Transfer target rows store copy policy and local mount paths, rclone remote names, or Receiver URL/token. `/data_remote` must not overlap `/data`; rclone credentials belong in `/config/rclone/rclone.conf`; Receiver tokens must not be returned in list/job payloads or logs.
 - External download jobs must keep `job_kind='download'`.
 - YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.

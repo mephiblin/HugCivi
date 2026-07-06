@@ -122,6 +122,7 @@ MEDIA_THUMBNAIL_CACHE_DIR = MEDIA_CACHE_DIR / "thumbnails"
 CHROME_EXTENSION_DIR = Path(os.getenv("HUGCIVI_CHROME_EXTENSION_DIR", str(BASE_DIR.parent / "chrome-extension")))
 STARTUP_CONFIG_PATH = Path(os.getenv("HUGCIVI_STARTUP_CONFIG_FILE", str(db.DB_PATH.parent / "startup.env")))
 TRANSFER_MANIFEST_DIR = Path(os.getenv("TRANSFER_MANIFEST_DIR", str(db.DB_PATH.parent / "transfer-manifests")))
+DATA_REMOTE_ROOT = transfer.data_remote_dir()
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 security = HTTPBasic()
@@ -156,6 +157,7 @@ INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
 INTERNAL_JOB_MEDIA_POSTER = "media_poster"
 INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL = "media_thumbnail_backfill"
 INTERNAL_JOB_TRANSFER_COPY = "transfer_copy"
+TARGET_KIND_LOCAL_MOUNT = transfer.TARGET_KIND_LOCAL_MOUNT
 TRANSFER_COPY_SEMAPHORE = threading.BoundedSemaphore(transfer.transfer_max_concurrent())
 JOB_LIST_PAGE_SIZE = 50
 LIBRARY_PAGE_SIZE = 50
@@ -765,6 +767,36 @@ def api_transfer_receiver_tree(
     return JSONResponse({"ok": True, "target": transfer_target_payload(target), **tree})
 
 
+@app.get("/api/transfer/targets/{target_id}/local-mount/tree")
+def api_transfer_local_mount_tree(
+    target_id: int,
+    path: str = "",
+    limit: int = 500,
+    cursor: str | None = None,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    target = db.get_transfer_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if transfer_target_kind(target) != TARGET_KIND_LOCAL_MOUNT:
+        raise HTTPException(status_code=400, detail="연결 폴더 대상만 탐색할 수 있습니다.")
+    try:
+        clean_path = transfer.validate_destination_subpath(path)
+        transfer.ensure_data_remote_is_separate(data_root=DATA_ROOT, data_remote_root=DATA_REMOTE_ROOT)
+        tree = transfer.local_mount_tree(
+            str(target.get("remote_path") or ""),
+            path=clean_path,
+            limit=limit,
+            cursor=cursor,
+            data_remote_root=DATA_REMOTE_ROOT,
+        )
+        if not clean_path and isinstance(tree.get("root"), dict):
+            tree["root"]["name"] = str(target.get("name") or "연결 폴더")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "target": transfer_target_payload(target), **tree})
+
+
 @app.post("/api/transfer/preflight")
 async def api_transfer_preflight(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     payload = await request.json()
@@ -797,11 +829,8 @@ async def api_create_transfer_job(request: Request, _: str = Depends(require_aut
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job_payload = {
         "target_id": int(target["id"]),
-        "target_name": target["name"],
         "source_path": relative_path,
         "destination_subpath": destination_subpath,
-        "destination": preflight["destination"],
-        "policy": target_policy(target),
     }
     job_id = db.create_internal_job(
         INTERNAL_JOB_TRANSFER_COPY,
@@ -814,6 +843,56 @@ async def api_create_transfer_job(request: Request, _: str = Depends(require_aut
         metadata={"transfer_preflight": preflight},
     )
     db.add_job_content_ref(job_id, path=source, role="transfer_source")
+    internal_jobs.enqueue_job(job_id)
+    return JSONResponse({"ok": True, "job": decorate_job(db.get_job(job_id) or {}), "preflight": preflight, **preflight})
+
+
+@app.post("/api/transfer/data-root/preflight")
+async def api_transfer_data_root_preflight(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    target, destination_subpath = transfer_data_root_request_parts(payload)
+    try:
+        preflight = transfer_data_root_preflight_payload(target, destination_subpath)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(
+        {
+            "ok": True,
+            "target": transfer_target_payload(target),
+            "preflight": preflight,
+            **preflight,
+        }
+    )
+
+
+@app.post("/api/transfer/data-root/jobs")
+async def api_create_transfer_data_root_job(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    target, destination_subpath = transfer_data_root_request_parts(payload)
+    try:
+        preflight = transfer_data_root_preflight_payload(target, destination_subpath)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job_payload = {
+        "target_id": int(target["id"]),
+        "destination_subpath": destination_subpath,
+        "data_root_clone": True,
+    }
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_TRANSFER_COPY,
+        input_text="transfer:/data",
+        payload=job_payload,
+        source="transfer",
+        target_dir=str(DATA_ROOT),
+        filename="data",
+        total_bytes=int(preflight["source_bytes"]),
+        metadata={"transfer_preflight": preflight},
+    )
+    db.add_job_content_ref(job_id, path=DATA_ROOT, role="transfer_source")
     internal_jobs.enqueue_job(job_id)
     return JSONResponse({"ok": True, "job": decorate_job(db.get_job(job_id) or {}), "preflight": preflight, **preflight})
 
@@ -1145,17 +1224,22 @@ def transfer_target_fields_from_payload(
     target_kind = transfer.validate_target_kind(target_kind)
     if target_kind == transfer.TARGET_KIND_RCLONE and (not partial or "remote_name" in payload):
         fields["remote_name"] = transfer.validate_remote_name(str(payload.get("remote_name") or ""))
-    elif not partial:
-        fields["remote_name"] = str(payload.get("remote_name") or "").strip()
+    elif not partial or "kind" in payload:
+        fields["remote_name"] = ""
     if "remote_path" in payload or not partial:
-        fields["remote_path"] = transfer.normalize_remote_path(str(payload.get("remote_path") or ""))
+        raw_remote_path = str(payload.get("remote_path") or "")
+        fields["remote_path"] = (
+            transfer.normalize_local_mount_remote_path(raw_remote_path)
+            if target_kind == TARGET_KIND_LOCAL_MOUNT
+            else transfer.normalize_remote_path(raw_remote_path)
+        )
     if target_kind == transfer.TARGET_KIND_RECEIVER and (not partial or "receiver_url" in payload):
         fields["receiver_url"] = transfer.normalize_receiver_url(str(payload.get("receiver_url") or ""))
-    elif "receiver_url" in payload:
+    elif "receiver_url" in payload or "kind" in payload:
         fields["receiver_url"] = ""
     if target_kind == transfer.TARGET_KIND_RECEIVER and "receiver_token" in payload:
         fields["receiver_token"] = str(payload.get("receiver_token") or "").strip()
-    elif not partial or "receiver_token" in payload:
+    elif not partial or "receiver_token" in payload or "kind" in payload:
         fields["receiver_token"] = ""
     if "enabled" in payload:
         fields["enabled"] = bool(payload.get("enabled"))
@@ -1179,6 +1263,8 @@ def validate_transfer_target_update(target: dict[str, Any]) -> None:
     kind = transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE))
     if kind == transfer.TARGET_KIND_RECEIVER:
         transfer.normalize_receiver_url(str(target.get("receiver_url") or ""))
+    elif kind == TARGET_KIND_LOCAL_MOUNT:
+        transfer.normalize_local_mount_remote_path(str(target.get("remote_path") or ""))
     else:
         transfer.validate_remote_name(str(target.get("remote_name") or ""))
 
@@ -1218,14 +1304,15 @@ def transfer_target_payload(target: dict[str, Any] | None) -> dict[str, Any] | N
     if target is None:
         return None
     policy = target_policy(target)
+    kind = transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE))
     return {
         "id": int(target["id"]),
-        "kind": transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE)),
+        "kind": kind,
         "name": str(target.get("name") or ""),
-        "remote_name": str(target.get("remote_name") or ""),
+        "remote_name": str(target.get("remote_name") or "") if kind == transfer.TARGET_KIND_RCLONE else "",
         "remote_path": str(target.get("remote_path") or ""),
-        "receiver_url": str(target.get("receiver_url") or ""),
-        "receiver_token_set": bool(target.get("receiver_token")),
+        "receiver_url": str(target.get("receiver_url") or "") if kind == transfer.TARGET_KIND_RECEIVER else "",
+        "receiver_token_set": bool(target.get("receiver_token")) if kind == transfer.TARGET_KIND_RECEIVER else False,
         "enabled": bool(target.get("enabled")),
         "policy": policy,
         "created_at": target.get("created_at"),
@@ -1269,6 +1356,30 @@ def transfer_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], Pat
     return target, source, relative_data_path(source), destination_subpath
 
 
+def transfer_data_root_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    forbidden = copy_forbidden_fields(payload)
+    allowed_request_fields = {"target_id", "destination_subpath"}
+    forbidden.extend(sorted(set(payload) - allowed_request_fields))
+    if forbidden:
+        raise HTTPException(status_code=400, detail="전송은 복사만 지원합니다.")
+    try:
+        target_id = int(payload.get("target_id"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="전송 대상을 선택하세요.") from exc
+    target = db.get_transfer_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if not bool(target.get("enabled")):
+        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
+    if transfer_target_kind(target) != TARGET_KIND_LOCAL_MOUNT:
+        raise HTTPException(status_code=400, detail="/data 전체 복제는 연결 폴더 대상만 지원합니다.")
+    try:
+        destination_subpath = transfer.validate_destination_subpath(str(payload.get("destination_subpath") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return target, destination_subpath
+
+
 def transfer_source_path(path: str, target: dict[str, Any]) -> Path:
     source = existing_data_path(path)
     ensure_downloadable_path(source)
@@ -1294,6 +1405,52 @@ def path_is_under_prefix(path: str, prefix: str) -> bool:
     )
 
 
+def data_root_clone_policy(target: dict[str, Any]) -> dict[str, Any]:
+    policy = target_policy(target)
+    return transfer.sanitize_policy(
+        {
+            "bwlimit": policy.get("bwlimit", ""),
+            "checkers": policy.get("checkers", 2),
+            "include_patterns": [],
+            "preserve_folder_name": False,
+            "require_check": False,
+            "skip_existing": policy.get("skip_existing", True),
+            "transfers": policy.get("transfers", 1),
+        }
+    )
+
+
+def transfer_data_root_preflight_payload(target: dict[str, Any], destination_subpath: str) -> dict[str, Any]:
+    if transfer_target_kind(target) != TARGET_KIND_LOCAL_MOUNT:
+        raise ValueError("/data 전체 복제는 연결 폴더 대상만 지원합니다.")
+    policy = data_root_clone_policy(target)
+    local_preflight = transfer.local_mount_preflight(
+        DATA_ROOT,
+        remote_path=str(target.get("remote_path") or ""),
+        destination_subpath=destination_subpath,
+        policy=policy,
+        data_root=DATA_ROOT,
+        data_remote_root=DATA_REMOTE_ROOT,
+        allow_data_root=True,
+    )
+    file_count = int(local_preflight["file_count"])
+    source_bytes = int(local_preflight["source_bytes"])
+    destination_path = str(local_preflight.get("destination_path") or "")
+    return {
+        "source_path": "",
+        "source_kind": "folder",
+        "source_name": "/data",
+        "source_bytes": source_bytes,
+        "source_human": human_bytes(source_bytes),
+        "file_count": file_count,
+        "destination": local_mount_display_destination(target, destination_path),
+        "destination_subpath": destination_subpath,
+        "include_patterns": [],
+        "skip_existing": bool(policy.get("skip_existing", True)),
+        "data_root_clone": True,
+    }
+
+
 def transfer_preflight_payload(
     source: Path,
     target: dict[str, Any],
@@ -1305,7 +1462,8 @@ def transfer_preflight_payload(
     file_count, source_bytes = transfer_source_stats(source, policy)
     if file_count <= 0:
         raise HTTPException(status_code=400, detail="전송할 파일이 없습니다.")
-    if transfer_target_kind(target) == transfer.TARGET_KIND_RECEIVER:
+    kind = transfer_target_kind(target)
+    if kind == transfer.TARGET_KIND_RECEIVER:
         destination_path = transfer.build_receiver_destination_path(
             source,
             remote_path=str(target.get("remote_path") or ""),
@@ -1313,6 +1471,19 @@ def transfer_preflight_payload(
             preserve_folder_name=bool(policy.get("preserve_folder_name", True)),
         )
         destination = f"receiver:/{destination_path}" if destination_path else "receiver:/"
+    elif kind == TARGET_KIND_LOCAL_MOUNT:
+        local_preflight = transfer.local_mount_preflight(
+            relative_path or relative_data_path(source),
+            remote_path=str(target.get("remote_path") or ""),
+            destination_subpath=destination_subpath,
+            policy=policy,
+            data_root=DATA_ROOT,
+            data_remote_root=DATA_REMOTE_ROOT,
+        )
+        file_count = int(local_preflight["file_count"])
+        source_bytes = int(local_preflight["source_bytes"])
+        destination_path = str(local_preflight.get("destination_path") or "")
+        destination = local_mount_display_destination(target, destination_path)
     else:
         destination = transfer.build_remote_destination(
             source,
@@ -1370,6 +1541,11 @@ def fetch_receiver_tree(target: dict[str, Any], path: str) -> dict[str, Any]:
         "root": root,
         "children": children,
     }
+
+
+def local_mount_display_destination(target: dict[str, Any], destination_path: str) -> str:
+    target_name = str(target.get("name") or "연결 폴더").strip() or "연결 폴더"
+    return f"{target_name}/{destination_path}" if destination_path else target_name
 
 
 def transfer_source_stats(source: Path, policy: dict[str, Any]) -> tuple[int, int]:
@@ -4900,6 +5076,7 @@ def require_archive_job(job_id: int) -> dict[str, Any]:
 
 def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
     payload = db.parse_internal_job_payload(job)
+    data_root_clone = bool(payload.get("data_root_clone"))
     source_path = str(payload.get("source_path") or "")
     target_id = int(payload.get("target_id") or 0)
     target = db.get_transfer_target(target_id)
@@ -4907,28 +5084,58 @@ def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
         raise ValueError("transfer target not found")
     if not bool(target.get("enabled")):
         raise ValueError("transfer target disabled")
-    source = transfer_source_path(source_path, target)
     destination_subpath = transfer.validate_destination_subpath(str(payload.get("destination_subpath") or ""))
-    policy = target_policy(target)
-    preflight = transfer_preflight_payload(
-        source,
-        target,
-        destination_subpath,
-        relative_path=relative_data_path(source),
-    )
+    kind = transfer_target_kind(target)
+    if data_root_clone:
+        if kind != TARGET_KIND_LOCAL_MOUNT:
+            raise ValueError("data root clone requires a local mount target")
+        source = DATA_ROOT
+        policy = data_root_clone_policy(target)
+        preflight = transfer_data_root_preflight_payload(target, destination_subpath)
+        source_filename = "data"
+    else:
+        source = transfer_source_path(source_path, target)
+        policy = target_policy(target)
+        preflight = transfer_preflight_payload(
+            source,
+            target,
+            destination_subpath,
+            relative_path=relative_data_path(source),
+        )
+        source_filename = source.name
     db.update_job(
         job_id,
         target_dir=str(source),
-        filename=source.name,
+        filename=source_filename,
         progress_bytes=0,
         total_bytes=int(preflight["source_bytes"]),
         metadata_json=json.dumps({"transfer_preflight": preflight}, ensure_ascii=False),
     )
     with TRANSFER_COPY_SEMAPHORE:
-        if transfer_target_kind(target) == transfer.TARGET_KIND_RECEIVER:
+        if kind == transfer.TARGET_KIND_RECEIVER:
             db.append_log(job_id, "receiver copy started")
             receiver_result = run_receiver_transfer(job_id, source, target, destination_subpath, preflight, policy)
             manifest_path = write_transfer_manifest(job_id, preflight, receiver=receiver_result)
+        elif kind == TARGET_KIND_LOCAL_MOUNT:
+            db.append_log(job_id, "local mount copy started")
+            local_mount_result = transfer.copy_to_local_mount(
+                source if data_root_clone else relative_data_path(source),
+                remote_path=str(target.get("remote_path") or ""),
+                destination_subpath=destination_subpath,
+                policy=policy,
+                data_root=DATA_ROOT,
+                data_remote_root=DATA_REMOTE_ROOT,
+                job_id=job_id,
+                log=lambda message: db.append_log(job_id, message),
+                progress=lambda completed, total: db.update_job(
+                    job_id,
+                    progress_bytes=completed,
+                    total_bytes=int(preflight.get("source_bytes") or total or 0),
+                ),
+                control_check=lambda: internal_jobs.check_job_control(job_id),
+                allow_data_root=data_root_clone,
+            )
+            manifest_path = write_transfer_manifest(job_id, preflight, local_mount=local_mount_result)
         else:
             command = transfer.build_rclone_copy_command(
                 source,
@@ -5154,6 +5361,7 @@ def write_transfer_manifest(
     preflight: dict[str, Any],
     command: list[str] | None = None,
     receiver: dict[str, Any] | None = None,
+    local_mount: dict[str, Any] | None = None,
 ) -> Path:
     TRANSFER_MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     manifest_path = TRANSFER_MANIFEST_DIR / f"transfer-{job_id}.json"
@@ -5166,6 +5374,8 @@ def write_transfer_manifest(
         manifest["command"] = [transfer.redact_transfer_output(part) for part in command]
     if receiver is not None:
         manifest["receiver"] = receiver
+    if local_mount is not None:
+        manifest["local_mount"] = local_mount
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_path
 

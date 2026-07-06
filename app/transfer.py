@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+import fnmatch
 import os
 import re
+import shutil
+import uuid
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping
 from urllib.parse import urlparse
 
 from .utils import redact_sensitive_text
 
 DEFAULT_RCLONE_CONFIG = "/config/rclone/rclone.conf"
+DEFAULT_DATA_ROOT = "/data"
+DEFAULT_DATA_REMOTE_DIR = "/data_remote"
 TARGET_KIND_RCLONE = "rclone"
 TARGET_KIND_RECEIVER = "receiver"
+TARGET_KIND_LOCAL_MOUNT = "local_mount"
 TRANSFER_DEFAULT_TRANSFERS = 1
 TRANSFER_DEFAULT_CHECKERS = 2
 TRANSFER_DEFAULT_BWLIMIT = "40M"
@@ -32,6 +39,7 @@ _POLICY_KEYS = {
     "include_patterns",
     "preserve_folder_name",
     "require_check",
+    "skip_existing",
     "transfers",
 }
 _COPY_ESCAPE_KEYS = {
@@ -59,9 +67,16 @@ _COPY_ESCAPE_KEYS = {
 _COPY_ESCAPE_VALUES = {"delete", "delete-after", "delete-before", "delete-during", "move", "sync"}
 
 
+@dataclass(frozen=True)
+class _TransferSourceFile:
+    path: Path
+    relative_path: Path
+    size_bytes: int
+
+
 def validate_target_kind(value: str | None) -> str:
     kind = str(value or TARGET_KIND_RCLONE).strip().lower()
-    if kind not in {TARGET_KIND_RCLONE, TARGET_KIND_RECEIVER}:
+    if kind not in {TARGET_KIND_RCLONE, TARGET_KIND_RECEIVER, TARGET_KIND_LOCAL_MOUNT}:
         raise ValueError("Unsupported transfer target type")
     return kind
 
@@ -102,6 +117,311 @@ def validate_destination_subpath(value: str | None) -> str:
     if "\\" in str(value):
         raise ValueError("Destination subpath must use forward slashes")
     return normalize_remote_path(str(value))
+
+
+def data_root_dir(value: str | Path | None = None) -> Path:
+    candidate = value if value is not None else os.getenv("DATA_ROOT")
+    return Path(str(candidate or "").strip() or DEFAULT_DATA_ROOT)
+
+
+def data_remote_dir(value: str | Path | None = None) -> Path:
+    candidate = value if value is not None else os.getenv("DATA_REMOTE_DIR")
+    return Path(str(candidate or "").strip() or DEFAULT_DATA_REMOTE_DIR)
+
+
+def ensure_data_remote_is_separate(
+    *,
+    data_root: str | Path | None = None,
+    data_remote_root: str | Path | None = None,
+) -> None:
+    data_root_resolved = data_root_dir(data_root).resolve(strict=False)
+    data_remote_resolved = data_remote_dir(data_remote_root).resolve(strict=False)
+    if data_root_resolved == data_remote_resolved:
+        raise ValueError("data_remote must be separate from data root")
+    if data_root_resolved in data_remote_resolved.parents or data_remote_resolved in data_root_resolved.parents:
+        raise ValueError("data_remote must not overlap data root")
+
+
+def normalize_local_mount_remote_path(value: str | None) -> str:
+    return _normalize_strict_relative_path(value, "Local mount path", allow_empty=False)
+
+
+def resolve_data_source_path(
+    source_path: str | Path,
+    *,
+    data_root: str | Path | None = None,
+    allow_data_root: bool = False,
+) -> Path:
+    root = data_root_dir(data_root)
+    root_resolved = root.resolve(strict=False)
+    raw_path = Path(source_path)
+    if raw_path.is_absolute():
+        candidate = raw_path
+    else:
+        candidate = _join_relative(
+            root,
+            _normalize_strict_relative_path(str(source_path), "Source path", allow_empty=allow_data_root),
+        )
+
+    resolved = candidate.resolve(strict=False)
+    if resolved == root_resolved and not allow_data_root:
+        raise ValueError("Transfer source must not be the data root")
+    _ensure_resolved_inside(resolved, root_resolved, "Transfer source escapes data root")
+    if not candidate.exists():
+        raise ValueError("Transfer source does not exist")
+    if candidate.is_symlink():
+        raise ValueError("Transfer source must not be a symlink")
+    _reject_symlink_components(candidate, root, "Transfer source must not traverse symlinks")
+    if not candidate.is_file() and not candidate.is_dir():
+        raise ValueError("Transfer source must be an existing file or directory")
+    return candidate
+
+
+def relative_data_source_path(source: str | Path, *, data_root: str | Path | None = None) -> str:
+    root = data_root_dir(data_root).resolve(strict=False)
+    path = Path(source).resolve(strict=False)
+    _ensure_resolved_inside(path, root, "Transfer source escapes data root")
+    return "" if path == root else path.relative_to(root).as_posix()
+
+
+def resolve_local_mount_base(
+    remote_path: str | None,
+    *,
+    data_remote_root: str | Path | None = None,
+    require_exists: bool = False,
+) -> Path:
+    root = data_remote_dir(data_remote_root)
+    root_resolved = root.resolve(strict=False)
+    normalized = normalize_local_mount_remote_path(remote_path)
+    base = _join_relative(root, normalized)
+    base_resolved = base.resolve(strict=False)
+    if base_resolved == root_resolved:
+        raise ValueError("Local mount target must not be the data_remote root")
+    _reject_symlink_components(base, root, "Local mount target must not traverse symlinks")
+    _ensure_resolved_inside(base_resolved, root_resolved, "Local mount target escapes data_remote root")
+    if require_exists:
+        if not base.exists():
+            raise ValueError("Local mount target folder does not exist")
+        if base.is_symlink():
+            raise ValueError("Local mount target folder must not be a symlink")
+        if not base.is_dir():
+            raise ValueError("Local mount target must be a folder")
+    return base
+
+
+def resolve_local_mount_destination(
+    remote_path: str | None,
+    destination_subpath: str | None = "",
+    *,
+    data_remote_root: str | Path | None = None,
+    require_exists: bool = False,
+) -> Path:
+    base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
+    subpath = validate_destination_subpath(destination_subpath)
+    destination = _join_relative(base, subpath) if subpath else base
+    destination_resolved = destination.resolve(strict=False)
+    base_resolved = base.resolve(strict=False)
+    _ensure_resolved_inside(destination_resolved, base_resolved, "Local mount destination escapes target base")
+    _reject_symlink_components(destination, base, "Local mount destination must not traverse symlinks")
+    if require_exists:
+        if not destination.exists():
+            raise ValueError("Local mount destination folder does not exist")
+        if destination.is_symlink():
+            raise ValueError("Local mount destination folder must not be a symlink")
+        if not destination.is_dir():
+            raise ValueError("Local mount destination must be a folder")
+    return destination
+
+
+def build_local_mount_destination_path(
+    source: str | Path,
+    *,
+    destination_subpath: str | None = "",
+    preserve_folder_name: bool = True,
+) -> str:
+    subpath = validate_destination_subpath(destination_subpath)
+    source_path = Path(source)
+    path_parts = [subpath] if subpath else []
+    if source_path.is_file() or preserve_folder_name:
+        path_parts.append(_safe_source_name(source_path))
+    return "/".join(part for part in path_parts if part)
+
+
+def local_mount_tree(
+    remote_path: str | None,
+    *,
+    path: str | None = "",
+    limit: int = 500,
+    cursor: str | None = None,
+    data_remote_root: str | Path | None = None,
+) -> dict[str, Any]:
+    base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
+    clean_path = validate_destination_subpath(path)
+    root_path = resolve_local_mount_destination(
+        remote_path,
+        clean_path,
+        data_remote_root=data_remote_root,
+        require_exists=True,
+    )
+    child_limit = _bounded_limit(limit, default=500, maximum=500)
+    children = _direct_local_mount_child_dirs(root_path)
+
+    start_index = 0
+    if cursor:
+        for index, child in enumerate(children):
+            if child.name == cursor:
+                start_index = index + 1
+                break
+        else:
+            raise ValueError("Local mount tree cursor was not found")
+
+    page = children[start_index : start_index + child_limit]
+    has_more = start_index + child_limit < len(children)
+    child_payloads = [_local_mount_child_payload(child, base) for child in page]
+    root_payload = {
+        "name": root_path.name if clean_path else "",
+        "path": clean_path,
+        "kind": "directory",
+        "has_children": bool(children),
+        "children_loaded": not has_more,
+        "children": child_payloads,
+    }
+    return {
+        "path": clean_path,
+        "root": root_payload,
+        "children": child_payloads,
+        "items": child_payloads,
+        "limit": child_limit,
+        "next_cursor": page[-1].name if has_more and page else None,
+        "has_more": has_more,
+    }
+
+
+def local_mount_preflight(
+    source_path: str | Path,
+    *,
+    remote_path: str | None,
+    destination_subpath: str | None = "",
+    policy: Mapping[str, Any] | None = None,
+    data_root: str | Path | None = None,
+    data_remote_root: str | Path | None = None,
+    allow_data_root: bool = False,
+) -> dict[str, Any]:
+    clean_policy = sanitize_policy(policy)
+    ensure_data_remote_is_separate(data_root=data_root, data_remote_root=data_remote_root)
+    source = resolve_data_source_path(source_path, data_root=data_root, allow_data_root=allow_data_root)
+    base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
+    destination_root_relative = build_local_mount_destination_path(
+        source,
+        destination_subpath=destination_subpath,
+        preserve_folder_name=bool(clean_policy["preserve_folder_name"]),
+    )
+    destination_root = _join_relative(base, destination_root_relative) if destination_root_relative else base
+    _ensure_local_mount_destination_parent(destination_root, base, source_is_file=source.is_file())
+    _ensure_writable_destination(destination_root, base=base, source_is_file=source.is_file())
+
+    files = list(_iter_transfer_source_files(source, clean_policy))
+    if not files:
+        raise ValueError("No files match the local mount transfer policy")
+    source_bytes = sum(item.size_bytes for item in files)
+    return {
+        "kind": TARGET_KIND_LOCAL_MOUNT,
+        "source_path": relative_data_source_path(source, data_root=data_root),
+        "source_kind": "folder" if source.is_dir() else "file",
+        "source_name": source.name,
+        "source_bytes": source_bytes,
+        "file_count": len(files),
+        "destination": f"local_mount:/{destination_root_relative}" if destination_root_relative else "local_mount:/",
+        "destination_subpath": validate_destination_subpath(destination_subpath),
+        "destination_path": destination_root_relative,
+        "target_base": normalize_local_mount_remote_path(remote_path),
+        "include_patterns": list(clean_policy.get("include_patterns") or []),
+        "skip_existing": bool(clean_policy.get("skip_existing", True)),
+    }
+
+
+def copy_to_local_mount(
+    source_path: str | Path,
+    *,
+    remote_path: str | None,
+    destination_subpath: str | None = "",
+    policy: Mapping[str, Any] | None = None,
+    data_root: str | Path | None = None,
+    data_remote_root: str | Path | None = None,
+    job_id: int | str | None = None,
+    log: Callable[[str], None] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    control_check: Callable[[], None] | None = None,
+    allow_data_root: bool = False,
+) -> dict[str, Any]:
+    clean_policy = sanitize_policy(policy)
+    ensure_data_remote_is_separate(data_root=data_root, data_remote_root=data_remote_root)
+    source = resolve_data_source_path(source_path, data_root=data_root, allow_data_root=allow_data_root)
+    base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
+    destination_root_relative = build_local_mount_destination_path(
+        source,
+        destination_subpath=destination_subpath,
+        preserve_folder_name=bool(clean_policy["preserve_folder_name"]),
+    )
+    destination_root = _join_relative(base, destination_root_relative) if destination_root_relative else base
+    _ensure_local_mount_destination_parent(destination_root, base, source_is_file=source.is_file())
+    _ensure_writable_destination(destination_root, base=base, source_is_file=source.is_file())
+
+    files = list(_iter_transfer_source_files(source, clean_policy))
+    if not files:
+        raise ValueError("No files match the local mount transfer policy")
+
+    skip_existing = bool(clean_policy.get("skip_existing", True))
+    copied_bytes = 0
+    skipped_bytes = 0
+    completed_bytes = 0
+    total_bytes = sum(item.size_bytes for item in files)
+    entries: list[dict[str, Any]] = []
+    for item in files:
+        if control_check is not None:
+            control_check()
+        destination_file = destination_root if source.is_file() else destination_root / item.relative_path
+        action = _copy_source_file_to_local_mount(
+            item.path,
+            destination_file,
+            base=base,
+            job_id=job_id,
+            skip_existing=skip_existing,
+        )
+        target_relative = _relative_to_base(destination_file, base)
+        entry = {
+            "source_path": relative_data_source_path(item.path, data_root=data_root),
+            "destination_path": target_relative,
+            "bytes": item.size_bytes,
+            "action": action,
+        }
+        if action == "copied":
+            copied_bytes += item.size_bytes
+            if log is not None:
+                log(f"local_mount copied: {target_relative}")
+        else:
+            skipped_bytes += item.size_bytes
+            if log is not None:
+                log(f"local_mount skipped existing: {target_relative}")
+        entries.append(entry)
+        completed_bytes += item.size_bytes
+        if progress is not None:
+            progress(completed_bytes, total_bytes)
+
+    copied_files = sum(1 for entry in entries if entry.get("action") == "copied")
+    skipped_files = sum(1 for entry in entries if entry.get("action") == "skipped_existing")
+    return {
+        "kind": TARGET_KIND_LOCAL_MOUNT,
+        "target_base": normalize_local_mount_remote_path(remote_path),
+        "destination_path": destination_root_relative,
+        "source_path": relative_data_source_path(source, data_root=data_root),
+        "file_count": len(files),
+        "copied_files": copied_files,
+        "skipped_files": skipped_files,
+        "copied_bytes": copied_bytes,
+        "skipped_bytes": skipped_bytes,
+        "entries": entries,
+    }
 
 
 def rclone_config_path(value: str | None = None) -> str:
@@ -174,6 +494,7 @@ def sanitize_policy(policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
         "include_patterns": include_patterns,
         "preserve_folder_name": _bool_value(raw_policy.get("preserve_folder_name"), default=True),
         "require_check": _bool_value(raw_policy.get("require_check"), default=False),
+        "skip_existing": _bool_value(raw_policy.get("skip_existing"), default=True),
         "transfers": _positive_int(raw_policy.get("transfers"), transfers_default, maximum=TRANSFER_MAX_TRANSFERS),
     }
 
@@ -332,6 +653,241 @@ def _bool_value(value: Any, *, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return default
+
+
+def _normalize_strict_relative_path(value: str | None, label: str, *, allow_empty: bool) -> str:
+    text = str(value or "").strip()
+    if "\\" in text:
+        raise ValueError(f"{label} must use forward slashes")
+    if not text or text == ".":
+        if allow_empty:
+            return ""
+        raise ValueError(f"{label} is required")
+    if text.startswith("/") or text.startswith("~"):
+        raise ValueError(f"{label} must be relative")
+
+    parts: list[str] = []
+    for raw_segment in text.split("/"):
+        segment = raw_segment.strip()
+        if segment in {"", "."}:
+            continue
+        if segment == "..":
+            raise ValueError(f"{label} must not contain '..'")
+        if "\x00" in segment or ":" in segment:
+            raise ValueError(f"{label} contains an unsafe segment")
+        parts.append(segment)
+    if not parts and not allow_empty:
+        raise ValueError(f"{label} is required")
+    return "/".join(parts)
+
+
+def _join_relative(root: Path, relative_path: str) -> Path:
+    current = root
+    for segment in str(relative_path or "").split("/"):
+        if segment:
+            current = current / segment
+    return current
+
+
+def _ensure_resolved_inside(path: Path, root: Path, message: str) -> None:
+    if path == root:
+        return
+    if root not in path.parents:
+        raise ValueError(message)
+
+
+def _reject_symlink_components(path: Path, root: Path, message: str) -> None:
+    try:
+        relative_parts = path.relative_to(root).parts
+    except ValueError:
+        try:
+            relative_parts = path.resolve(strict=False).relative_to(root.resolve(strict=False)).parts
+        except ValueError:
+            return
+
+    if root.exists() and root.is_symlink():
+        raise ValueError(message)
+
+    current = root
+    for part in relative_parts:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise ValueError(message)
+        if not current.exists():
+            break
+
+
+def _bounded_limit(value: Any, *, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(maximum, parsed))
+
+
+def _direct_local_mount_child_dirs(path: Path) -> list[Path]:
+    children: list[Path] = []
+    try:
+        entries = list(path.iterdir())
+    except OSError as exc:
+        raise ValueError(f"Local mount folder cannot be listed: {exc}") from exc
+    for entry in entries:
+        try:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                children.append(entry)
+        except OSError:
+            continue
+    return sorted(children, key=lambda child: child.name.lower())
+
+
+def _local_mount_child_payload(path: Path, base: Path) -> dict[str, Any]:
+    has_children = _local_mount_has_child_dirs(path)
+    return {
+        "name": path.name,
+        "path": _relative_to_base(path, base),
+        "kind": "directory",
+        "has_children": has_children,
+        "children_loaded": not has_children,
+    }
+
+
+def _local_mount_has_child_dirs(path: Path) -> bool:
+    try:
+        for entry in path.iterdir():
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+def _ensure_local_mount_destination_parent(destination: Path, base: Path, *, source_is_file: bool) -> None:
+    base_resolved = base.resolve(strict=False)
+    target = destination.parent if source_is_file else destination
+    target_resolved = target.resolve(strict=False)
+    _ensure_resolved_inside(target_resolved, base_resolved, "Local mount destination escapes target base")
+    _reject_symlink_components(target, base, "Local mount destination must not traverse symlinks")
+    if target.exists() and not target.is_dir():
+        raise ValueError("Local mount destination parent is not a folder")
+    existing = _nearest_existing_directory(target, base)
+    _reject_symlink_components(existing, base, "Local mount destination must not traverse symlinks")
+
+
+def _ensure_writable_destination(destination: Path, *, base: Path, source_is_file: bool) -> None:
+    target = destination.parent if source_is_file else destination
+    existing = _nearest_existing_directory(target, base)
+    if not os.access(existing, os.W_OK | os.X_OK):
+        raise ValueError("Local mount destination is not writable")
+
+
+def _nearest_existing_directory(path: Path, stop: Path) -> Path:
+    current = path
+    while True:
+        if current.exists():
+            if not current.is_dir():
+                raise ValueError("Local mount destination parent is not a folder")
+            return current
+        if current == stop or current.parent == current:
+            return stop
+        current = current.parent
+
+
+def _iter_transfer_source_files(source: Path, policy: Mapping[str, Any]) -> Iterator[_TransferSourceFile]:
+    include_patterns = [str(pattern) for pattern in policy.get("include_patterns") or []]
+    if source.is_file():
+        if include_patterns and not _matches_include(source, source.name, include_patterns):
+            return
+        yield _TransferSourceFile(source, Path(source.name), source.stat().st_size)
+        return
+
+    stack: list[tuple[Path, Path]] = [(source, Path(""))]
+    while stack:
+        current, relative_parent = stack.pop()
+        try:
+            entries = sorted(current.iterdir(), key=lambda child: child.name.lower())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_symlink():
+                    continue
+                relative_path = relative_parent / entry.name
+                if entry.is_dir():
+                    stack.append((entry, relative_path))
+                    continue
+                if not entry.is_file():
+                    continue
+                relative_name = relative_path.as_posix()
+                if include_patterns and not _matches_include(entry, relative_name, include_patterns):
+                    continue
+                yield _TransferSourceFile(entry, relative_path, entry.stat().st_size)
+            except OSError:
+                continue
+
+
+def _matches_include(path: Path, relative_name: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative_name, pattern) for pattern in patterns)
+
+
+def _copy_source_file_to_local_mount(
+    source: Path,
+    destination: Path,
+    *,
+    base: Path,
+    job_id: int | str | None,
+    skip_existing: bool,
+) -> str:
+    base_resolved = base.resolve(strict=False)
+    destination_resolved = destination.resolve(strict=False)
+    _ensure_resolved_inside(destination_resolved, base_resolved, "Local mount destination escapes target base")
+    _reject_symlink_components(destination.parent, base, "Local mount destination must not traverse symlinks")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_components(destination.parent, base, "Local mount destination must not traverse symlinks")
+    if destination.exists():
+        if destination.is_symlink():
+            raise ValueError("Local mount destination file must not be a symlink")
+        if skip_existing:
+            return "skipped_existing"
+        raise ValueError("Local mount destination file already exists")
+
+    temp_path = _temporary_destination_path(destination, job_id)
+    try:
+        with source.open("rb") as source_handle, temp_path.open("xb") as temp_handle:
+            shutil.copyfileobj(source_handle, temp_handle, length=1024 * 1024)
+        try:
+            shutil.copystat(source, temp_path, follow_symlinks=False)
+        except OSError:
+            pass
+        if destination.exists():
+            if skip_existing:
+                return "skipped_existing"
+            raise ValueError("Local mount destination file already exists")
+        temp_path.rename(destination)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return "copied"
+
+
+def _temporary_destination_path(destination: Path, job_id: int | str | None) -> Path:
+    job_part = str(job_id or "copy").strip() or "copy"
+    token = uuid.uuid4().hex
+    return destination.with_name(f".{destination.name}.part.{job_part}.{token}.tmp")
+
+
+def _relative_to_base(path: Path, base: Path) -> str:
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return path.resolve(strict=False).relative_to(base.resolve(strict=False)).as_posix()
 
 
 def _safe_source_name(source: Path) -> str:
