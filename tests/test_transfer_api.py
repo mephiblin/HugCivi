@@ -52,6 +52,23 @@ def create_checkpoint_target(db) -> int:
     )
 
 
+def create_receiver_target(db) -> int:
+    return db.create_transfer_target(
+        name="PC Receiver",
+        kind="receiver",
+        receiver_url="http://receiver.local:8088",
+        receiver_token="receiver-secret",
+        remote_path="checkpoints",
+        policy={
+            "allowed_source_prefixes": ["stable-diffusion/checkpoints"],
+            "include_patterns": ["*.safetensors", "*.ckpt"],
+            "bwlimit": "40M",
+            "transfers": 1,
+            "checkers": 2,
+        },
+    )
+
+
 def test_transfer_preflight_and_job_api_create_internal_job(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     db, main, data_root, _config_root = app_modules
     create_checkpoint_target(db)
@@ -128,6 +145,45 @@ def test_transfer_target_api_create_list_and_rejects_mode(app_modules: tuple) ->
         auth=("admin", "test-password-that-is-long"),
     )
     assert mode_response.status_code == 400
+
+
+def test_receiver_transfer_target_api_hides_token_and_preflights(app_modules: tuple) -> None:
+    _db, main, data_root, _config_root = app_modules
+    source = data_root / "stable-diffusion" / "checkpoints" / "Model.safetensors"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"model")
+    client = TestClient(main.app)
+
+    create_response = client.post(
+        "/api/transfer/targets",
+        json={
+            "name": "PC Receiver",
+            "kind": "receiver",
+            "receiver_url": "http://192.168.0.50:8088",
+            "receiver_token": "receiver-secret",
+            "remote_path": "checkpoints",
+            "policy": {
+                "allowed_source_prefixes": ["stable-diffusion/checkpoints"],
+                "include_patterns": ["*.safetensors"],
+            },
+        },
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert create_response.status_code == 200
+    target = create_response.json()["target"]
+    assert target["kind"] == "receiver"
+    assert target["receiver_url"] == "http://192.168.0.50:8088"
+    assert target["receiver_token_set"] is True
+    assert "receiver-secret" not in json.dumps(create_response.json())
+
+    preflight_response = client.post(
+        "/api/transfer/preflight",
+        json={"target_id": target["id"], "source_path": "stable-diffusion/checkpoints/Model.safetensors"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert preflight_response.status_code == 200
+    assert preflight_response.json()["destination"] == "receiver:/checkpoints/Model.safetensors"
 
 
 def test_transfer_api_rejects_non_copy_mode_and_disallowed_source(app_modules: tuple) -> None:
@@ -242,6 +298,63 @@ def test_transfer_handler_builds_copy_command_and_manifest(app_modules: tuple, m
     assert (config_root / "transfer-manifests" / f"transfer-{job_id}.json").exists()
 
 
+def test_transfer_handler_uploads_to_receiver_and_manifest_hides_token(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, main, data_root, config_root = app_modules
+    target_id = create_receiver_target(db)
+    source = data_root / "stable-diffusion" / "checkpoints" / "Model.ckpt"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object]):
+            self.status_code = 200
+            self._payload = payload
+            self.content = json.dumps(payload).encode("utf-8")
+            self.text = self.content.decode("utf-8")
+            self.reason = "OK"
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class FakeSession:
+        def request(self, method: str, url: str, **kwargs):
+            calls.append({"method": method, "url": url, **kwargs})
+            if url.endswith("/api/jobs"):
+                return FakeResponse({"ok": True, "job": {"id": "receiver-job-1"}})
+            return FakeResponse({"ok": True})
+
+        def post(self, url: str, **kwargs):
+            data = kwargs.get("data")
+            body = data.read() if data is not None else b""
+            calls.append({"method": "POST", "url": url, "body": body, **kwargs})
+            return FakeResponse({"ok": True})
+
+    monkeypatch.setattr(main.requests, "Session", FakeSession)
+    job_id = db.create_internal_job(
+        main.INTERNAL_JOB_TRANSFER_COPY,
+        input_text="transfer:stable-diffusion/checkpoints/Model.ckpt",
+        payload={
+            "target_id": target_id,
+            "source_path": "stable-diffusion/checkpoints/Model.ckpt",
+        },
+        source="transfer",
+    )
+
+    main.run_transfer_copy_job(job_id, db.get_job(job_id) or {})
+
+    assert calls[0]["url"] == "http://receiver.local:8088/api/jobs"
+    assert calls[0]["headers"] == {"X-Receiver-Token": "receiver-secret"}
+    upload_call = next(call for call in calls if str(call["url"]).endswith("/files/checkpoints/Model.ckpt"))
+    assert upload_call["body"] == b"checkpoint"
+    manifest = (config_root / "transfer-manifests" / f"transfer-{job_id}.json").read_text(encoding="utf-8")
+    assert "receiver-job-1" in manifest
+    assert "receiver-secret" not in manifest
+
+
 def test_transfer_handler_rejects_disabled_target_after_queue(app_modules: tuple) -> None:
     db, main, data_root, _config_root = app_modules
     target_id = create_checkpoint_target(db)
@@ -269,6 +382,8 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
 
     assert 'data-settings-pane="settings-transfer"' in template
     assert 'id="transfer-modal"' in template
+    assert 'id="transfer-setting-kind"' in template
+    assert 'id="transfer-setting-receiver-url"' in template
     assert 'data-action="transfer"' in template
     assert "fetch('/api/transfer/targets')" in template
     assert "fetch('/api/transfer/preflight'" in template

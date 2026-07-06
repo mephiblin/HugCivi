@@ -66,8 +66,11 @@ def test_transfer_targets_migration_is_additive(monkeypatch: pytest.MonkeyPatch,
     assert columns == {
         "id",
         "name",
+        "kind",
         "remote_name",
         "remote_path",
+        "receiver_url",
+        "receiver_token",
         "enabled",
         "policy_json",
         "created_at",
@@ -99,6 +102,7 @@ def test_transfer_target_crud_and_policy_round_trip(transfer_db) -> None:
     target = db.get_transfer_target(target_id)
     assert target is not None
     assert target["name"] == "PC ComfyUI Checkpoints"
+    assert target["kind"] == "rclone"
     assert target["remote_name"] == "pc-comfyui"
     assert target["remote_path"] == "ComfyUI/models/checkpoints"
     assert target["enabled"] is True
@@ -126,6 +130,26 @@ def test_transfer_target_crud_and_policy_round_trip(transfer_db) -> None:
     assert db.get_transfer_target(target_id) is None
     assert db.list_transfer_targets() == []
     assert db.delete_transfer_target(target_id) is False
+
+
+def test_receiver_transfer_target_round_trip(transfer_db) -> None:
+    db = transfer_db
+
+    target_id = db.create_transfer_target(
+        name="PC Receiver",
+        kind="receiver",
+        receiver_url="http://192.168.0.50:8088",
+        receiver_token="secret-token",
+        remote_path="checkpoints",
+        policy={"allowed_source_prefixes": ["stable-diffusion/checkpoints"]},
+    )
+
+    target = db.get_transfer_target(target_id)
+    assert target is not None
+    assert target["kind"] == "receiver"
+    assert target["remote_name"] == ""
+    assert target["receiver_url"] == "http://192.168.0.50:8088"
+    assert target["receiver_token"] == "secret-token"
 
 
 def test_transfer_target_policy_json_requires_object(transfer_db) -> None:

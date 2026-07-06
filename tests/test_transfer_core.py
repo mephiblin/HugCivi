@@ -9,12 +9,17 @@ from app.transfer import (
     TRANSFER_MAX_CHECKERS,
     TRANSFER_MAX_CONCURRENT_HARD_LIMIT,
     TRANSFER_MAX_TRANSFERS,
+    TARGET_KIND_RECEIVER,
+    build_receiver_destination_path,
     build_remote_destination,
     build_rclone_copy_command,
+    normalize_receiver_url,
     normalize_remote_path,
+    receiver_timeout_seconds,
     rclone_config_path,
     sanitize_policy,
     transfer_max_concurrent,
+    validate_target_kind,
     validate_destination_subpath,
     validate_remote_name,
 )
@@ -47,6 +52,22 @@ def test_destination_subpath_rejects_escape_inputs() -> None:
     for subpath in ("/absolute", "../escape", "models/../escape", r"models\escape", "other:raw"):
         with pytest.raises(ValueError):
             validate_destination_subpath(subpath)
+
+
+def test_receiver_target_validation_and_destination(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert validate_target_kind("receiver") == TARGET_KIND_RECEIVER
+    assert normalize_receiver_url("http://192.168.0.50:8088/") == "http://192.168.0.50:8088"
+    assert build_receiver_destination_path(
+        Path("/data/stable-diffusion/checkpoints/model.safetensors"),
+        remote_path="checkpoints",
+    ) == "checkpoints/model.safetensors"
+
+    monkeypatch.setenv("TRANSFER_RECEIVER_TIMEOUT_SECONDS", "99999")
+    assert receiver_timeout_seconds() == 3600
+
+    for value in ("ftp://host", "http://user:pass@example.com", "http://host/path?x=1"):
+        with pytest.raises(ValueError):
+            normalize_receiver_url(value)
 
 
 def test_file_source_uses_rclone_copyto(tmp_path: Path) -> None:

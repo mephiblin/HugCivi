@@ -186,8 +186,11 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS transfer_targets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'rclone',
                 remote_name TEXT NOT NULL,
                 remote_path TEXT NOT NULL DEFAULT '',
+                receiver_url TEXT NOT NULL DEFAULT '',
+                receiver_token TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 policy_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
@@ -195,6 +198,7 @@ def init_db() -> None:
             )
             """
         )
+        ensure_transfer_target_columns(conn)
         ensure_subscription_tables(conn)
         conn.commit()
 
@@ -218,6 +222,18 @@ def ensure_job_columns(conn: sqlite3.Connection) -> None:
     for name, sql_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {sql_type}")
+
+
+def ensure_transfer_target_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(transfer_targets)").fetchall()}
+    columns = {
+        "kind": "TEXT NOT NULL DEFAULT 'rclone'",
+        "receiver_url": "TEXT NOT NULL DEFAULT ''",
+        "receiver_token": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, sql_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE transfer_targets ADD COLUMN {name} {sql_type}")
 
 
 def ensure_subscription_tables(conn: sqlite3.Connection) -> None:
@@ -402,32 +418,39 @@ def create_internal_job(
 def create_transfer_target(
     *,
     name: str,
-    remote_name: str,
+    kind: str = "rclone",
+    remote_name: str = "",
     remote_path: str = "",
+    receiver_url: str = "",
+    receiver_token: str = "",
     enabled: bool = True,
     policy: dict[str, Any] | None = None,
     policy_json: str | None = None,
 ) -> int:
     clean_name = str(name).strip()
+    clean_kind = str(kind or "rclone").strip() or "rclone"
     clean_remote_name = str(remote_name).strip()
     if not clean_name:
         raise ValueError("Transfer target name is required")
-    if not clean_remote_name:
+    if clean_kind == "rclone" and not clean_remote_name:
         raise ValueError("Transfer target remote_name is required")
     now = utc_now()
     with _DB_LOCK, connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO transfer_targets (
-                name, remote_name, remote_path, enabled, policy_json,
+                name, kind, remote_name, remote_path, receiver_url, receiver_token, enabled, policy_json,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 clean_name,
+                clean_kind,
                 clean_remote_name,
                 str(remote_path or "").strip(),
+                str(receiver_url or "").strip(),
+                str(receiver_token or "").strip(),
                 1 if enabled else 0,
                 transfer_policy_json(policy=policy, policy_json=policy_json),
                 now,
@@ -454,7 +477,7 @@ def list_transfer_targets(*, include_disabled: bool = True) -> list[dict[str, An
 
 
 def update_transfer_target(target_id: int, **fields: Any) -> bool:
-    allowed = {"name", "remote_name", "remote_path", "enabled"}
+    allowed = {"name", "kind", "remote_name", "remote_path", "receiver_url", "receiver_token", "enabled"}
     clean_fields: dict[str, Any] = {}
     for key in allowed:
         if key not in fields:
@@ -475,7 +498,10 @@ def update_transfer_target(target_id: int, **fields: Any) -> bool:
         return False
     if "name" in clean_fields and not clean_fields["name"]:
         raise ValueError("Transfer target name is required")
-    if "remote_name" in clean_fields and not clean_fields["remote_name"]:
+    current = get_transfer_target(target_id) or {}
+    target_kind = str(clean_fields.get("kind", current.get("kind") or "rclone") or "rclone")
+    target_remote_name = str(clean_fields.get("remote_name", current.get("remote_name") or "") or "")
+    if target_kind == "rclone" and not target_remote_name:
         raise ValueError("Transfer target remote_name is required")
     clean_fields["updated_at"] = utc_now()
     keys = list(clean_fields.keys())
@@ -516,6 +542,7 @@ def transfer_policy_json(
 
 def transfer_target_from_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     target = dict(row)
+    target["kind"] = str(target.get("kind") or "rclone")
     target["enabled"] = bool(target.get("enabled"))
     try:
         policy = json.loads(str(target.get("policy_json") or "{}"))

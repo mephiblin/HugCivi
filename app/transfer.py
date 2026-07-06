@@ -4,13 +4,18 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from .utils import redact_sensitive_text
 
 DEFAULT_RCLONE_CONFIG = "/config/rclone/rclone.conf"
+TARGET_KIND_RCLONE = "rclone"
+TARGET_KIND_RECEIVER = "receiver"
 TRANSFER_DEFAULT_TRANSFERS = 1
 TRANSFER_DEFAULT_CHECKERS = 2
 TRANSFER_DEFAULT_BWLIMIT = "40M"
+TRANSFER_RECEIVER_TIMEOUT_DEFAULT_SECONDS = 300
+TRANSFER_RECEIVER_TIMEOUT_MAX_SECONDS = 3600
 TRANSFER_MAX_TRANSFERS = 4
 TRANSFER_MAX_CHECKERS = 8
 TRANSFER_MAX_CONCURRENT_DEFAULT = 1
@@ -52,6 +57,13 @@ _COPY_ESCAPE_KEYS = {
     "target",
 }
 _COPY_ESCAPE_VALUES = {"delete", "delete-after", "delete-before", "delete-during", "move", "sync"}
+
+
+def validate_target_kind(value: str | None) -> str:
+    kind = str(value or TARGET_KIND_RCLONE).strip().lower()
+    if kind not in {TARGET_KIND_RCLONE, TARGET_KIND_RECEIVER}:
+        raise ValueError("Unsupported transfer target type")
+    return kind
 
 
 def validate_remote_name(value: str) -> str:
@@ -96,6 +108,28 @@ def rclone_config_path(value: str | None = None) -> str:
     candidate = value if value is not None else os.getenv("RCLONE_CONFIG")
     candidate = str(candidate or "").strip()
     return candidate or DEFAULT_RCLONE_CONFIG
+
+
+def normalize_receiver_url(value: str | None) -> str:
+    url = str(value or "").strip().rstrip("/")
+    if not url:
+        raise ValueError("Receiver URL is required")
+    if "\x00" in url or "\n" in url:
+        raise ValueError("Invalid receiver URL")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Receiver URL must be http(s)")
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("Receiver URL must not include credentials, query, or fragment")
+    return url
+
+
+def receiver_timeout_seconds(value: str | int | None = None) -> int:
+    return _positive_int(
+        value if value is not None else os.getenv("TRANSFER_RECEIVER_TIMEOUT_SECONDS"),
+        TRANSFER_RECEIVER_TIMEOUT_DEFAULT_SECONDS,
+        maximum=TRANSFER_RECEIVER_TIMEOUT_MAX_SECONDS,
+    )
 
 
 def transfer_max_concurrent(value: str | int | None = None) -> int:
@@ -163,6 +197,22 @@ def build_remote_destination(
 
     destination_path = "/".join(path_parts)
     return f"{remote}:{destination_path}" if destination_path else f"{remote}:"
+
+
+def build_receiver_destination_path(
+    source: str | Path,
+    *,
+    remote_path: str | None = "",
+    destination_subpath: str | None = "",
+    preserve_folder_name: bool = True,
+) -> str:
+    base_path = normalize_remote_path(remote_path)
+    subpath = validate_destination_subpath(destination_subpath)
+    source_path = Path(source)
+    path_parts = [part for part in (base_path, subpath) if part]
+    if source_path.is_file() or preserve_folder_name:
+        path_parts.append(_safe_source_name(source_path))
+    return "/".join(path_parts)
 
 
 def build_rclone_copy_command(

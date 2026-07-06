@@ -92,13 +92,32 @@ Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS
 
 The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`.
 
+Recommended internal-LAN PC receiving is the sibling HugCivi Receiver project at `/home/inri/문서/HugCivi-Receiver`. Run it on the PC as a Docker container, mount the PC folder to `/receive`, then register a `HugCivi Receiver` target in HugCivi with the Receiver URL, token, base path, allowed source prefix, and include patterns. The PC browser UI shows waiting, receiving, done, and failed jobs. Docker still cannot let the web UI pick arbitrary Windows folders; the local folder must be mounted in compose first.
+
+Receiver compose shape:
+
+```yaml
+services:
+  hugcivi-receiver:
+    build: .
+    ports:
+      - "8088:8080"
+    environment:
+      RECEIVER_API_TOKEN: "replace-with-a-long-token"
+      RECEIVER_DATA_DIR: "/receive"
+      RECEIVER_CONFIG_DIR: "/config"
+    volumes:
+      - "./receiver-config:/config"
+      - "D:/ComfyUI/models:/receive"
+```
+
 rclone remote credentials live outside SQLite:
 
 ```text
 /config/rclone/rclone.conf
 ```
 
-Prepare this file through `rclone config --config /config/rclone/rclone.conf` inside the container or by mounting a prepared config file. Transfer target rows store the rclone remote name, base path, enabled state, and policy only; do not put passwords or raw host details into target names or notes.
+Prepare this file through `rclone config --config /config/rclone/rclone.conf` inside the container or by mounting a prepared config file. rclone target rows store the remote name, base path, enabled state, and policy only; do not put passwords or raw host details into target names or notes. Receiver targets store a Receiver URL and token in SQLite; the API does not return the token in target list or job payloads.
 
 Useful defaults:
 
@@ -109,22 +128,23 @@ TRANSFER_MAX_CONCURRENT=1
 TRANSFER_DEFAULT_TRANSFERS=1
 TRANSFER_DEFAULT_CHECKERS=2
 TRANSFER_DEFAULT_BWLIMIT=40M
+TRANSFER_RECEIVER_TIMEOUT_SECONDS=300
 ```
 
-Recommended NAS-to-PC setup for ComfyUI checkpoints:
+Recommended Receiver setup for ComfyUI checkpoints:
 
 ```text
 Windows folder: D:\ComfyUI\models
-SMB share: ComfyUI
-Dedicated account: hugcivi_transfer
-Permission: write under ComfyUI/models
+Receiver mount: D:/ComfyUI/models:/receive
+Receiver URL: http://PC_IP:8088
+Receiver token: long random token shared with HugCivi target settings
 PC IP: DHCP reservation or static IP
 HugCivi source prefix: stable-diffusion/checkpoints
-Remote base path: ComfyUI/models/checkpoints
+Receiver base path: checkpoints
 Include patterns: *.safetensors, *.ckpt
 ```
 
-Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the SMB share and PC disk behavior are proven stable. If the PC is asleep or unavailable, the transfer job fails without changing local `/data` files; fix the share/network condition and retry the job.
+Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the PC disk behavior is proven stable. If the PC is asleep or unavailable, the transfer job fails without changing local `/data` files; fix the Receiver/network condition and retry the job. For broader external-network remotes, keep using rclone targets.
 
 ## Civitai Model Archives
 

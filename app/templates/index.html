@@ -598,10 +598,10 @@
 
         <section class="settings-block settings-pane" id="settings-transfer"
                  data-settings-title="전송 대상"
-                 data-settings-description="등록된 rclone remote로 복사 전용 전송 대상을 관리합니다.">
+                 data-settings-description="rclone remote 또는 HugCivi Receiver로 복사 전용 전송 대상을 관리합니다.">
           <div class="settings-block-copy">
             <h3>전송 대상</h3>
-            <p>rclone remote는 <code>/config/rclone/rclone.conf</code>에 먼저 준비하고, 여기에는 remote 이름과 복사 정책만 저장합니다.</p>
+            <p>PC 수신 앱은 Receiver URL과 token을 저장하고, rclone remote는 <code>/config/rclone/rclone.conf</code>의 remote 이름과 복사 정책만 저장합니다.</p>
           </div>
 
           <div class="settings-grid two-cols">
@@ -609,12 +609,27 @@
               <span>표시 이름</span>
               <input id="transfer-setting-name" type="text" autocomplete="off" placeholder="PC ComfyUI Checkpoints">
             </label>
+            <label class="setting-field" for="transfer-setting-kind">
+              <span>대상 타입</span>
+              <select id="transfer-setting-kind">
+                <option value="receiver">HugCivi Receiver</option>
+                <option value="rclone">rclone remote</option>
+              </select>
+            </label>
             <label class="setting-field" for="transfer-setting-remote">
               <span>rclone remote</span>
               <input id="transfer-setting-remote" type="text" autocomplete="off" placeholder="pc-comfyui">
             </label>
+            <label class="setting-field" for="transfer-setting-receiver-url">
+              <span>Receiver URL</span>
+              <input id="transfer-setting-receiver-url" type="url" autocomplete="off" placeholder="http://192.168.0.50:8088">
+            </label>
+            <label class="setting-field" for="transfer-setting-receiver-token">
+              <span>Receiver token</span>
+              <input id="transfer-setting-receiver-token" type="password" autocomplete="new-password" placeholder="PC Receiver token">
+            </label>
             <label class="setting-field" for="transfer-setting-path">
-              <span>remote base path</span>
+              <span>base path</span>
               <input id="transfer-setting-path" type="text" autocomplete="off" placeholder="ComfyUI/models/checkpoints">
             </label>
             <label class="setting-field" for="transfer-setting-prefixes">
@@ -1071,7 +1086,10 @@
     const transferStatus = document.getElementById('transfer-status');
     const transferSubmit = document.getElementById('transfer-submit');
     const transferSettingName = document.getElementById('transfer-setting-name');
+    const transferSettingKind = document.getElementById('transfer-setting-kind');
     const transferSettingRemote = document.getElementById('transfer-setting-remote');
+    const transferSettingReceiverUrl = document.getElementById('transfer-setting-receiver-url');
+    const transferSettingReceiverToken = document.getElementById('transfer-setting-receiver-token');
     const transferSettingPath = document.getElementById('transfer-setting-path');
     const transferSettingPrefixes = document.getElementById('transfer-setting-prefixes');
     const transferSettingIncludes = document.getElementById('transfer-setting-includes');
@@ -1466,6 +1484,7 @@
     transferCancel.addEventListener('click', closeTransferModal);
     transferTargetSelect.addEventListener('change', refreshTransferPreflight);
     transferForm.addEventListener('submit', submitTransferJob);
+    transferSettingKind.addEventListener('change', updateTransferSettingKindFields);
     transferSettingSave.addEventListener('click', saveTransferSettingTarget);
     transferSettingRefresh.addEventListener('click', loadTransferSettingTargets);
     transferSettingList.addEventListener('click', event => {
@@ -2281,11 +2300,17 @@
           return {
             ...target,
             id: String(target.id),
+            kind: transferTargetKind(target),
             name: String(target.name || target.label || `Target ${target.id}`),
             enabled: isTransferTargetEnabled(target),
             policy,
           };
         });
+    }
+
+    function transferTargetKind(target) {
+      const kind = String(target?.kind || 'rclone').toLowerCase();
+      return kind === 'receiver' ? 'receiver' : 'rclone';
     }
 
     function transferTargetPolicy(target) {
@@ -2333,6 +2358,7 @@
         return;
       }
       const policy = target.policy || {};
+      const kindLabel = target.kind === 'receiver' ? 'HugCivi Receiver' : 'rclone';
       const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes);
       const includes = arrayText(policy.include_patterns || policy.includePatterns);
       const limits = [
@@ -2341,6 +2367,7 @@
         policy.checkers ? `checkers ${policy.checkers}` : '',
       ].filter(Boolean).join(' · ');
       const rows = [
+        ['타입', kindLabel],
         ['허용 경로', prefixes || '-'],
         ['포함', includes || '-'],
         ['제한', limits || '-'],
@@ -2453,6 +2480,7 @@
 
     async function loadTransferSettingTargets() {
       if (!transferSettingList) return;
+      updateTransferSettingKindFields();
       transferSettingStatus.textContent = '전송 대상을 불러오는 중';
       try {
         const response = await fetch('/api/transfer/targets');
@@ -2479,13 +2507,17 @@
         const policy = target.policy || {};
         const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes) || '-';
         const includes = arrayText(policy.include_patterns || policy.includePatterns) || '-';
-        const remotePath = target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`;
+        const kind = transferTargetKind(target);
+        const remotePath = kind === 'receiver'
+          ? `${target.receiver_url || 'Receiver'}${target.remote_path ? `/${target.remote_path}` : ''}`
+          : (target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`);
+        const tokenText = kind === 'receiver' ? (target.receiver_token_set ? 'token set' : 'no token') : 'rclone';
         return `
           <div class="transfer-target-item">
             <div>
               <strong>${escapeHtml(target.name)}</strong>
               <span>${escapeHtml(remotePath)}</span>
-              <small>${escapeHtml(prefixes)} · ${escapeHtml(includes)}</small>
+              <small>${escapeHtml(tokenText)} · ${escapeHtml(prefixes)} · ${escapeHtml(includes)}</small>
             </div>
             <button type="button" class="settings-cancel" data-transfer-target-delete="${escapeHtml(target.id)}">삭제</button>
           </div>
@@ -2493,10 +2525,22 @@
       }).join('');
     }
 
+    function updateTransferSettingKindFields() {
+      const kind = transferSettingKind.value === 'rclone' ? 'rclone' : 'receiver';
+      const remoteField = transferSettingRemote.closest('.setting-field');
+      const receiverUrlField = transferSettingReceiverUrl.closest('.setting-field');
+      const receiverTokenField = transferSettingReceiverToken.closest('.setting-field');
+      if (remoteField) remoteField.hidden = kind !== 'rclone';
+      if (receiverUrlField) receiverUrlField.hidden = kind !== 'receiver';
+      if (receiverTokenField) receiverTokenField.hidden = kind !== 'receiver';
+      transferSettingPath.placeholder = kind === 'receiver' ? 'checkpoints 또는 loras' : 'ComfyUI/models/checkpoints';
+    }
+
     async function saveTransferSettingTarget() {
+      const kind = transferSettingKind.value === 'rclone' ? 'rclone' : 'receiver';
       const payload = {
         name: transferSettingName.value.trim(),
-        remote_name: transferSettingRemote.value.trim(),
+        kind,
         remote_path: transferSettingPath.value.trim(),
         enabled: true,
         policy: {
@@ -2509,6 +2553,13 @@
           require_check: false,
         },
       };
+      if (kind === 'receiver') {
+        payload.receiver_url = transferSettingReceiverUrl.value.trim();
+        payload.receiver_token = transferSettingReceiverToken.value.trim();
+        payload.remote_name = '';
+      } else {
+        payload.remote_name = transferSettingRemote.value.trim();
+      }
       transferSettingSave.disabled = true;
       transferSettingStatus.textContent = '전송 대상을 저장하는 중';
       try {

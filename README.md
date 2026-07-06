@@ -66,7 +66,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 - 라이브러리 카드 즐겨찾기, URL 바로가기, A-Z/Z-A/날짜/즐겨찾기 정렬
 - 라이브러리 카드 상단 블러 바, 공급자 배지, URL/즐겨찾기 상태 표시
 - 폴더 또는 카드 우클릭으로 다운로드, 속성, 이름 변경, 이동, 삭제
-- 폴더 또는 카드 우클릭으로 등록된 rclone 대상에 copy-only 전송 작업 생성
+- 폴더 또는 카드 우클릭으로 HugCivi Receiver 또는 rclone 대상에 copy-only 전송 작업 생성
 - 속성 모달에서 용량, 확장자, 날짜, 원본 URL, 메모 확인과 메모 저장
 - 작업 목록에서 다운로드 정지, 재개, 삭제, 저장 폴더 이동, 50개 단위 페이지 전환, 소스별 필터
 - 대기열 관리에서 공급자별 동시 다운로드 수, 전체 동시 다운로드 수, 무진행 타임아웃 설정
@@ -493,9 +493,9 @@ Upscaler: stable-diffusion/upscalers
 
 ## 전송
 
-HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 rclone 대상으로 보내는 복사 전용 전송 작업을 만들 수 있습니다. 예를 들면 NAS의 `/data/stable-diffusion/checkpoints`에 있는 checkpoint 파일을 내부망 PC의 `ComfyUI/models/checkpoints` 공유 폴더로 보낼 수 있습니다.
+HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상으로 보내는 복사 전용 전송 작업을 만들 수 있습니다. 내부망 PC에는 별도 프로젝트인 `/home/inri/문서/HugCivi-Receiver`의 Docker 수신 앱을 올릴 수 있고, PC 브라우저에서는 대기/수신중/완료/실패 상태를 토렌트 클라이언트처럼 확인합니다.
 
-운영자는 먼저 `/config/rclone/rclone.conf`에 rclone remote를 준비하고, HugCivi에는 remote 이름, base path, 허용 source prefix, include pattern 같은 전송 대상 정책을 등록합니다. UI는 임의 remote 주소 입력을 받지 않고, 등록된 대상만 선택하게 합니다.
+권장 내부망 구성은 HugCivi Receiver 대상입니다. Receiver는 PC 로컬 폴더를 Docker volume으로 `/receive`에 마운트하고, HugCivi에는 Receiver URL, token, base path, 허용 source prefix, include pattern을 등록합니다. rclone 대상도 계속 지원되며, 외부망이나 범용 원격지 전송을 위해 `/config/rclone/rclone.conf`의 remote 이름을 등록하는 방식으로 사용합니다.
 
 사용 흐름:
 
@@ -504,7 +504,7 @@ HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 rclone �
 3. 등록된 대상을 고르고 사전 확인 결과를 봅니다.
 4. `전송 큐에 추가`를 누릅니다.
 
-전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. rclone 설정과 NAS-to-PC 권장값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
+전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. Receiver와 rclone 운영값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
 
 ## 토큰 및 인증 입력
 
@@ -605,6 +605,7 @@ TRANSFER_MAX_CONCURRENT=1
 TRANSFER_DEFAULT_TRANSFERS=1
 TRANSFER_DEFAULT_CHECKERS=2
 TRANSFER_DEFAULT_BWLIMIT=40M
+TRANSFER_RECEIVER_TIMEOUT_SECONDS=300
 HITOMI_BACKEND=auto
 HITOMI_LISTING_QUEUE_MODE=auto
 GALLERY_DL_AUTO_UPDATE=1

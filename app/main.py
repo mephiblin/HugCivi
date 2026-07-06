@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+import requests
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -722,13 +723,15 @@ async def api_update_transfer_target(
     request: Request,
     _: str = Depends(require_auth),
 ) -> JSONResponse:
-    if not db.get_transfer_target(target_id):
+    current_target = db.get_transfer_target(target_id)
+    if not current_target:
         raise HTTPException(status_code=404, detail="transfer target not found")
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object is required")
     try:
-        clean = transfer_target_fields_from_payload(payload, partial=True)
+        clean = transfer_target_fields_from_payload(payload, partial=True, current_target=current_target)
+        validate_transfer_target_update({**current_target, **clean})
         changed = db.update_transfer_target(target_id, **clean)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1096,21 +1099,45 @@ def jobs_page_payload(*, limit: int = JOB_LIST_PAGE_SIZE, page: int = 1, source:
     }
 
 
-def transfer_target_fields_from_payload(payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
+def transfer_target_fields_from_payload(
+    payload: dict[str, Any],
+    *,
+    partial: bool = False,
+    current_target: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     forbidden = copy_forbidden_fields(payload)
     if forbidden:
         raise ValueError("전송은 복사만 지원합니다.")
 
     fields: dict[str, Any] = {}
+    if not partial or "kind" in payload:
+        fields["kind"] = transfer.validate_target_kind(str(payload.get("kind") or transfer.TARGET_KIND_RCLONE))
     if not partial or "name" in payload:
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("전송 대상 이름을 입력하세요.")
         fields["name"] = name
-    if not partial or "remote_name" in payload:
+    target_kind = str(
+        fields.get("kind")
+        or payload.get("kind")
+        or (current_target or {}).get("kind")
+        or transfer.TARGET_KIND_RCLONE
+    )
+    target_kind = transfer.validate_target_kind(target_kind)
+    if target_kind == transfer.TARGET_KIND_RCLONE and (not partial or "remote_name" in payload):
         fields["remote_name"] = transfer.validate_remote_name(str(payload.get("remote_name") or ""))
+    elif not partial:
+        fields["remote_name"] = str(payload.get("remote_name") or "").strip()
     if "remote_path" in payload or not partial:
         fields["remote_path"] = transfer.normalize_remote_path(str(payload.get("remote_path") or ""))
+    if target_kind == transfer.TARGET_KIND_RECEIVER and (not partial or "receiver_url" in payload):
+        fields["receiver_url"] = transfer.normalize_receiver_url(str(payload.get("receiver_url") or ""))
+    elif "receiver_url" in payload:
+        fields["receiver_url"] = ""
+    if target_kind == transfer.TARGET_KIND_RECEIVER and "receiver_token" in payload:
+        fields["receiver_token"] = str(payload.get("receiver_token") or "").strip()
+    elif not partial or "receiver_token" in payload:
+        fields["receiver_token"] = ""
     if "enabled" in payload:
         fields["enabled"] = bool(payload.get("enabled"))
     elif not partial:
@@ -1127,6 +1154,14 @@ def transfer_target_fields_from_payload(payload: dict[str, Any], *, partial: boo
             raise ValueError("허용 원본 prefix를 하나 이상 등록하세요.")
         fields["policy"] = policy
     return fields
+
+
+def validate_transfer_target_update(target: dict[str, Any]) -> None:
+    kind = transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE))
+    if kind == transfer.TARGET_KIND_RECEIVER:
+        transfer.normalize_receiver_url(str(target.get("receiver_url") or ""))
+    else:
+        transfer.validate_remote_name(str(target.get("remote_name") or ""))
 
 
 def copy_forbidden_fields(payload: dict[str, Any]) -> list[str]:
@@ -1166,9 +1201,12 @@ def transfer_target_payload(target: dict[str, Any] | None) -> dict[str, Any] | N
     policy = target_policy(target)
     return {
         "id": int(target["id"]),
+        "kind": transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE)),
         "name": str(target.get("name") or ""),
         "remote_name": str(target.get("remote_name") or ""),
         "remote_path": str(target.get("remote_path") or ""),
+        "receiver_url": str(target.get("receiver_url") or ""),
+        "receiver_token_set": bool(target.get("receiver_token")),
         "enabled": bool(target.get("enabled")),
         "policy": policy,
         "created_at": target.get("created_at"),
@@ -1248,13 +1286,22 @@ def transfer_preflight_payload(
     file_count, source_bytes = transfer_source_stats(source, policy)
     if file_count <= 0:
         raise HTTPException(status_code=400, detail="전송할 파일이 없습니다.")
-    destination = transfer.build_remote_destination(
-        source,
-        remote_name=str(target.get("remote_name") or ""),
-        remote_path=str(target.get("remote_path") or ""),
-        destination_subpath=destination_subpath,
-        preserve_folder_name=bool(policy.get("preserve_folder_name", True)),
-    )
+    if transfer_target_kind(target) == transfer.TARGET_KIND_RECEIVER:
+        destination_path = transfer.build_receiver_destination_path(
+            source,
+            remote_path=str(target.get("remote_path") or ""),
+            destination_subpath=destination_subpath,
+            preserve_folder_name=bool(policy.get("preserve_folder_name", True)),
+        )
+        destination = f"receiver:/{destination_path}" if destination_path else "receiver:/"
+    else:
+        destination = transfer.build_remote_destination(
+            source,
+            remote_name=str(target.get("remote_name") or ""),
+            remote_path=str(target.get("remote_path") or ""),
+            destination_subpath=destination_subpath,
+            preserve_folder_name=bool(policy.get("preserve_folder_name", True)),
+        )
     return {
         "source_path": relative_path or relative_data_path(source),
         "source_kind": "folder" if source.is_dir() else "file",
@@ -1266,6 +1313,10 @@ def transfer_preflight_payload(
         "destination_subpath": destination_subpath,
         "include_patterns": list(policy.get("include_patterns") or []),
     }
+
+
+def transfer_target_kind(target: dict[str, Any]) -> str:
+    return transfer.validate_target_kind(str(target.get("kind") or transfer.TARGET_KIND_RCLONE))
 
 
 def transfer_source_stats(source: Path, policy: dict[str, Any]) -> tuple[int, int]:
@@ -4812,13 +4863,6 @@ def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
         destination_subpath,
         relative_path=relative_data_path(source),
     )
-    command = transfer.build_rclone_copy_command(
-        source,
-        remote_name=str(target.get("remote_name") or ""),
-        remote_path=str(target.get("remote_path") or ""),
-        destination_subpath=destination_subpath,
-        policy=policy,
-    )
     db.update_job(
         job_id,
         target_dir=str(source),
@@ -4827,11 +4871,23 @@ def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
         total_bytes=int(preflight["source_bytes"]),
         metadata_json=json.dumps({"transfer_preflight": preflight}, ensure_ascii=False),
     )
-    db.append_log(job_id, "rclone copy started")
     with TRANSFER_COPY_SEMAPHORE:
-        run_transfer_process(job_id, command)
+        if transfer_target_kind(target) == transfer.TARGET_KIND_RECEIVER:
+            db.append_log(job_id, "receiver copy started")
+            receiver_result = run_receiver_transfer(job_id, source, target, destination_subpath, preflight, policy)
+            manifest_path = write_transfer_manifest(job_id, preflight, receiver=receiver_result)
+        else:
+            command = transfer.build_rclone_copy_command(
+                source,
+                remote_name=str(target.get("remote_name") or ""),
+                remote_path=str(target.get("remote_path") or ""),
+                destination_subpath=destination_subpath,
+                policy=policy,
+            )
+            db.append_log(job_id, "rclone copy started")
+            run_transfer_process(job_id, command)
+            manifest_path = write_transfer_manifest(job_id, preflight, command=command)
     db.update_job(job_id, progress_bytes=int(preflight["source_bytes"]), total_bytes=int(preflight["source_bytes"]))
-    manifest_path = write_transfer_manifest(job_id, preflight, command)
     db.add_job_artifact(job_id, kind="transfer_manifest", path=manifest_path)
     db.add_job_content_ref(job_id, path=source, role="transfer_source")
     db.append_log(job_id, f"transfer manifest: {manifest_path}")
@@ -4887,15 +4943,176 @@ def run_transfer_process(job_id: int, command: list[str]) -> None:
         raise
 
 
-def write_transfer_manifest(job_id: int, preflight: dict[str, Any], command: list[str]) -> Path:
+def run_receiver_transfer(
+    job_id: int,
+    source: Path,
+    target: dict[str, Any],
+    destination_subpath: str,
+    preflight: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    base_url = transfer.normalize_receiver_url(str(target.get("receiver_url") or ""))
+    token = str(target.get("receiver_token") or "")
+    destination_root = transfer.build_receiver_destination_path(
+        source,
+        remote_path=str(target.get("remote_path") or ""),
+        destination_subpath=destination_subpath,
+        preserve_folder_name=bool(policy.get("preserve_folder_name", True)),
+    )
+    session = requests.Session()
+    headers = receiver_auth_headers(token)
+    remote_job = receiver_request_json(
+        session,
+        "POST",
+        f"{base_url}/api/jobs",
+        headers=headers,
+        json_payload={
+            "name": source.name,
+            "source_path": preflight.get("source_path") or relative_data_path(source),
+            "destination_path": destination_root,
+            "source_kind": preflight.get("source_kind") or ("folder" if source.is_dir() else "file"),
+            "total_bytes": int(preflight.get("source_bytes") or 0),
+            "file_count": int(preflight.get("file_count") or 0),
+            "metadata": {
+                "sender": "hugcivi",
+                "source_path": preflight.get("source_path") or relative_data_path(source),
+            },
+        },
+    )
+    receiver_job = remote_job.get("job") if isinstance(remote_job.get("job"), dict) else remote_job
+    receiver_job_id = str(receiver_job.get("id") if isinstance(receiver_job, dict) else "").strip()
+    if not receiver_job_id:
+        raise RuntimeError("receiver did not return a job id")
+
+    db.append_log(job_id, f"receiver job created: {receiver_job_id}")
+    uploaded_bytes = 0
+    try:
+        for local_path, receive_path, size_bytes in receiver_transfer_files(source, destination_root, policy):
+            internal_jobs.check_job_control(job_id)
+            receiver_upload_file(session, base_url, receiver_job_id, receive_path, local_path, headers=headers)
+            uploaded_bytes += size_bytes
+            db.update_job(
+                job_id,
+                progress_bytes=uploaded_bytes,
+                total_bytes=int(preflight.get("source_bytes") or 0),
+            )
+            db.append_log(job_id, f"receiver uploaded: {receive_path}")
+        receiver_request_json(session, "POST", f"{base_url}/api/jobs/{quote(receiver_job_id, safe='')}/complete", headers=headers)
+    except Exception as exc:
+        try:
+            receiver_request_json(
+                session,
+                "POST",
+                f"{base_url}/api/jobs/{quote(receiver_job_id, safe='')}/fail",
+                headers=headers,
+                json_payload={"error": str(exc)[:1000]},
+            )
+        except Exception:
+            pass
+        raise
+
+    return {
+        "kind": transfer.TARGET_KIND_RECEIVER,
+        "receiver_url": base_url,
+        "receiver_job_id": receiver_job_id,
+        "destination_path": destination_root,
+    }
+
+
+def receiver_auth_headers(token: str) -> dict[str, str]:
+    return {"X-Receiver-Token": token} if token else {}
+
+
+def receiver_request_json(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    timeout = transfer.receiver_timeout_seconds()
+    response = session.request(method, url, headers=headers or {}, json=json_payload, timeout=timeout)
+    if response.status_code >= 400:
+        raise RuntimeError(f"receiver returned {response.status_code}: {receiver_error_detail(response)}")
+    if not response.content:
+        return {}
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("receiver returned non-JSON response") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def receiver_upload_file(
+    session: requests.Session,
+    base_url: str,
+    receiver_job_id: str,
+    receive_path: str,
+    local_path: Path,
+    *,
+    headers: dict[str, str],
+) -> None:
+    timeout = transfer.receiver_timeout_seconds()
+    upload_url = f"{base_url}/api/jobs/{quote(receiver_job_id, safe='')}/files/{quote(receive_path, safe='/')}"
+    upload_headers = {"Content-Type": "application/octet-stream", **headers}
+    with local_path.open("rb") as handle:
+        response = session.post(upload_url, headers=upload_headers, data=handle, timeout=timeout)
+    if response.status_code >= 400:
+        raise RuntimeError(f"receiver upload returned {response.status_code}: {receiver_error_detail(response)}")
+
+
+def receiver_error_detail(response: requests.Response) -> str:
+    try:
+        data = response.json()
+        if isinstance(data, dict) and data.get("detail"):
+            return str(data.get("detail"))[:500]
+    except ValueError:
+        pass
+    return (response.text or response.reason or "request failed")[:500]
+
+
+def receiver_transfer_files(source: Path, destination_root: str, policy: dict[str, Any]) -> list[tuple[Path, str, int]]:
+    include_patterns = [str(pattern) for pattern in policy.get("include_patterns") or []]
+    items: list[tuple[Path, str, int]] = []
+    if source.is_file():
+        if include_patterns and not transfer_matches_include(source, source.name, include_patterns):
+            return items
+        receive_path = destination_root or source.name
+        items.append((source, receive_path, source.stat().st_size))
+        return items
+
+    for item in source.rglob("*"):
+        try:
+            if item.is_symlink() or not item.is_file():
+                continue
+            relative_name = item.relative_to(source).as_posix()
+            if include_patterns and not transfer_matches_include(item, relative_name, include_patterns):
+                continue
+            receive_path = "/".join(part for part in (destination_root, relative_name) if part)
+            items.append((item, receive_path, item.stat().st_size))
+        except (OSError, ValueError):
+            continue
+    return items
+
+
+def write_transfer_manifest(
+    job_id: int,
+    preflight: dict[str, Any],
+    command: list[str] | None = None,
+    receiver: dict[str, Any] | None = None,
+) -> Path:
     TRANSFER_MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
     manifest_path = TRANSFER_MANIFEST_DIR / f"transfer-{job_id}.json"
     manifest = {
         "job_id": job_id,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "preflight": preflight,
-        "command": [transfer.redact_transfer_output(part) for part in command],
     }
+    if command is not None:
+        manifest["command"] = [transfer.redact_transfer_output(part) for part in command]
+    if receiver is not None:
+        manifest["receiver"] = receiver
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest_path
 

@@ -52,7 +52,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
 | `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
-| `app/transfer.py` | Copy-only rclone target validation, destination resolution, argv construction, policy sanitization, and output redaction helpers. |
+| `app/transfer.py` | Copy-only transfer target validation, rclone destination/argv construction, HugCivi Receiver destination validation, policy sanitization, and output redaction helpers. |
 | `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
 | `app/parsers.py` | Input parsing and source routing. |
@@ -105,7 +105,7 @@ SQLite tables created by `db.init_db()`:
 | `library_items` | DB-backed library index rows. Each row stores a serialized UI payload in `payload_json`. |
 | `library_scan_state` | Cursor/status values for incremental indexing and cached storage-usage scan state. |
 | `maintenance_runs` | WAL, checkpoint, optimize, compact, and backup run history. |
-| `transfer_targets` | Registered outbound transfer targets with rclone remote names, base paths, enabled state, and copy policy JSON. |
+| `transfer_targets` | Registered outbound transfer targets with `rclone` or `receiver` kind, base paths, enabled state, copy policy JSON, and Receiver URL/token when applicable. |
 | `subscriptions` | YouTube subscription sources and scheduling metadata. Manual `check now` and the subscription check scheduler update these rows. |
 | `subscription_items` | Discovered/queued/download state model for YouTube subscription media. Manual/scheduled discovery and the subscription download worker update these rows. |
 
@@ -231,9 +231,10 @@ Transfer copy:
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
-- `app/transfer.py` builds rclone argv lists from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
-- `app/main.py` runs the rclone subprocess through the internal job handler, writes the SQLite job log, and records a manifest under `/config/transfer-manifests`
-- remote credentials should remain in `/config/rclone/rclone.conf`
+- rclone targets use argv lists built from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
+- HugCivi Receiver targets create a remote receive job, upload matching files by HTTP, then mark the PC-side job done or failed; Receiver tokens are used only in headers and are not logged or copied into job payloads
+- `app/main.py` runs the selected transfer backend through the internal job handler, writes the SQLite job log, and records a manifest under `/config/transfer-manifests`
+- rclone credentials should remain in `/config/rclone/rclone.conf`; Receiver tokens live in the authenticated target editor and SQLite state
 
 The UI polls job status and then swaps to the artifact URL when the job is done.
 
@@ -309,7 +310,7 @@ Important invariants for future changes:
 - Symlink folders are not accepted as archive roots. ZIP preflight rejects symlinks that leave `/data`.
 - Internal jobs must not be enqueued into the external download scheduler.
 - Transfer is copy-only outbound work: jobs must use registered target IDs, validated `/data` source paths, target allowed source prefixes, and argv-list subprocess execution.
-- Transfer target rows store rclone remote names and policy, not remote credentials; credentials belong in `/config/rclone/rclone.conf`.
+- Transfer target rows store copy policy and either rclone remote names or Receiver URL/token. rclone credentials belong in `/config/rclone/rclone.conf`; Receiver tokens must not be returned in list/job payloads or logs.
 - External download jobs must keep `job_kind='download'`.
 - YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.

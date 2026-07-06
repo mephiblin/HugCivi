@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 ARG DENO_VERSION=2.9.0
-ARG RCLONE_VERSION=1.74.3
+ARG RCLONE_RELEASE_VERSION=1.74.3
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -61,9 +61,9 @@ RUN set -eux; \
       arm64) rclone_arch="arm64" ;; \
       *) echo "Unsupported rclone architecture: $arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}.zip" -o /tmp/rclone.zip; \
+    curl -fsSL "https://downloads.rclone.org/v${RCLONE_RELEASE_VERSION}/rclone-v${RCLONE_RELEASE_VERSION}-linux-${rclone_arch}.zip" -o /tmp/rclone.zip; \
     python -m zipfile -e /tmp/rclone.zip /tmp/rclone; \
-    install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}/rclone" /usr/local/bin/rclone; \
+    install -m 0755 "/tmp/rclone/rclone-v${RCLONE_RELEASE_VERSION}-linux-${rclone_arch}/rclone" /usr/local/bin/rclone; \
     rm -rf /tmp/rclone /tmp/rclone.zip; \
     rclone version
 

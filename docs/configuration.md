@@ -32,8 +32,8 @@ Path and startup settings are usually read from environment variables at import 
 | `MEDIA_CACHE_DIR` | `/config/media-cache` | env | Browser transcodes, poster cache, and lazy card thumbnails under `thumbnails/`. |
 | `HUGCIVI_CHROME_EXTENSION_DIR` | app parent `chrome-extension` | env | Source folder zipped by `/api/addon/chrome-extension`. |
 | `HUGCIVI_STARTUP_CONFIG_FILE` | `/config/startup.env` | env | Startup file used by the entrypoint for gallery-dl auto-update. |
-| `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | env | rclone config file used by copy-only transfer jobs. Keep remote credentials here, not in transfer target rows. |
-| `TRANSFER_MANIFEST_DIR` | `/config/transfer-manifests` | env | Manifest artifact directory for completed copy-only transfer jobs. |
+| `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | env | rclone config file used by rclone copy-only transfer targets. Keep rclone remote credentials here, not in rclone target rows. |
+| `TRANSFER_MANIFEST_DIR` | `/config/transfer-manifests` | env | Manifest artifact directory for completed copy-only transfer jobs, including Receiver jobs. |
 | `HUGCIVI_DATA_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/data`. |
 | `HUGCIVI_CONFIG_DIR` | stack-specific | compose/Portainer | Host bind mount source for `/config`. |
 
@@ -112,7 +112,10 @@ The authenticated settings modal renders these credential and option values in p
 
 ## Transfer Copy
 
-Transfer targets are stored in SQLite and refer to rclone remotes by name. Remote credentials and host details live in `RCLONE_CONFIG`.
+Transfer targets are stored in SQLite and can use either `rclone` or `receiver` kind.
+
+- `receiver` targets send files to the PC-side HugCivi Receiver HTTP API. They store the Receiver URL, optional token, base path, and copy policy. The token is used only for outbound HTTP headers and is not returned in target list payloads or job payloads.
+- `rclone` targets refer to rclone remotes by name. rclone credentials and host details live in `RCLONE_CONFIG`.
 
 | Key | Default | Source | Notes |
 | --- | --- | --- | --- |
@@ -120,6 +123,7 @@ Transfer targets are stored in SQLite and refer to rclone remotes by name. Remot
 | `TRANSFER_DEFAULT_TRANSFERS` | `1` | env | Default rclone `--transfers` value when the target policy does not override it. |
 | `TRANSFER_DEFAULT_CHECKERS` | `2` | env | Default rclone `--checkers` value when the target policy does not override it. |
 | `TRANSFER_DEFAULT_BWLIMIT` | `40M` | env | Default rclone bandwidth limit when the target policy does not override it. Empty disables the default limit. |
+| `TRANSFER_RECEIVER_TIMEOUT_SECONDS` | `300` | env | HTTP socket timeout for HugCivi Receiver job/create/upload/complete requests. Clamped to 1-3600 seconds. |
 
 ## Provider-Specific Runtime
 
