@@ -797,6 +797,27 @@ def api_transfer_local_mount_tree(
     return JSONResponse({"ok": True, "target": transfer_target_payload(target), **tree})
 
 
+@app.post("/api/transfer/targets/{target_id}/comfyui/check")
+def api_transfer_comfyui_check(target_id: int, _: str = Depends(require_auth)) -> JSONResponse:
+    target = db.get_transfer_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if not bool(target.get("enabled")):
+        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
+    if transfer_target_kind(target) != TARGET_KIND_LOCAL_MOUNT:
+        raise HTTPException(status_code=400, detail="ComfyUI 폴더 체크는 연결 폴더 대상만 지원합니다.")
+    checker = getattr(transfer, "check_comfyui_local_mount_target", None)
+    if checker is None:
+        raise HTTPException(status_code=500, detail="ComfyUI 폴더 체크 helper가 없습니다.")
+    try:
+        transfer.ensure_data_remote_is_separate(data_root=DATA_ROOT, data_remote_root=DATA_REMOTE_ROOT)
+        check = checker(target, data_remote_root=DATA_REMOTE_ROOT)
+        payload = transfer_comfyui_check_response_payload(target, check)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=transfer_safe_error_detail(str(exc), target)) from exc
+    return JSONResponse(payload)
+
+
 @app.post("/api/transfer/preflight")
 async def api_transfer_preflight(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     payload = await request.json()
@@ -1318,6 +1339,66 @@ def transfer_target_payload(target: dict[str, Any] | None) -> dict[str, Any] | N
         "created_at": target.get("created_at"),
         "updated_at": target.get("updated_at"),
     }
+
+
+def transfer_comfyui_check_response_payload(target: dict[str, Any], check: Any) -> dict[str, Any]:
+    if not isinstance(check, dict):
+        raise ValueError("ComfyUI 폴더 체크 결과가 올바르지 않습니다.")
+    payload = {
+        **check,
+        "ok": True,
+        "target": transfer_target_payload(target),
+        "check": check,
+    }
+    assert_transfer_response_has_no_sensitive_strings(payload, target)
+    return payload
+
+
+def assert_transfer_response_has_no_sensitive_strings(payload: Any, target: dict[str, Any]) -> None:
+    sensitive_values = transfer_sensitive_response_values(target)
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            if (redact_sensitive_text(value) or "") != value:
+                raise ValueError("ComfyUI 폴더 체크 결과에 민감한 값이 포함되어 있습니다.")
+            if any(sensitive and sensitive in value for sensitive in sensitive_values):
+                raise ValueError("ComfyUI 폴더 체크 결과에 민감한 경로가 포함되어 있습니다.")
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+
+
+def transfer_sensitive_response_values(target: dict[str, Any]) -> list[str]:
+    raw_values: list[str] = []
+    for path_value in (
+        DATA_REMOTE_ROOT,
+        DATA_REMOTE_ROOT.resolve(strict=False),
+        DATA_ROOT,
+        DATA_ROOT.resolve(strict=False),
+        BASE_DIR,
+        BASE_DIR.resolve(strict=False),
+        db.DB_PATH.parent,
+        db.DB_PATH.parent.resolve(strict=False),
+    ):
+        text = str(path_value)
+        if text and text != "/":
+            raw_values.append(text)
+    token = str(target.get("receiver_token") or "").strip()
+    if token:
+        raw_values.append(token)
+    return sorted(set(raw_values), key=len, reverse=True)
+
+
+def transfer_safe_error_detail(message: str, target: dict[str, Any]) -> str:
+    detail = redact_sensitive_text(message) or "ComfyUI 폴더 체크에 실패했습니다."
+    for sensitive in transfer_sensitive_response_values(target):
+        detail = detail.replace(sensitive, "[redacted]")
+    return detail
 
 
 def target_policy(target: dict[str, Any]) -> dict[str, Any]:

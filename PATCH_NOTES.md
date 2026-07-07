@@ -1,5 +1,20 @@
 # 패치내역
 
+## 2026-07-07
+
+### 복사 전용 전송
+
+- 전송 대상 설정 화면과 전송 모달의 대상 목록을 `종합`, `ComfyUI`, `Hugging Face`, `Civitai`, `Hitomi`, `Movie`, `ASMR` 분류로 나누어 볼 수 있게 했습니다.
+- 전송 설정 탭에서 상단/하단 일반 `저장` 버튼을 눌러도 현재 입력한 전송 대상이 저장되도록 고쳤고, 저장 성공 메시지가 목록 새로고침 뒤에도 유지됩니다.
+- ComfyUI로 분류되는 `local_mount` 대상에는 `폴더 체크` 버튼이 표시됩니다.
+- `POST /api/transfer/targets/{target_id}/comfyui/check`가 등록된 연결 폴더를 검사해 ComfyUI `models` root, ComfyUI root, 단일 모델 폴더, 일반 폴더를 구분하고 `checkpoints`, `loras`, `diffusion_models`, `vae`, `controlnet`, `embeddings`, `upscale_models` 매핑 힌트를 반환합니다.
+- `clip`, `unet`, `t2i_adapter` 같은 ComfyUI 호환 폴더 이름은 각각 `text_encoders`, `diffusion_models`, `controlnet` alias로 인식합니다.
+- 이 폴더 체크는 `/data_remote` 아래 등록된 대상만 읽고, 폴더를 생성하지 않으며, `/data` archive 구조를 바꾸지 않습니다.
+
+### 문서
+
+- ComfyUI 공식 폴더 기준과 HugCivi `/data` 유지 원칙을 [ComfyUI Transfer Folder Check Design 2026-07-07](docs/comfyui-transfer-folder-check-design-2026-07-07.md)에 정리했습니다.
+
 ## 2026-07-06
 
 ### Civitai
@@ -29,6 +44,8 @@
 - `/data_remote` 아래 host-mounted PC/Synology/원격 공유 폴더를 `local_mount` 전송 대상으로 등록하고, 우클릭 `전송` 모달에서 target-relative 폴더 tree를 탐색해 copy-only 전송할 수 있습니다.
 - 설정의 `전송 대상` 탭에서 `local_mount` 대상으로 `/data` 전체 내용 복제 작업을 큐에 추가할 수 있습니다. 이 경로는 별도 `/api/transfer/data-root/*` API를 쓰며 browser가 source path를 보내지 않습니다.
 - 전송 대상 설정 화면은 연결 폴더 추가, `/data` 전체 복제, 등록된 대상 목록을 분리하고 Receiver/rclone 입력은 고급 접이식 영역으로 이동했습니다.
+- 전송 대상 탭에서 상단/하단 일반 `저장` 버튼도 현재 입력한 전송 대상을 저장하며, 저장 성공 메시지가 목록 새로고침 뒤에도 유지됩니다.
+- 전송 모달과 등록된 대상 목록은 `종합`, `ComfyUI`, `Hugging Face`, `Civitai`, `Hitomi`, `Movie`, `ASMR` 분류 버튼으로 대상을 나누어 볼 수 있습니다.
 - `local_mount` 전송은 `/data_remote`와 `/data` root 겹침, `/data_remote` root target, path traversal, backslash escape, symlink escape, offline/unwritable destination을 거부하고, temp file 후 rename으로 복사하며 기존 파일은 기본 skip합니다.
 - `/data`에 보관된 파일/폴더를 등록된 rclone remote로 보내는 copy-only 전송 기능을 추가했습니다.
 - 전송 대상은 이름, rclone remote, base path, 허용 source prefix, include pattern, 보수적 rclone 옵션만 DB에 저장하며 rclone credential은 `/config/rclone/rclone.conf`에 남깁니다.

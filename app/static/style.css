@@ -1104,6 +1104,60 @@ a:hover {
   margin-top: 12px;
 }
 
+.transfer-target-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 2px 0 8px;
+}
+
+.transfer-target-groups:empty {
+  display: none;
+}
+
+.transfer-target-groups button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #d7dde8;
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 18px;
+}
+
+.transfer-target-groups button.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.transfer-target-groups small {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+}
+
+.transfer-target-groups button.active small {
+  background: #bfdbfe;
+  color: #1e40af;
+}
+
 .transfer-target-list {
   display: grid;
   gap: 8px;
@@ -1122,27 +1176,169 @@ a:hover {
   background: #f8fafc;
 }
 
-.transfer-target-item > div {
+.transfer-target-body {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 3px;
 }
 
-.transfer-target-item strong,
-.transfer-target-item span,
-.transfer-target-item small {
+.transfer-target-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.transfer-target-item .settings-cancel {
+  flex: 0 0 auto;
+  min-width: 62px;
+  white-space: nowrap;
+}
+
+.transfer-target-body > strong,
+.transfer-target-body > span,
+.transfer-target-body > small {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.transfer-target-item strong {
+.transfer-target-body > strong {
   color: #172033;
 }
 
-.transfer-target-item span,
-.transfer-target-item small {
+.transfer-target-body > span,
+.transfer-target-body > small {
   color: #64748b;
   font-size: 12px;
+}
+
+.transfer-target-empty {
+  border: 1px dashed #cbd5e1;
+  border-radius: 7px;
+  padding: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.comfyui-folder-check {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 8px;
+  border: 1px solid #dbe4f0;
+  border-radius: 7px;
+  padding: 9px;
+  background: #ffffff;
+}
+
+.comfyui-folder-check.is-loading {
+  border-style: dashed;
+  background: #f8fafc;
+}
+
+.comfyui-folder-check.is-error {
+  border-color: #fecaca;
+  background: #fff7f7;
+}
+
+.comfyui-folder-check p {
+  margin: 0;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.comfyui-check-head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comfyui-check-head strong {
+  color: #172033;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.comfyui-check-head span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.comfyui-check-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  min-width: 0;
+  gap: 8px;
+  align-items: start;
+}
+
+.comfyui-check-row > span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.comfyui-check-row > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.comfyui-check-chip,
+.comfyui-check-empty {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.comfyui-check-chip {
+  background: #e8f5ef;
+  color: #166534;
+}
+
+.comfyui-check-empty {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.comfyui-check-mappings {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comfyui-check-mappings li {
+  min-width: 0;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 17px;
+  overflow-wrap: anywhere;
 }
 
 .subscription-policy-field {
@@ -4810,6 +5006,33 @@ a:hover {
 
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .transfer-target-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .transfer-target-actions {
+    justify-content: flex-start;
+  }
+
+  .transfer-target-actions .settings-cancel {
+    flex: 1 1 120px;
+  }
+
+  .comfyui-check-head {
+    display: grid;
+    align-items: start;
+  }
+
+  .comfyui-check-head span {
+    text-align: left;
+  }
+
+  .comfyui-check-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .settings-footer {

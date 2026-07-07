@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from app.transfer import (
+    COMFYUI_MODEL_FOLDER_ALIASES,
     DEFAULT_DATA_REMOTE_DIR,
     DEFAULT_RCLONE_CONFIG,
     TRANSFER_MAX_CHECKERS,
@@ -13,6 +15,7 @@ from app.transfer import (
     TARGET_KIND_LOCAL_MOUNT,
     TARGET_KIND_RECEIVER,
     build_receiver_destination_path,
+    check_comfyui_local_mount_target,
     copy_to_local_mount,
     data_remote_dir,
     ensure_data_remote_is_separate,
@@ -33,6 +36,155 @@ from app.transfer import (
     validate_destination_subpath,
     validate_remote_name,
 )
+
+
+def test_comfyui_local_mount_check_detects_models_root_and_suggestions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    models_root = data_remote_root / "pc-comfyui" / "ComfyUI" / "models"
+    for folder in ("checkpoints", "loras", "vae"):
+        (models_root / folder).mkdir(parents=True)
+    monkeypatch.delenv("DATA_REMOTE_DIR", raising=False)
+
+    result = check_comfyui_local_mount_target(
+        {"kind": "local_mount", "remote_path": "pc-comfyui/ComfyUI/models"},
+        data_remote_root=data_remote_root,
+    )
+
+    assert result["kind"] == "models_root"
+    assert result["target_base"] == "pc-comfyui/ComfyUI/models"
+    assert result["display_base"] == "pc-comfyui/ComfyUI/models"
+    assert result["models_subpath"] == ""
+    assert set(result["present"]) >= {"checkpoints", "loras", "vae"}
+    assert "upscale_models" in result["missing"]
+    checkpoint_suggestion = next(
+        item for item in result["suggested_mappings"] if item["source_prefix"] == "stable-diffusion/checkpoints"
+    )
+    assert checkpoint_suggestion["destination_subpath"] == "checkpoints"
+    assert checkpoint_suggestion["status"] == "present"
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert str(data_remote_root) not in serialized
+    assert "/data_remote" not in serialized
+
+
+def test_comfyui_local_mount_check_detects_alias_folders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    models_root = data_remote_root / "pc-comfyui" / "ComfyUI" / "models"
+    for folder in ("clip", "unet", "t2i_adapter"):
+        (models_root / folder).mkdir(parents=True)
+    monkeypatch.setenv("DATA_REMOTE_DIR", str(data_remote_root))
+
+    result = check_comfyui_local_mount_target(
+        {"kind": "local_mount", "remote_path": "pc-comfyui/ComfyUI/models"}
+    )
+
+    assert COMFYUI_MODEL_FOLDER_ALIASES["clip"] == "text_encoders"
+    assert COMFYUI_MODEL_FOLDER_ALIASES["unet"] == "diffusion_models"
+    assert COMFYUI_MODEL_FOLDER_ALIASES["t2i_adapter"] == "controlnet"
+    assert set(result["present"]) >= {"text_encoders", "diffusion_models", "controlnet"}
+    assert {
+        (alias["canonical"], alias["found"])
+        for alias in result["aliases"]
+    } == {
+        ("text_encoders", "clip"),
+        ("diffusion_models", "unet"),
+        ("controlnet", "t2i_adapter"),
+    }
+    diffusion_suggestion = next(
+        item for item in result["suggested_mappings"] if item["source_prefix"] == "stable-diffusion/diffusion_models"
+    )
+    assert diffusion_suggestion["destination_subpath"] == "diffusion_models"
+    assert diffusion_suggestion["available_destination_subpath"] == "unet"
+    assert diffusion_suggestion["status"] == "alias_present"
+    controlnet_suggestion = next(
+        item for item in result["suggested_mappings"] if item["source_prefix"] == "stable-diffusion/controlnet"
+    )
+    assert controlnet_suggestion["available_destination_subpath"] == "t2i_adapter"
+
+
+def test_comfyui_local_mount_check_detects_single_folder_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    (data_remote_root / "pc-comfyui" / "ComfyUI" / "models" / "checkpoints").mkdir(parents=True)
+    monkeypatch.setenv("DATA_REMOTE_DIR", str(data_remote_root))
+
+    result = check_comfyui_local_mount_target(
+        {"kind": "local_mount", "remote_path": "pc-comfyui/ComfyUI/models/checkpoints"}
+    )
+
+    assert result["kind"] == "single_folder"
+    assert result["single_folder"] == {"canonical": "checkpoints", "folder": "checkpoints", "alias": False}
+    assert result["missing"] == []
+    assert result["suggested_mappings"] == [
+        {
+            "source_prefix": "stable-diffusion/checkpoints",
+            "canonical": "checkpoints",
+            "destination_subpath": "",
+            "folder_present": True,
+            "status": "present",
+            "found_folder": "checkpoints",
+            "found_subpath": "",
+        }
+    ]
+
+
+def test_comfyui_local_mount_check_detects_comfyui_root_and_generic_folder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    (data_remote_root / "pc-comfyui" / "ComfyUI" / "models" / "checkpoints").mkdir(parents=True)
+    (data_remote_root / "plain-target").mkdir(parents=True)
+    monkeypatch.setenv("DATA_REMOTE_DIR", str(data_remote_root))
+
+    comfyui_root = check_comfyui_local_mount_target(
+        {"kind": "local_mount", "remote_path": "pc-comfyui/ComfyUI"}
+    )
+    assert comfyui_root["kind"] == "comfyui_root"
+    assert comfyui_root["models_subpath"] == "models"
+    assert comfyui_root["display_base"] == "pc-comfyui/ComfyUI/models"
+    checkpoint_suggestion = next(
+        item for item in comfyui_root["suggested_mappings"] if item["source_prefix"] == "stable-diffusion/checkpoints"
+    )
+    assert checkpoint_suggestion["destination_subpath"] == "models/checkpoints"
+    assert checkpoint_suggestion["found_subpath"] == "models/checkpoints"
+
+    generic = check_comfyui_local_mount_target({"kind": "local_mount", "remote_path": "plain-target"})
+    assert generic["kind"] == "generic"
+    assert generic["display_base"] == "plain-target"
+    assert generic["present"] == []
+    assert generic["candidate_model_roots"] == []
+    assert generic["suggested_mappings"] == []
+
+
+def test_comfyui_local_mount_check_rejects_unsafe_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    outside = tmp_path / "outside"
+    (data_remote_root / "pc-comfyui" / "ComfyUI" / "models").mkdir(parents=True)
+    outside.mkdir()
+    monkeypatch.setenv("DATA_REMOTE_DIR", str(data_remote_root))
+
+    with pytest.raises(ValueError, match="local_mount"):
+        check_comfyui_local_mount_target({"kind": "rclone", "remote_path": "pc-comfyui"})
+    with pytest.raises(ValueError):
+        check_comfyui_local_mount_target({"kind": "local_mount", "remote_path": "../escape"})
+
+    try:
+        (data_remote_root / "escape").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is not available: {exc}")
+    with pytest.raises(ValueError, match="symlink"):
+        check_comfyui_local_mount_target({"kind": "local_mount", "remote_path": "escape"})
 
 
 def test_remote_name_and_path_validation() -> None:

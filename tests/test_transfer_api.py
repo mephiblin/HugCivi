@@ -360,6 +360,150 @@ def test_local_mount_tree_preflight_and_job_payload_hide_raw_mount_paths(
     assert str(main.DATA_REMOTE_ROOT) not in json.dumps(job_response.json(), ensure_ascii=False)
 
 
+def test_comfyui_local_mount_check_api_success(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    db, main, data_root, _config_root = app_modules
+    target_id = create_local_mount_target(db)
+    seen_targets: list[dict[str, object]] = []
+
+    def fake_check(target: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        seen_targets.append(target)
+        return {
+            "kind": "models_root",
+            "base_path": "",
+            "present": ["checkpoints", "loras"],
+            "aliases": [{"canonical": "diffusion_models", "found": "unet"}],
+            "missing": ["upscale_models"],
+            "suggested_mappings": [
+                {
+                    "source_prefix": "stable-diffusion/checkpoints",
+                    "destination_subpath": "checkpoints",
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(main.transfer, "check_comfyui_local_mount_target", fake_check, raising=False)
+    client = TestClient(main.app)
+
+    unauthenticated_response = client.post(f"/api/transfer/targets/{target_id}/comfyui/check")
+    assert unauthenticated_response.status_code == 401
+
+    response = client.post(
+        f"/api/transfer/targets/{target_id}/comfyui/check",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["kind"] == "models_root"
+    assert payload["check"]["present"] == ["checkpoints", "loras"]
+    assert payload["target"]["id"] == target_id
+    assert payload["target"]["kind"] == "local_mount"
+    assert seen_targets and seen_targets[0]["id"] == target_id
+    response_text = json.dumps(payload, ensure_ascii=False)
+    assert str(data_root) not in response_text
+    assert str(main.DATA_REMOTE_ROOT) not in response_text
+
+
+def test_comfyui_local_mount_check_api_reads_real_data_remote_folder(app_modules: tuple) -> None:
+    db, main, _data_root, _config_root = app_modules
+    models_root = main.DATA_REMOTE_ROOT / "pc-comfyui" / "ComfyUI" / "models"
+    for folder in ("checkpoints", "loras", "unet"):
+        (models_root / folder).mkdir(parents=True)
+    target_id = db.create_transfer_target(
+        name="PC ComfyUI Models",
+        kind="local_mount",
+        remote_path="pc-comfyui/ComfyUI/models",
+        policy={
+            "allowed_source_prefixes": ["stable-diffusion/checkpoints", "stable-diffusion/diffusion_models"],
+            "include_patterns": [],
+            "bwlimit": "",
+            "transfers": 1,
+            "checkers": 2,
+        },
+    )
+    client = TestClient(main.app)
+
+    response = client.post(
+        f"/api/transfer/targets/{target_id}/comfyui/check",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["kind"] == "models_root"
+    assert payload["display_base"] == "pc-comfyui/ComfyUI/models"
+    assert set(payload["present"]) >= {"checkpoints", "loras", "diffusion_models"}
+    diffusion_suggestion = next(
+        item for item in payload["suggested_mappings"] if item["source_prefix"] == "stable-diffusion/diffusion_models"
+    )
+    assert diffusion_suggestion["destination_subpath"] == "diffusion_models"
+    assert diffusion_suggestion["available_destination_subpath"] == "unet"
+    response_text = json.dumps(payload, ensure_ascii=False)
+    assert str(main.DATA_REMOTE_ROOT) not in response_text
+
+
+def test_comfyui_check_api_rejects_non_local_mount_targets(app_modules: tuple) -> None:
+    db, main, _data_root, _config_root = app_modules
+    rclone_target_id = create_checkpoint_target(db)
+    receiver_target_id = create_receiver_target(db)
+    client = TestClient(main.app)
+
+    for target_id in (rclone_target_id, receiver_target_id):
+        response = client.post(
+            f"/api/transfer/targets/{target_id}/comfyui/check",
+            auth=("admin", "test-password-that-is-long"),
+        )
+        assert response.status_code == 400
+        assert "연결 폴더" in response.json()["detail"]
+        assert "receiver-secret" not in json.dumps(response.json(), ensure_ascii=False)
+
+
+def test_comfyui_check_api_handles_missing_and_disabled_targets(app_modules: tuple) -> None:
+    db, main, _data_root, _config_root = app_modules
+    target_id = create_local_mount_target(db)
+    assert db.update_transfer_target(target_id, enabled=False)
+    client = TestClient(main.app)
+
+    missing_response = client.post(
+        "/api/transfer/targets/9999/comfyui/check",
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert missing_response.status_code == 404
+
+    disabled_response = client.post(
+        f"/api/transfer/targets/{target_id}/comfyui/check",
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert disabled_response.status_code == 400
+    assert "비활성화" in disabled_response.json()["detail"]
+
+
+def test_comfyui_check_api_blocks_unsafe_payload_without_path_leak(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, main, _data_root, _config_root = app_modules
+    target_id = create_local_mount_target(db)
+
+    def fake_check(_target: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        return {"kind": "models_root", "base_path": str(main.DATA_REMOTE_ROOT / "pc-comfyui")}
+
+    monkeypatch.setattr(main.transfer, "check_comfyui_local_mount_target", fake_check, raising=False)
+    client = TestClient(main.app)
+
+    response = client.post(
+        f"/api/transfer/targets/{target_id}/comfyui/check",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 400
+    response_text = json.dumps(response.json(), ensure_ascii=False)
+    assert str(main.DATA_REMOTE_ROOT) not in response_text
+    assert "pc-comfyui" not in response_text
+
+
 def test_data_root_clone_to_local_mount_preflight_job_and_handler(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -702,16 +846,35 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'placeholder="비워두면 모든 파일"' in template
     assert 'id="transfer-setting-receiver-url"' in template
     assert 'id="transfer-receiver-label"' in template
+    assert 'id="transfer-target-groups"' in template
+    assert 'id="transfer-setting-groups"' in template
     assert 'id="transfer-root-target"' in template
     assert 'id="transfer-root-submit"' in template
+    assert "TRANSFER_TARGET_GROUPS" in template
+    for group_label in ("종합", "ComfyUI", "Hugging Face", "Civitai", "Hitomi", "Movie", "ASMR"):
+        assert group_label in template
+    assert "function transferTargetMatchesGroup" in template
+    assert "function renderTransferTargetGroupButtons" in template
+    assert "activeTransferTargetGroup = knownTransferTargetGroup" in template
+    assert "activeTransferSettingGroup = knownTransferTargetGroup" in template
     assert 'data-action="transfer"' in template
     assert "fetch('/api/transfer/targets')" in template
     assert "/${treeKind}/tree?path=" in template
     assert "'local-mount'" in template
+    assert "settingsForm.addEventListener('submit'" in template
+    assert "activePane?.id !== 'settings-transfer'" in template
+    assert "saveTransferSettingTarget();" in template
+    assert "successStatus: '전송 대상이 저장되었습니다.'" in template
     assert "fetch('/api/transfer/preflight'" in template
     assert "fetch('/api/transfer/jobs'" in template
     assert "fetch('/api/transfer/data-root/preflight'" in template
     assert "fetch('/api/transfer/data-root/jobs'" in template
+    assert "data-transfer-comfyui-check" in template
+    assert "/api/transfer/targets/${encodeURIComponent(id)}/comfyui/check" in template
+    assert "function renderTransferComfyuiCheckPanel" in template
+    assert "function checkTransferComfyuiFolder" in template
+    assert "safeComfyuiDisplayText" in template
+    assert "transferComfyuiFolderChecks" in template
     payload_start = template.index("function transferJobPayload")
     payload_end = template.index("function renderTransferPreflight", payload_start)
     payload_block = template[payload_start:payload_end]

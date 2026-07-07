@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -53,7 +53,7 @@ The archive content is not stored inside SQLite. SQLite stores metadata, paths, 
 | `app/db.py` | SQLite connection, schema migration, settings, job CRUD, library index persistence, maintenance operations. |
 | `app/downloader.py` | External download scheduler and source handlers for Hugging Face, Civitai, Hitomi, ASMR.one, gallery-dl, yt-dlp, generic files, and ComfyUI workflows. |
 | `app/internal_jobs.py` | Lightweight in-process job runner for server-local expensive work. |
-| `app/transfer.py` | Copy-only transfer target validation, local mount path/copy safety, rclone destination/argv construction, HugCivi Receiver destination validation, policy sanitization, and output redaction helpers. |
+| `app/transfer.py` | Copy-only transfer target validation, local mount path/copy safety, ComfyUI local mount folder checks, rclone destination/argv construction, HugCivi Receiver destination validation, policy sanitization, and output redaction helpers. |
 | `app/subscriptions.py` | YouTube subscription defaults, API payload helpers, source URL normalization, manual/scheduled yt-dlp discovery, independent subscription check scheduler, and independent subscription download worker. |
 | `app/defaults.py` | Shared default values for queue, cache, media, archive, and test-visible limits. |
 | `app/parsers.py` | Input parsing and source routing. |
@@ -231,6 +231,7 @@ Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
 - for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
+- for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder and mapping hints without exposing `/data_remote` absolute paths
 - for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
@@ -291,7 +292,7 @@ Main API groups:
 | Settings | `/settings` |
 | Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
-| Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
+| Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/targets/{target_id}/comfyui/check`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
@@ -315,7 +316,7 @@ Important invariants for future changes:
 - Symlink folders are not accepted as archive roots. ZIP preflight rejects symlinks that leave `/data`.
 - Internal jobs must not be enqueued into the external download scheduler.
 - Transfer is copy-only outbound work: jobs must use registered target IDs, validated `/data` source paths, and target allowed source prefixes. Browser payloads must not include modes, raw host paths, remotes, credentials, or command arguments.
-- Transfer target rows store copy policy and local mount paths, rclone remote names, or Receiver URL/token. `/data_remote` must not overlap `/data`; rclone credentials belong in `/config/rclone/rclone.conf`; Receiver tokens must not be returned in list/job payloads or logs.
+- Transfer target rows store copy policy and local mount paths, rclone remote names, or Receiver URL/token. `/data_remote` must not overlap `/data`; rclone credentials belong in `/config/rclone/rclone.conf`; Receiver tokens and ComfyUI folder-check payloads must not return secrets or absolute host paths.
 - External download jobs must keep `job_kind='download'`.
 - YouTube subscription state must stay separate from the visible `jobs` queue unless a future compatibility bridge is explicitly added.
 - DB migrations should be additive unless a separate migration plan and backup path exist.

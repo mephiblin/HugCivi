@@ -28,6 +28,50 @@ TRANSFER_MAX_CHECKERS = 8
 TRANSFER_MAX_CONCURRENT_DEFAULT = 1
 TRANSFER_MAX_CONCURRENT_HARD_LIMIT = 4
 
+COMFYUI_MODEL_FOLDERS = {
+    "checkpoints": ("checkpoints",),
+    "configs": ("configs",),
+    "loras": ("loras",),
+    "vae": ("vae",),
+    "text_encoders": ("text_encoders", "clip"),
+    "diffusion_models": ("diffusion_models", "unet"),
+    "clip_vision": ("clip_vision",),
+    "style_models": ("style_models",),
+    "embeddings": ("embeddings",),
+    "diffusers": ("diffusers",),
+    "vae_approx": ("vae_approx",),
+    "controlnet": ("controlnet", "t2i_adapter"),
+    "gligen": ("gligen",),
+    "upscale_models": ("upscale_models",),
+    "latent_upscale_models": ("latent_upscale_models",),
+    "hypernetworks": ("hypernetworks",),
+    "photomaker": ("photomaker",),
+    "classifiers": ("classifiers",),
+    "model_patches": ("model_patches",),
+    "audio_encoders": ("audio_encoders",),
+    "background_removal": ("background_removal",),
+    "frame_interpolation": ("frame_interpolation",),
+    "geometry_estimation": ("geometry_estimation",),
+    "optical_flow": ("optical_flow",),
+    "detection": ("detection",),
+}
+COMFYUI_CANONICAL_MODEL_FOLDERS = tuple(COMFYUI_MODEL_FOLDERS)
+COMFYUI_MODEL_FOLDER_ALIASES = {
+    folder: canonical
+    for canonical, folders in COMFYUI_MODEL_FOLDERS.items()
+    for folder in folders[1:]
+}
+COMFYUI_HUGCIVI_ROUTE_MAP = {
+    "stable-diffusion/checkpoints": "checkpoints",
+    "stable-diffusion/loras": "loras",
+    "stable-diffusion/diffusion_models": "diffusion_models",
+    "stable-diffusion/vae": "vae",
+    "stable-diffusion/controlnet": "controlnet",
+    "stable-diffusion/embeddings": "embeddings",
+    "stable-diffusion/upscalers": "upscale_models",
+}
+COMFYUI_RECOMMENDED_MODEL_FOLDERS = tuple(dict.fromkeys(COMFYUI_HUGCIVI_ROUTE_MAP.values()))
+
 _REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _BWLIMIT_RE = re.compile(r"^(?:off|[0-9]+(?:\.[0-9]+)?[bBkKmMgGtTpP]?)$")
 _SENSITIVE_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
@@ -294,6 +338,95 @@ def local_mount_tree(
         "limit": child_limit,
         "next_cursor": page[-1].name if has_more and page else None,
         "has_more": has_more,
+    }
+
+
+def check_comfyui_local_mount_target(
+    target: dict,
+    *,
+    data_remote_root: str | Path | None = None,
+) -> dict:
+    if not isinstance(target, Mapping):
+        raise ValueError("Transfer target is required")
+    kind = validate_target_kind(str(target.get("kind") or ""))
+    if kind != TARGET_KIND_LOCAL_MOUNT:
+        raise ValueError("ComfyUI folder check supports local_mount targets only")
+
+    remote_path = normalize_local_mount_remote_path(str(target.get("remote_path") or ""))
+    base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
+    children = _direct_local_mount_child_dirs(base)
+
+    if base.name.lower() == "models":
+        return _comfyui_models_root_result(
+            result_kind="models_root",
+            target_base=remote_path,
+            models_subpath="",
+            models_path=base,
+        )
+
+    single_folder = _comfyui_model_folder_match(base.name)
+    if single_folder is not None:
+        canonical, is_alias = single_folder
+        return _comfyui_single_folder_result(
+            target_base=remote_path,
+            canonical=canonical,
+            folder=base.name,
+            is_alias=is_alias,
+        )
+
+    if (base / "models").is_symlink():
+        resolve_local_mount_destination(remote_path, "models", data_remote_root=data_remote_root, require_exists=True)
+
+    models_child = _find_child_dir(children, "models")
+    if models_child is not None:
+        models_subpath = models_child.name
+        models_path = resolve_local_mount_destination(
+            remote_path,
+            models_subpath,
+            data_remote_root=data_remote_root,
+            require_exists=True,
+        )
+        return _comfyui_models_root_result(
+            result_kind="comfyui_root",
+            target_base=remote_path,
+            models_subpath=models_subpath,
+            models_path=models_path,
+        )
+
+    direct_found = _comfyui_found_model_folders(children, root_subpath="")
+    if direct_found["present"]:
+        return _comfyui_models_root_result(
+            result_kind="models_root",
+            target_base=remote_path,
+            models_subpath="",
+            models_path=base,
+            found=direct_found,
+        )
+
+    candidates, suggestion_base, suggestion_found = _comfyui_nested_model_root_candidates(
+        remote_path,
+        children,
+        data_remote_root=data_remote_root,
+    )
+    return {
+        "ok": True,
+        "kind": "generic",
+        "target_kind": TARGET_KIND_LOCAL_MOUNT,
+        "target_base": remote_path,
+        "base_path": "",
+        "display_base": suggestion_base or remote_path,
+        "models_subpath": suggestion_base,
+        "present": [],
+        "found_folders": [],
+        "aliases": [],
+        "missing": [],
+        "single_folder": None,
+        "candidate_model_roots": candidates,
+        "suggested_mappings": _comfyui_destination_suggestions(
+            destination_base=suggestion_base,
+            found_by_canonical=suggestion_found,
+        ),
+        "warnings": [],
     }
 
 
@@ -587,6 +720,224 @@ def build_rclone_copy_command(
 def redact_transfer_output(value: str | None) -> str:
     redacted = redact_sensitive_text(value) or ""
     return _SENSITIVE_USERINFO_RE.sub(r"\1[REDACTED]@", redacted)
+
+
+def _comfyui_models_root_result(
+    *,
+    result_kind: str,
+    target_base: str,
+    models_subpath: str,
+    models_path: Path,
+    found: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    found = found or _comfyui_found_model_folders(
+        _direct_local_mount_child_dirs(models_path),
+        root_subpath=models_subpath,
+    )
+    return {
+        "ok": True,
+        "kind": result_kind,
+        "target_kind": TARGET_KIND_LOCAL_MOUNT,
+        "target_base": target_base,
+        "base_path": "",
+        "display_base": _join_posix(target_base, models_subpath),
+        "models_subpath": models_subpath,
+        "present": found["present"],
+        "found_folders": found["found_folders"],
+        "aliases": found["aliases"],
+        "missing": found["missing"],
+        "single_folder": None,
+        "candidate_model_roots": [],
+        "suggested_mappings": _comfyui_destination_suggestions(
+            destination_base=models_subpath,
+            found_by_canonical=found["found_by_canonical"],
+        ),
+        "warnings": [],
+    }
+
+
+def _comfyui_single_folder_result(
+    *,
+    target_base: str,
+    canonical: str,
+    folder: str,
+    is_alias: bool,
+) -> dict[str, Any]:
+    found_entry = {
+        "canonical": canonical,
+        "folder": folder,
+        "path": "",
+        "alias": is_alias,
+    }
+    aliases = [{"canonical": canonical, "found": folder, "path": ""}] if is_alias else []
+    return {
+        "ok": True,
+        "kind": "single_folder",
+        "target_kind": TARGET_KIND_LOCAL_MOUNT,
+        "target_base": target_base,
+        "base_path": "",
+        "display_base": target_base,
+        "models_subpath": None,
+        "present": [canonical],
+        "found_folders": [found_entry],
+        "aliases": aliases,
+        "missing": [],
+        "single_folder": {
+            "canonical": canonical,
+            "folder": folder,
+            "alias": is_alias,
+        },
+        "candidate_model_roots": [],
+        "suggested_mappings": _comfyui_destination_suggestions(
+            destination_base=None,
+            found_by_canonical={canonical: found_entry},
+            single_canonical=canonical,
+        ),
+        "warnings": [],
+    }
+
+
+def _comfyui_found_model_folders(children: list[Path], *, root_subpath: str) -> dict[str, Any]:
+    found_by_canonical: dict[str, dict[str, Any]] = {}
+    aliases: list[dict[str, str]] = []
+
+    for child in children:
+        match = _comfyui_model_folder_match(child.name)
+        if match is None:
+            continue
+        canonical, is_alias = match
+        path = _join_posix(root_subpath, child.name)
+        entry = {
+            "canonical": canonical,
+            "folder": child.name,
+            "path": path,
+            "alias": is_alias,
+        }
+        current = found_by_canonical.get(canonical)
+        if current is None or (current.get("alias") and not is_alias):
+            found_by_canonical[canonical] = entry
+        if is_alias:
+            aliases.append({"canonical": canonical, "found": child.name, "path": path})
+
+    present = [canonical for canonical in COMFYUI_CANONICAL_MODEL_FOLDERS if canonical in found_by_canonical]
+    return {
+        "present": present,
+        "found_folders": [found_by_canonical[canonical] for canonical in present],
+        "aliases": aliases,
+        "missing": [canonical for canonical in COMFYUI_RECOMMENDED_MODEL_FOLDERS if canonical not in found_by_canonical],
+        "found_by_canonical": found_by_canonical,
+    }
+
+
+def _comfyui_destination_suggestions(
+    *,
+    destination_base: str | None,
+    found_by_canonical: Mapping[str, Mapping[str, Any]],
+    single_canonical: str | None = None,
+) -> list[dict[str, Any]]:
+    if destination_base is None and single_canonical is None:
+        return []
+
+    suggestions: list[dict[str, Any]] = []
+    for source_prefix, canonical in COMFYUI_HUGCIVI_ROUTE_MAP.items():
+        if single_canonical is not None:
+            if canonical != single_canonical:
+                continue
+            destination_subpath = ""
+        else:
+            destination_subpath = _join_posix(destination_base or "", canonical)
+
+        found = found_by_canonical.get(canonical)
+        if found is None:
+            status = "missing"
+        elif bool(found.get("alias")):
+            status = "alias_present"
+        else:
+            status = "present"
+
+        suggestion = {
+            "source_prefix": source_prefix,
+            "canonical": canonical,
+            "destination_subpath": destination_subpath,
+            "folder_present": found is not None,
+            "status": status,
+        }
+        if found is not None:
+            found_subpath = str(found.get("path") or "")
+            suggestion["found_folder"] = str(found.get("folder") or "")
+            suggestion["found_subpath"] = found_subpath
+            if found_subpath != destination_subpath:
+                suggestion["available_destination_subpath"] = found_subpath
+        suggestions.append(suggestion)
+    return suggestions
+
+
+def _comfyui_nested_model_root_candidates(
+    remote_path: str,
+    children: list[Path],
+    *,
+    data_remote_root: str | Path | None = None,
+) -> tuple[list[dict[str, Any]], str | None, dict[str, dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    suggestion_base: str | None = None
+    suggestion_found: dict[str, dict[str, Any]] = {}
+
+    for child in children:
+        if child.name.lower() != "comfyui":
+            continue
+        nested = child / "models"
+        try:
+            if not nested.exists() or not nested.is_dir():
+                continue
+        except OSError:
+            continue
+        models_subpath = _join_posix(child.name, "models")
+        models_path = resolve_local_mount_destination(
+            remote_path,
+            models_subpath,
+            data_remote_root=data_remote_root,
+            require_exists=True,
+        )
+        found = _comfyui_found_model_folders(
+            _direct_local_mount_child_dirs(models_path),
+            root_subpath=models_subpath,
+        )
+        candidates.append(
+            {
+                "path": models_subpath,
+                "present": found["present"],
+                "found_folders": found["found_folders"],
+                "aliases": found["aliases"],
+                "missing": found["missing"],
+            }
+        )
+        if suggestion_base is None:
+            suggestion_base = models_subpath
+            suggestion_found = found["found_by_canonical"]
+
+    return candidates, suggestion_base, suggestion_found
+
+
+def _comfyui_model_folder_match(name: str) -> tuple[str, bool] | None:
+    folder = str(name or "").strip().lower()
+    if folder in COMFYUI_MODEL_FOLDERS:
+        return folder, False
+    canonical = COMFYUI_MODEL_FOLDER_ALIASES.get(folder)
+    if canonical:
+        return canonical, True
+    return None
+
+
+def _find_child_dir(children: list[Path], name: str) -> Path | None:
+    wanted = name.lower()
+    for child in children:
+        if child.name.lower() == wanted:
+            return child
+    return None
+
+
+def _join_posix(*parts: str | None) -> str:
+    return "/".join(str(part).strip("/") for part in parts if str(part or "").strip("/"))
 
 
 def _reject_non_copy_policy(policy: Mapping[str, Any]) -> None:

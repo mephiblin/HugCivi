@@ -696,6 +696,7 @@
               <div class="transfer-settings-head">
                 <h3>등록된 대상</h3>
               </div>
+              <div class="transfer-target-groups" id="transfer-setting-groups" role="tablist" aria-label="등록된 전송 대상 분류"></div>
               <div class="transfer-target-list" id="transfer-setting-list"></div>
             </section>
           </div>
@@ -838,6 +839,7 @@
       <div class="transfer-form-body">
         <label class="setting-field" for="transfer-target">
           <span>대상</span>
+          <div class="transfer-target-groups" id="transfer-target-groups" role="tablist" aria-label="전송 대상 분류"></div>
           <select id="transfer-target" required>
             <option value="">대상을 불러오는 중</option>
           </select>
@@ -1045,6 +1047,7 @@
     const libraryThumbnailJobButton = document.getElementById('library-thumbnail-job-button');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
+    const settingsForm = document.querySelector('.settings-form');
     const settingsClose = document.getElementById('settings-close');
     const settingsCancel = document.getElementById('settings-cancel');
     const settingsContent = document.querySelector('.settings-content');
@@ -1129,6 +1132,7 @@
     const transferClose = document.getElementById('transfer-close');
     const transferCancel = document.getElementById('transfer-cancel');
     const transferTargetSelect = document.getElementById('transfer-target');
+    const transferTargetGroups = document.getElementById('transfer-target-groups');
     const transferSource = document.getElementById('transfer-source');
     const transferReceiverBrowser = document.getElementById('transfer-receiver-browser');
     const transferReceiverLabel = document.getElementById('transfer-receiver-label');
@@ -1152,6 +1156,7 @@
     const transferSettingSave = document.getElementById('transfer-setting-save');
     const transferSettingRefresh = document.getElementById('transfer-setting-refresh');
     const transferSettingStatus = document.getElementById('transfer-setting-status');
+    const transferSettingGroups = document.getElementById('transfer-setting-groups');
     const transferSettingList = document.getElementById('transfer-setting-list');
     const transferRootTarget = document.getElementById('transfer-root-target');
     const transferRootDestination = document.getElementById('transfer-root-destination');
@@ -1201,6 +1206,27 @@
     const workflowGraph = document.getElementById('workflow-graph');
     const workflowJson = document.getElementById('workflow-json');
     const mediaMobileQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 760px)') : null;
+    const TRANSFER_TARGET_GROUPS = [
+      {id: 'all', label: '종합', tokens: []},
+      {id: 'comfyui', label: 'ComfyUI', tokens: ['comfyui', 'stable-diffusion', 'checkpoint', 'checkpoints', 'lora', 'loras', 'diffusion-model', 'diffusion-models', 'vae', 'controlnet', 'upscaler', 'upscalers']},
+      {id: 'huggingface', label: 'Hugging Face', tokens: ['huggingface', 'huggingface.co', 'hf.co']},
+      {id: 'civitai', label: 'Civitai', tokens: ['civitai']},
+      {id: 'hitomi', label: 'Hitomi', tokens: ['hitomi']},
+      {id: 'movie', label: 'Movie', tokens: ['movie', 'movies', 'video', 'videos', 'youtube', 'youtube-dl', 'yt-dlp', 'ytdlp', 'gallery-dl']},
+      {id: 'asmrone', label: 'ASMR', tokens: ['asmr.one', 'asmrone']},
+    ];
+    const COMFYUI_FOLDER_KIND_LABELS = {
+      models_root: 'ComfyUI models root',
+      model_root: 'ComfyUI models root',
+      single_folder: '단일 모델 폴더',
+      model_folder: '단일 모델 폴더',
+      single_model_folder: '단일 모델 폴더',
+      comfyui_root: 'ComfyUI root 후보',
+      root_candidate: 'ComfyUI root 후보',
+      generic: '일반 폴더',
+      general: '일반 폴더',
+      unknown: '일반 폴더',
+    };
     let contextTarget = null;
     let folderSearchTimer = null;
     let folderSearchResults = [];
@@ -1213,8 +1239,12 @@
     let activeFolderMoveDestination = null;
     let activeTransferTarget = null;
     let activeTransferDestinationSubpath = '';
+    let activeTransferTargetGroup = 'all';
+    let activeTransferSettingGroup = 'all';
     let transferTargets = [];
     let transferSettingTargets = [];
+    let transferComfyuiFolderChecks = new Map();
+    let transferComfyuiFolderCheckRequests = new Map();
     let transferPreflightRequestId = 0;
     let transferRootPreflightRequestId = 0;
     let transferReceiverBrowseRequestId = 0;
@@ -1552,6 +1582,15 @@
       await refreshTransferReceiverBrowser();
       await refreshTransferPreflight();
     });
+    transferTargetGroups.addEventListener('click', async event => {
+      const button = event.target.closest('[data-transfer-target-group]');
+      if (!button) return;
+      event.preventDefault();
+      activeTransferTargetGroup = knownTransferTargetGroup(button.dataset.transferTargetGroup);
+      renderTransferTargets(transferTargets);
+      await refreshTransferReceiverBrowser();
+      await refreshTransferPreflight();
+    });
     transferReceiverTree.addEventListener('click', async event => {
       const toggle = event.target.closest('[data-receiver-toggle]');
       if (toggle) {
@@ -1564,15 +1603,34 @@
       event.preventDefault();
       selectTransferReceiverDestination(button.dataset.receiverDestination || '');
     });
+    settingsForm.addEventListener('submit', event => {
+      const activePane = document.querySelector('.settings-pane.active');
+      if (activePane?.id !== 'settings-transfer') return;
+      event.preventDefault();
+      saveTransferSettingTarget();
+    });
     transferForm.addEventListener('submit', submitTransferJob);
     transferSettingKind.addEventListener('change', updateTransferSettingKindFields);
     transferSettingSave.addEventListener('click', saveTransferSettingTarget);
     transferSettingRefresh.addEventListener('click', loadTransferSettingTargets);
     transferSettingList.addEventListener('click', event => {
+      const checkButton = event.target.closest('[data-transfer-comfyui-check]');
+      if (checkButton) {
+        event.preventDefault();
+        checkTransferComfyuiFolder(checkButton.dataset.transferComfyuiCheck);
+        return;
+      }
       const button = event.target.closest('[data-transfer-target-delete]');
       if (button) {
         deleteTransferSettingTarget(button.dataset.transferTargetDelete);
       }
+    });
+    transferSettingGroups.addEventListener('click', event => {
+      const button = event.target.closest('[data-transfer-target-group]');
+      if (!button) return;
+      event.preventDefault();
+      activeTransferSettingGroup = knownTransferTargetGroup(button.dataset.transferTargetGroup);
+      renderTransferSettingTargets(transferSettingTargets);
     });
     transferRootTarget.addEventListener('change', clearTransferDataRootPreflight);
     transferRootDestination.addEventListener('input', clearTransferDataRootPreflight);
@@ -2334,6 +2392,7 @@
       if (!path) return;
       activeTransferTarget = {...target, path};
       activeTransferDestinationSubpath = '';
+      activeTransferTargetGroup = 'all';
       transferReceiverNodeCache = new Map();
       transferReceiverExpandedPaths = new Set();
       transferSource.textContent = `/data/${path}`;
@@ -2429,10 +2488,303 @@
       return !(value === false || value === 0 || value === '0' || String(value).toLowerCase() === 'false');
     }
 
+    function knownTransferTargetGroup(groupId) {
+      const value = String(groupId || 'all').trim();
+      return TRANSFER_TARGET_GROUPS.some(group => group.id === value) ? value : 'all';
+    }
+
+    function transferTargetGroup(groupId) {
+      const safeId = knownTransferTargetGroup(groupId);
+      return TRANSFER_TARGET_GROUPS.find(group => group.id === safeId) || TRANSFER_TARGET_GROUPS[0];
+    }
+
+    function transferTargetGroupValues(target) {
+      const policy = target.policy || {};
+      const prefixes = policy.allowed_source_prefixes || policy.allowedSourcePrefixes || [];
+      const includes = policy.include_patterns || policy.includePatterns || [];
+      return [
+        target.name,
+        target.kind,
+        target.remote_name,
+        target.remote_path,
+        target.receiver_url,
+        ...(Array.isArray(prefixes) ? prefixes : []),
+        ...(Array.isArray(includes) ? includes : []),
+      ].map(value => String(value || '').trim()).filter(Boolean);
+    }
+
+    function normalizedTransferGroupText(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/[_\\]+/g, '-')
+        .replace(/\s+/g, '-');
+    }
+
+    function transferTargetMatchesGroup(target, groupId) {
+      const group = transferTargetGroup(groupId);
+      if (group.id === 'all') return true;
+      const values = transferTargetGroupValues(target).map(normalizedTransferGroupText);
+      return values.some(value => group.tokens.some(token => {
+        const normalizedToken = normalizedTransferGroupText(token);
+        return value === normalizedToken
+          || value.startsWith(`${normalizedToken}/`)
+          || value.startsWith(`${normalizedToken}-`)
+          || value.includes(`/${normalizedToken}/`)
+          || value.includes(`-${normalizedToken}-`)
+          || value.includes(normalizedToken);
+      }));
+    }
+
+    function transferTargetsForGroup(targets, groupId, options = {}) {
+      const includeDisabled = options.includeDisabled === true;
+      return (Array.isArray(targets) ? targets : [])
+        .filter(target => includeDisabled || target.enabled)
+        .filter(target => transferTargetMatchesGroup(target, groupId));
+    }
+
+    function renderTransferTargetGroupButtons(container, activeGroup, targets, options = {}) {
+      if (!container) return;
+      const includeDisabled = options.includeDisabled === true;
+      container.innerHTML = TRANSFER_TARGET_GROUPS.map(group => {
+        const selected = group.id === knownTransferTargetGroup(activeGroup);
+        const count = transferTargetsForGroup(targets, group.id, {includeDisabled}).length;
+        return `<button type="button"
+            class="${selected ? 'active' : ''}"
+            data-transfer-target-group="${escapeHtml(group.id)}"
+            role="tab"
+            aria-selected="${selected ? 'true' : 'false'}">
+          <span>${escapeHtml(group.label)}</span>
+          <small>${escapeHtml(count)}</small>
+        </button>`;
+      }).join('');
+    }
+
+    function transferTargetCanCheckComfyui(target) {
+      return transferTargetKind(target) === 'local_mount' && transferTargetMatchesGroup(target, 'comfyui');
+    }
+
+    function safeComfyuiDisplayText(value) {
+      let text = String(value || '');
+      if (!text) return '';
+      text = text.replace(/(?:[A-Za-z]:)?[^\s"'<>)]*\/data_remote\/([^\s"'<>)]*)/g, (match, relativePath) => {
+        const cleanPath = normalizePath(relativePath || '');
+        return cleanPath ? `연결 폴더/${cleanPath}` : '연결 폴더';
+      });
+      text = text.replace(/\bdata_remote\/([^\s"'<>)]*)/g, (match, relativePath) => {
+        const cleanPath = normalizePath(relativePath || '');
+        return cleanPath ? `연결 폴더/${cleanPath}` : '연결 폴더';
+      });
+      text = text.replace(/(?:[A-Za-z]:)?[^\s"'<>)]*\/data_remote\b/g, '연결 폴더');
+      return text.replace(/\bdata_remote\b/g, '연결 폴더');
+    }
+
+    function comfyuiValueText(value) {
+      if (value === undefined || value === null) return '';
+      if (Array.isArray(value)) return value.map(comfyuiValueText).filter(Boolean).join(', ');
+      if (typeof value === 'object') {
+        return safeComfyuiDisplayText(value.label || value.name || value.folder || value.path || value.value || '');
+      }
+      return safeComfyuiDisplayText(value);
+    }
+
+    function comfyuiStringList(value) {
+      if (Array.isArray(value)) {
+        return value.map(comfyuiValueText).filter(Boolean);
+      }
+      if (value && typeof value === 'object') {
+        return Object.entries(value)
+          .filter(([, present]) => present)
+          .map(([key]) => safeComfyuiDisplayText(key))
+          .filter(Boolean);
+      }
+      const text = comfyuiValueText(value);
+      return text ? [text] : [];
+    }
+
+    function comfyuiAliasList(value) {
+      if (Array.isArray(value)) {
+        return value.map(alias => {
+          if (!alias || typeof alias !== 'object') return comfyuiValueText(alias);
+          const found = comfyuiValueText(alias.found || alias.alias || alias.folder || alias.name);
+          const canonical = comfyuiValueText(alias.canonical || alias.key || alias.target || alias.destination);
+          return found && canonical ? `${found} -> ${canonical}` : (found || canonical);
+        }).filter(Boolean);
+      }
+      if (value && typeof value === 'object') {
+        return Object.entries(value).flatMap(([canonical, found]) => {
+          const canonicalText = comfyuiValueText(canonical);
+          const foundValues = Array.isArray(found) ? found : [found];
+          return foundValues.map(item => {
+            const foundText = comfyuiValueText(item);
+            return foundText && canonicalText ? `${foundText} -> ${canonicalText}` : (foundText || canonicalText);
+          });
+        }).filter(Boolean);
+      }
+      const text = comfyuiValueText(value);
+      return text ? [text] : [];
+    }
+
+    function comfyuiSuggestedMappingList(value) {
+      if (Array.isArray(value)) {
+        return value.map(mapping => {
+          if (Array.isArray(mapping)) {
+            const source = comfyuiValueText(mapping[0]);
+            const destination = comfyuiValueText(mapping[1]) || '대상 루트';
+            return source ? `${source} -> ${destination}` : '';
+          }
+          if (!mapping || typeof mapping !== 'object') return comfyuiValueText(mapping);
+          const source = comfyuiValueText(mapping.source_prefix || mapping.sourcePrefix || mapping.source || mapping.from);
+          const destination = comfyuiValueText(
+            mapping.destination_subpath || mapping.destinationSubpath || mapping.destination || mapping.to || mapping.folder
+          ) || '대상 루트';
+          return source ? `${source} -> ${destination}` : destination;
+        }).filter(Boolean);
+      }
+      if (value && typeof value === 'object') {
+        return Object.entries(value).map(([source, destination]) => {
+          const sourceText = comfyuiValueText(source);
+          const destinationText = comfyuiValueText(destination) || '대상 루트';
+          return sourceText ? `${sourceText} -> ${destinationText}` : destinationText;
+        }).filter(Boolean);
+      }
+      const text = comfyuiValueText(value);
+      return text ? [text] : [];
+    }
+
+    function comfyuiFolderKindLabel(kind) {
+      const normalized = String(kind || 'generic').toLowerCase();
+      if (COMFYUI_FOLDER_KIND_LABELS[normalized]) return COMFYUI_FOLDER_KIND_LABELS[normalized];
+      if (normalized.includes('models') && normalized.includes('root')) return 'ComfyUI models root';
+      if (normalized.includes('single') || normalized.includes('model_folder')) return '단일 모델 폴더';
+      if (normalized.includes('root')) return 'ComfyUI root 후보';
+      return kind ? safeComfyuiDisplayText(String(kind).replace(/_/g, ' ')) : '일반 폴더';
+    }
+
+    function renderComfyuiChipList(items, emptyText = '없음') {
+      const values = (Array.isArray(items) ? items : []).filter(Boolean);
+      if (!values.length) {
+        return `<span class="comfyui-check-empty">${escapeHtml(emptyText)}</span>`;
+      }
+      const visible = values.slice(0, 8);
+      const extra = values.length - visible.length;
+      return [
+        ...visible.map(item => `<span class="comfyui-check-chip">${escapeHtml(item)}</span>`),
+        extra > 0 ? `<span class="comfyui-check-chip">+${escapeHtml(extra)}</span>` : '',
+      ].filter(Boolean).join('');
+    }
+
+    function renderComfyuiCheckRow(label, contentHtml) {
+      return `
+        <div class="comfyui-check-row">
+          <span>${escapeHtml(label)}</span>
+          <div>${contentHtml}</div>
+        </div>
+      `;
+    }
+
+    function renderComfyuiMappingList(items, emptyText = '추천 없음') {
+      const values = (Array.isArray(items) ? items : []).filter(Boolean);
+      if (!values.length) {
+        return `<span class="comfyui-check-empty">${escapeHtml(emptyText)}</span>`;
+      }
+      const visible = values.slice(0, 5);
+      const extra = values.length - visible.length;
+      return `
+        <ul class="comfyui-check-mappings">
+          ${visible.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+          ${extra > 0 ? `<li>+${escapeHtml(extra)}개 더</li>` : ''}
+        </ul>
+      `;
+    }
+
+    function renderTransferComfyuiCheckPanel(target) {
+      const state = transferComfyuiFolderChecks.get(String(target?.id || ''));
+      if (!state) return '';
+      if (state.status === 'loading') {
+        return `
+          <div class="comfyui-folder-check is-loading">
+            <div class="comfyui-check-head">
+              <strong>폴더 확인 중</strong>
+            </div>
+          </div>
+        `;
+      }
+      if (state.status === 'error') {
+        return `
+          <div class="comfyui-folder-check is-error">
+            <div class="comfyui-check-head">
+              <strong>폴더 체크 실패</strong>
+            </div>
+            <p>${escapeHtml(safeComfyuiDisplayText(state.message || '폴더 상태를 확인하지 못했습니다.'))}</p>
+          </div>
+        `;
+      }
+      const data = state.data || {};
+      const present = comfyuiStringList(data.present);
+      const missing = comfyuiStringList(data.missing);
+      const aliases = comfyuiAliasList(data.aliases);
+      const suggestions = comfyuiSuggestedMappingList(data.suggested_mappings || data.suggestedMappings);
+      const warnings = comfyuiStringList(data.warnings);
+      const displayBase = safeComfyuiDisplayText(data.display_base || data.displayBase || data.relative_base || '');
+      return `
+        <div class="comfyui-folder-check">
+          <div class="comfyui-check-head">
+            <strong>${escapeHtml(comfyuiFolderKindLabel(data.kind))}</strong>
+            ${displayBase ? `<span>${escapeHtml(displayBase)}</span>` : ''}
+          </div>
+          ${renderComfyuiCheckRow('발견', renderComfyuiChipList(present))}
+          ${renderComfyuiCheckRow('누락', renderComfyuiChipList(missing))}
+          ${renderComfyuiCheckRow('호환', renderComfyuiChipList(aliases))}
+          ${renderComfyuiCheckRow('추천', renderComfyuiMappingList(suggestions))}
+          ${warnings.length ? renderComfyuiCheckRow('주의', renderComfyuiMappingList(warnings, '주의 없음')) : ''}
+        </div>
+      `;
+    }
+
+    async function checkTransferComfyuiFolder(targetId) {
+      const id = String(targetId || '');
+      const target = transferSettingTargets.find(item => item.id === id);
+      if (!target || !transferTargetCanCheckComfyui(target)) return;
+      const requestId = (transferComfyuiFolderCheckRequests.get(id) || 0) + 1;
+      transferComfyuiFolderCheckRequests.set(id, requestId);
+      transferComfyuiFolderChecks.set(id, {status: 'loading'});
+      renderTransferSettingTargets(transferSettingTargets);
+      try {
+        const response = await fetch(`/api/transfer/targets/${encodeURIComponent(id)}/comfyui/check`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+        });
+        const data = await readJsonResponse(response);
+        if (transferComfyuiFolderCheckRequests.get(id) !== requestId) return;
+        if (!response.ok) {
+          transferComfyuiFolderChecks.set(id, {
+            status: 'error',
+            message: data.detail || '폴더 상태를 확인하지 못했습니다.',
+          });
+          renderTransferSettingTargets(transferSettingTargets);
+          return;
+        }
+        transferComfyuiFolderChecks.set(id, {status: 'success', data});
+        renderTransferSettingTargets(transferSettingTargets);
+      } catch (err) {
+        if (transferComfyuiFolderCheckRequests.get(id) !== requestId) return;
+        transferComfyuiFolderChecks.set(id, {status: 'error', message: '네트워크 요청을 완료하지 못했습니다.'});
+        renderTransferSettingTargets(transferSettingTargets);
+      }
+    }
+
     function renderTransferTargets(targets) {
-      const enabledTargets = targets.filter(target => target.enabled);
-      if (!enabledTargets.length) {
+      renderTransferTargetGroupButtons(transferTargetGroups, activeTransferTargetGroup, targets);
+      const enabledTargets = transferTargetsForGroup(targets, activeTransferTargetGroup);
+      if (!targets.some(target => target.enabled)) {
         transferTargetSelect.innerHTML = '<option value="">등록된 대상 없음</option>';
+        transferTargetSelect.disabled = true;
+        transferSubmit.disabled = true;
+        renderTransferPolicy(null);
+        return;
+      }
+      if (!enabledTargets.length) {
+        transferTargetSelect.innerHTML = '<option value="">이 분류에 등록된 대상 없음</option>';
         transferTargetSelect.disabled = true;
         transferSubmit.disabled = true;
         renderTransferPolicy(null);
@@ -2447,7 +2799,8 @@
 
     function selectedTransferTarget() {
       const selectedId = String(transferTargetSelect.value || '');
-      return transferTargets.find(target => target.enabled && target.id === selectedId) || null;
+      return transferTargetsForGroup(transferTargets, activeTransferTargetGroup)
+        .find(target => target.id === selectedId) || null;
     }
 
     function renderTransferPolicy(target) {
@@ -2764,10 +3117,14 @@
       }
     }
 
-    async function loadTransferSettingTargets() {
+    async function loadTransferSettingTargets(options = {}) {
       if (!transferSettingList) return;
+      const showLoading = options.showLoading !== false;
+      const successStatus = options.successStatus;
       updateTransferSettingKindFields();
-      transferSettingStatus.textContent = '전송 대상을 불러오는 중';
+      if (showLoading) {
+        transferSettingStatus.textContent = '전송 대상을 불러오는 중';
+      }
       try {
         const response = await fetch('/api/transfer/targets');
         const data = await readJsonResponse(response);
@@ -2782,7 +3139,7 @@
         transferSettingTargets = targets;
         renderTransferSettingTargets(targets);
         renderTransferDataRootTargets(targets);
-        transferSettingStatus.textContent = targets.length ? '' : '등록된 전송 대상이 없습니다.';
+        transferSettingStatus.textContent = successStatus || (targets.length ? '' : '등록된 전송 대상이 없습니다.');
       } catch (err) {
         transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
         transferSettingTargets = [];
@@ -2791,17 +3148,26 @@
     }
 
     function renderTransferSettingTargets(targets) {
+      renderTransferTargetGroupButtons(transferSettingGroups, activeTransferSettingGroup, targets, {includeDisabled: true});
+      const visibleTargets = transferTargetsForGroup(targets, activeTransferSettingGroup, {includeDisabled: true});
       if (!targets.length) {
-        transferSettingList.innerHTML = '';
+        transferSettingList.innerHTML = '<div class="transfer-target-empty">등록된 전송 대상이 없습니다.</div>';
         return;
       }
-      transferSettingList.innerHTML = targets.map(target => {
+      if (!visibleTargets.length) {
+        transferSettingList.innerHTML = '<div class="transfer-target-empty">이 분류에 등록된 전송 대상이 없습니다.</div>';
+        return;
+      }
+      transferSettingList.innerHTML = visibleTargets.map(target => {
         const policy = target.policy || {};
         const prefixes = arrayText(policy.allowed_source_prefixes || policy.allowedSourcePrefixes) || '-';
         const includes = arrayText(policy.include_patterns || policy.includePatterns) || '-';
         const kind = transferTargetKind(target);
+        const canCheckComfyui = transferTargetCanCheckComfyui(target);
+        const checkState = transferComfyuiFolderChecks.get(String(target.id));
+        const checkingComfyui = checkState?.status === 'loading';
         const remotePath = kind === 'local_mount'
-          ? (target.remote_path || '연결 폴더')
+          ? safeComfyuiDisplayText(target.remote_path || '연결 폴더')
           : (kind === 'receiver'
             ? `${target.receiver_url || 'Receiver'}${target.remote_path ? `/${target.remote_path}` : ''}`
             : (target.remote_path ? `${target.remote_name}:${target.remote_path}` : `${target.remote_name}:`));
@@ -2809,13 +3175,22 @@
           ? '연결 폴더'
           : (kind === 'receiver' ? (target.receiver_token_set ? 'token set' : 'no token') : 'rclone');
         return `
-          <div class="transfer-target-item">
-            <div>
+          <div class="transfer-target-item" data-transfer-target-card="${escapeHtml(target.id)}">
+            <div class="transfer-target-body">
               <strong>${escapeHtml(target.name)}</strong>
               <span>${escapeHtml(remotePath)}</span>
               <small>${escapeHtml(tokenText)} · ${escapeHtml(prefixes)} · ${escapeHtml(includes)}</small>
+              ${renderTransferComfyuiCheckPanel(target)}
             </div>
-            <button type="button" class="settings-cancel" data-transfer-target-delete="${escapeHtml(target.id)}">삭제</button>
+            <div class="transfer-target-actions">
+              ${canCheckComfyui ? `
+                <button type="button"
+                        class="settings-cancel transfer-folder-check-button"
+                        data-transfer-comfyui-check="${escapeHtml(target.id)}"
+                        ${checkingComfyui ? 'disabled' : ''}>${checkingComfyui ? '확인 중' : '폴더 체크'}</button>
+              ` : ''}
+              <button type="button" class="settings-cancel" data-transfer-target-delete="${escapeHtml(target.id)}">삭제</button>
+            </div>
           </div>
         `;
       }).join('');
@@ -2992,8 +3367,10 @@
           transferSettingStatus.textContent = data.detail || '전송 대상을 저장하지 못했습니다.';
           return;
         }
-        transferSettingStatus.textContent = '전송 대상이 저장되었습니다.';
-        await loadTransferSettingTargets();
+        await loadTransferSettingTargets({
+          showLoading: false,
+          successStatus: '전송 대상이 저장되었습니다.',
+        });
       } catch (err) {
         transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       } finally {
@@ -3011,6 +3388,8 @@
           transferSettingStatus.textContent = data.detail || '전송 대상을 삭제하지 못했습니다.';
           return;
         }
+        transferComfyuiFolderChecks.delete(String(targetId));
+        transferComfyuiFolderCheckRequests.delete(String(targetId));
         await loadTransferSettingTargets();
       } catch (err) {
         transferSettingStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';

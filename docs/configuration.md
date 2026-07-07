@@ -1,6 +1,6 @@
 # HugCivi Configuration Reference
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 This document lists the configuration knobs a developer or operator is likely to meet. Values can come from environment variables, Docker/Portainer stack settings, or the web UI settings table depending on the key.
 
@@ -120,6 +120,8 @@ Transfer targets are stored in SQLite and can use `local_mount`, `receiver`, or 
 - `rclone` targets refer to rclone remotes by name. rclone credentials and host details live in `RCLONE_CONFIG`.
 
 For `local_mount` targets, HugCivi requires `DATA_REMOTE_DIR` to be separate from `DATA_ROOT`, refuses `/data_remote` root as a target, rejects symlink escapes, and uses temp-file plus rename copies with existing files skipped by default. It never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
+
+For ComfyUI-oriented `local_mount` targets, the settings transfer pane can run a folder check through `POST /api/transfer/targets/{target_id}/comfyui/check`. The check reads only the registered target base under `DATA_REMOTE_DIR`, identifies ComfyUI `models` roots, ComfyUI roots, single model folders, aliases such as `unet`, `clip`, and `t2i_adapter`, and returns HugCivi-to-ComfyUI mapping hints. It does not create folders and does not change the existing `/data` archive layout.
 
 The settings transfer pane also has a `/data` root clone action for `local_mount` targets. It uses dedicated `/api/transfer/data-root/*` endpoints, does not accept browser-provided `source_path`, copies the contents of `/data` into the selected target/subfolder, and leaves existing destination files in place by default.
 
