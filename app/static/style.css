@@ -1062,6 +1062,48 @@ a:hover {
   padding-top: 12px;
 }
 
+.transfer-settings-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.transfer-settings-panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+}
+
+.transfer-settings-head {
+  margin-bottom: 14px;
+}
+
+.transfer-settings-head h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 22px;
+}
+
+.transfer-advanced-targets {
+  margin-top: 14px;
+  border-top: 1px solid #edf1f7;
+  padding-top: 12px;
+}
+
+.transfer-advanced-targets summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.transfer-advanced-targets .settings-grid {
+  margin-top: 12px;
+}
+
 .transfer-target-list {
   display: grid;
   gap: 8px;

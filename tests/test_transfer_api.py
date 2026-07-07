@@ -693,6 +693,13 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'id="transfer-modal"' in template
     assert 'id="transfer-setting-kind"' in template
     assert '<option value="local_mount">연결 폴더 (/data_remote)</option>' in template
+    assert 'class="transfer-settings-stack"' in template
+    assert 'class="transfer-settings-panel"' in template
+    assert 'class="transfer-advanced-targets"' in template
+    assert '연결 폴더 저장' in template
+    assert 'Receiver 또는 rclone 대상 만들기' in template
+    assert 'value="civitai, stable-diffusion, huggingface, gallery-dl, hitomi, asmr.one"' in template
+    assert 'placeholder="비워두면 모든 파일"' in template
     assert 'id="transfer-setting-receiver-url"' in template
     assert 'id="transfer-receiver-label"' in template
     assert 'id="transfer-root-target"' in template

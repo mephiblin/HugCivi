@@ -599,89 +599,106 @@
         <section class="settings-block settings-pane" id="settings-transfer"
                  data-settings-title="전송 대상"
                  data-settings-description="연결 폴더, HugCivi Receiver, rclone remote 복사 전용 전송 대상을 관리합니다.">
-          <div class="settings-block-copy">
-            <h3>전송 대상</h3>
-            <p>연결 폴더는 Docker에 연결된 상대 경로를 저장하고, Receiver token과 rclone credential은 필요한 대상에서만 사용합니다.</p>
-          </div>
+          <div class="transfer-settings-stack">
+            <section class="transfer-settings-panel">
+              <div class="transfer-settings-head">
+                <h3>연결 폴더 추가</h3>
+              </div>
+              <div class="settings-grid two-cols">
+                <label class="setting-field" for="transfer-setting-name">
+                  <span>표시 이름</span>
+                  <input id="transfer-setting-name" type="text" autocomplete="off" placeholder="ComfyUI Models">
+                </label>
+                <label class="setting-field" for="transfer-setting-path">
+                  <span>base path</span>
+                  <input id="transfer-setting-path" type="text" autocomplete="off" placeholder="comfyui-models">
+                </label>
+                <label class="setting-field" for="transfer-setting-prefixes">
+                  <span>허용 원본 prefix</span>
+                  <input id="transfer-setting-prefixes" type="text" autocomplete="off" value="civitai, stable-diffusion, huggingface, gallery-dl, hitomi, asmr.one">
+                </label>
+                <label class="setting-field" for="transfer-setting-includes">
+                  <span>포함 패턴</span>
+                  <input id="transfer-setting-includes" type="text" autocomplete="off" placeholder="비워두면 모든 파일">
+                </label>
+                <label class="setting-field" for="transfer-setting-bwlimit">
+                  <span>전송 속도 제한</span>
+                  <input id="transfer-setting-bwlimit" type="text" autocomplete="off" value="40M">
+                </label>
+                <label class="setting-field" for="transfer-setting-transfers">
+                  <span>transfers</span>
+                  <input id="transfer-setting-transfers" type="number" min="1" max="4" step="1" value="1">
+                </label>
+                <label class="setting-field" for="transfer-setting-checkers">
+                  <span>checkers</span>
+                  <input id="transfer-setting-checkers" type="number" min="1" max="8" step="1" value="2">
+                </label>
+              </div>
 
-          <div class="settings-grid two-cols">
-            <label class="setting-field" for="transfer-setting-name">
-              <span>표시 이름</span>
-              <input id="transfer-setting-name" type="text" autocomplete="off" placeholder="PC ComfyUI Checkpoints">
-            </label>
-            <label class="setting-field" for="transfer-setting-kind">
-              <span>대상 타입</span>
-              <select id="transfer-setting-kind">
-                <option value="local_mount">연결 폴더 (/data_remote)</option>
-                <option value="receiver">HugCivi Receiver</option>
-                <option value="rclone">rclone remote</option>
-              </select>
-            </label>
-            <label class="setting-field" for="transfer-setting-remote">
-              <span>rclone remote</span>
-              <input id="transfer-setting-remote" type="text" autocomplete="off" placeholder="pc-comfyui">
-            </label>
-            <label class="setting-field" for="transfer-setting-receiver-url">
-              <span>Receiver URL</span>
-              <input id="transfer-setting-receiver-url" type="url" autocomplete="off" placeholder="http://192.168.0.50:8088">
-            </label>
-            <label class="setting-field" for="transfer-setting-receiver-token">
-              <span>Receiver token</span>
-              <input id="transfer-setting-receiver-token" type="password" autocomplete="new-password" placeholder="PC Receiver token">
-            </label>
-            <label class="setting-field" for="transfer-setting-path">
-              <span>base path</span>
-              <input id="transfer-setting-path" type="text" autocomplete="off" placeholder="ComfyUI/models/checkpoints">
-            </label>
-            <label class="setting-field" for="transfer-setting-prefixes">
-              <span>허용 원본 prefix</span>
-              <input id="transfer-setting-prefixes" type="text" autocomplete="off" value="stable-diffusion/checkpoints">
-            </label>
-            <label class="setting-field" for="transfer-setting-includes">
-              <span>포함 패턴</span>
-              <input id="transfer-setting-includes" type="text" autocomplete="off" value="*.safetensors, *.ckpt">
-            </label>
-            <label class="setting-field" for="transfer-setting-bwlimit">
-              <span>전송 속도 제한</span>
-              <input id="transfer-setting-bwlimit" type="text" autocomplete="off" value="40M">
-            </label>
-            <label class="setting-field" for="transfer-setting-transfers">
-              <span>transfers</span>
-              <input id="transfer-setting-transfers" type="number" min="1" max="4" step="1" value="1">
-            </label>
-            <label class="setting-field" for="transfer-setting-checkers">
-              <span>checkers</span>
-              <input id="transfer-setting-checkers" type="number" min="1" max="8" step="1" value="2">
-            </label>
-          </div>
-          <div class="settings-inline-actions">
-            <button type="button" class="settings-save" id="transfer-setting-save">대상 저장</button>
-            <button type="button" class="settings-cancel" id="transfer-setting-refresh">새로고침</button>
-          </div>
-          <div class="bulk-add-status" id="transfer-setting-status" role="status" aria-live="polite"></div>
-          <div class="transfer-target-list" id="transfer-setting-list"></div>
+              <details class="transfer-advanced-targets">
+                <summary>Receiver 또는 rclone 대상 만들기</summary>
+                <div class="settings-grid two-cols">
+                  <label class="setting-field" for="transfer-setting-kind">
+                    <span>대상 타입</span>
+                    <select id="transfer-setting-kind">
+                      <option value="local_mount">연결 폴더 (/data_remote)</option>
+                      <option value="receiver">HugCivi Receiver</option>
+                      <option value="rclone">rclone remote</option>
+                    </select>
+                  </label>
+                  <label class="setting-field" for="transfer-setting-remote">
+                    <span>rclone remote</span>
+                    <input id="transfer-setting-remote" type="text" autocomplete="off" placeholder="pc-comfyui">
+                  </label>
+                  <label class="setting-field" for="transfer-setting-receiver-url">
+                    <span>Receiver URL</span>
+                    <input id="transfer-setting-receiver-url" type="url" autocomplete="off" placeholder="http://192.168.0.50:8088">
+                  </label>
+                  <label class="setting-field" for="transfer-setting-receiver-token">
+                    <span>Receiver token</span>
+                    <input id="transfer-setting-receiver-token" type="password" autocomplete="new-password" placeholder="PC Receiver token">
+                  </label>
+                </div>
+              </details>
 
-          <div class="settings-block-copy">
-            <h3>/data 전체 복제</h3>
+              <div class="settings-inline-actions">
+                <button type="button" class="settings-save" id="transfer-setting-save">연결 폴더 저장</button>
+                <button type="button" class="settings-cancel" id="transfer-setting-refresh">목록 새로고침</button>
+              </div>
+              <div class="bulk-add-status" id="transfer-setting-status" role="status" aria-live="polite"></div>
+            </section>
+
+            <section class="transfer-settings-panel">
+              <div class="transfer-settings-head">
+                <h3>/data 전체 복제</h3>
+              </div>
+              <div class="settings-grid two-cols">
+                <label class="setting-field" for="transfer-root-target">
+                  <span>연결 폴더 대상</span>
+                  <select id="transfer-root-target">
+                    <option value="">연결 폴더 대상 없음</option>
+                  </select>
+                </label>
+                <label class="setting-field" for="transfer-root-destination">
+                  <span>하위 폴더</span>
+                  <input id="transfer-root-destination" type="text" autocomplete="off" placeholder="backup/latest">
+                </label>
+              </div>
+              <div class="settings-inline-actions">
+                <button type="button" class="settings-cancel" id="transfer-root-preflight-button">미리 확인</button>
+                <button type="button" class="settings-save" id="transfer-root-submit">복제 작업 추가</button>
+              </div>
+              <div class="transfer-policy-list" id="transfer-root-preflight"></div>
+              <div class="bulk-add-status" id="transfer-root-status" role="status" aria-live="polite"></div>
+            </section>
+
+            <section class="transfer-settings-panel">
+              <div class="transfer-settings-head">
+                <h3>등록된 대상</h3>
+              </div>
+              <div class="transfer-target-list" id="transfer-setting-list"></div>
+            </section>
           </div>
-          <div class="settings-grid two-cols">
-            <label class="setting-field" for="transfer-root-target">
-              <span>연결 폴더 대상</span>
-              <select id="transfer-root-target">
-                <option value="">연결 폴더 대상 없음</option>
-              </select>
-            </label>
-            <label class="setting-field" for="transfer-root-destination">
-              <span>하위 폴더</span>
-              <input id="transfer-root-destination" type="text" autocomplete="off" placeholder="backup/latest">
-            </label>
-          </div>
-          <div class="settings-inline-actions">
-            <button type="button" class="settings-cancel" id="transfer-root-preflight-button">미리 확인</button>
-            <button type="button" class="settings-save" id="transfer-root-submit">복제 작업 추가</button>
-          </div>
-          <div class="transfer-policy-list" id="transfer-root-preflight"></div>
-          <div class="bulk-add-status" id="transfer-root-status" role="status" aria-live="polite"></div>
         </section>
         </div>
 
@@ -2929,8 +2946,9 @@
       if (receiverUrlField) receiverUrlField.hidden = kind !== 'receiver';
       if (receiverTokenField) receiverTokenField.hidden = kind !== 'receiver';
       transferSettingPath.placeholder = kind === 'local_mount'
-        ? 'pc-comfyui/checkpoints'
+        ? 'comfyui-models'
         : (kind === 'receiver' ? 'checkpoints 또는 loras' : 'ComfyUI/models/checkpoints');
+      transferSettingSave.textContent = kind === 'local_mount' ? '연결 폴더 저장' : '고급 대상 저장';
     }
 
     async function saveTransferSettingTarget() {

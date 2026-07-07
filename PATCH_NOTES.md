@@ -28,6 +28,7 @@
 - Receiver token은 업로드 HTTP 헤더로만 사용하고 대상 목록, job payload, manifest에는 노출하지 않습니다.
 - `/data_remote` 아래 host-mounted PC/Synology/원격 공유 폴더를 `local_mount` 전송 대상으로 등록하고, 우클릭 `전송` 모달에서 target-relative 폴더 tree를 탐색해 copy-only 전송할 수 있습니다.
 - 설정의 `전송 대상` 탭에서 `local_mount` 대상으로 `/data` 전체 내용 복제 작업을 큐에 추가할 수 있습니다. 이 경로는 별도 `/api/transfer/data-root/*` API를 쓰며 browser가 source path를 보내지 않습니다.
+- 전송 대상 설정 화면은 연결 폴더 추가, `/data` 전체 복제, 등록된 대상 목록을 분리하고 Receiver/rclone 입력은 고급 접이식 영역으로 이동했습니다.
 - `local_mount` 전송은 `/data_remote`와 `/data` root 겹침, `/data_remote` root target, path traversal, backslash escape, symlink escape, offline/unwritable destination을 거부하고, temp file 후 rename으로 복사하며 기존 파일은 기본 skip합니다.
 - `/data`에 보관된 파일/폴더를 등록된 rclone remote로 보내는 copy-only 전송 기능을 추가했습니다.
 - 전송 대상은 이름, rclone remote, base path, 허용 source prefix, include pattern, 보수적 rclone 옵션만 DB에 저장하며 rclone credential은 `/config/rclone/rclone.conf`에 남깁니다.
