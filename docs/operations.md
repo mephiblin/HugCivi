@@ -94,7 +94,7 @@ The `전송` context-menu action copies an existing `/data` file or folder to a 
 
 Recommended internal-LAN PC/NAS transfer is a `연결 폴더 (/data_remote)` target. Mount PC SMB shares, Synology remote folders, or other host-managed folders under a host directory, bind that directory to `/data_remote`, then register one or more `local_mount` targets with a `/data_remote`-relative base path. HugCivi browses only the registered target base through `/api/transfer/targets/{target_id}/local-mount/tree`, sends only `target_id`, `/data` `source_path`, and `destination_subpath`, and never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
 
-For a one-shot archive clone, open Settings -> `전송 대상` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
+For a one-shot archive clone, open Settings -> `전송 대상` -> `종합` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
 
 Local mount compose shape:
 
@@ -125,6 +125,8 @@ PC ComfyUI Checkpoints -> kind=local_mount, remote_path=pc-comfyui/checkpoints
 PC ComfyUI LoRA        -> kind=local_mount, remote_path=pc-comfyui/loras
 Studio NAS Models      -> kind=local_mount, remote_path=studio-nas/models
 ```
+
+For a ComfyUI install mounted at its models root, you can instead register one `ComfyUI` category target such as `remote_path=pc-comfyui/ComfyUI/models` or `remote_path=pc-comfyui/comfyui-models`. The settings form fills editable mappings from fixed HugCivi sources like `stable-diffusion/checkpoints` and `stable-diffusion/loras` to destination subfolders like `checkpoints` and `loras`; those mappings become the default transfer destination when the transfer modal has not selected another folder.
 
 `/data_remote` is not a second library root. It is destination-only for copy jobs, must stay separate from `/data`, and should be mounted as narrowly as practical. HugCivi refuses the `/data_remote` root as a target, rejects symlink escapes, checks writable/offline state during preflight, writes files through temporary names before rename, and skips existing destination files by default.
 

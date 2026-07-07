@@ -230,6 +230,8 @@ Card thumbnail generation:
 Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
+- the settings `전송 대상` pane starts with category tabs, then shows the selected category's registered targets and registration form; newly saved targets include optional `policy.category` metadata for UI grouping
+- ComfyUI settings targets can store optional `policy.comfyui_mappings` from fixed HugCivi `stable-diffusion/<route>` prefixes to target destination subfolders; transfer preflight/jobs apply those mappings only when the request does not already provide a `destination_subpath`
 - for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
 - for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder and mapping hints without exposing `/data_remote` absolute paths
 - for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token

@@ -1304,8 +1304,10 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "refreshLibraryForActivePath({page: 1, loading: true});" in template
     assert "refreshLibraryForActivePath({page, loading: true});" in template
     assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
-    assert "? visibleJobPages(page, totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
+    assert "function allKnownLibraryPages(totalPages)" in template
+    assert "? allKnownLibraryPages(totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
     assert "return Array.from(new Set(candidates)).filter(value => value >= 1);" in template
+    assert "return Array.from({length: count}, (_, index) => index + 1);" in template
     assert '<option value="date_desc">최신순</option>' in template
     assert '<option value="date_asc">오래된순</option>' in template
     assert '<option value="date">날짜순</option>' not in template

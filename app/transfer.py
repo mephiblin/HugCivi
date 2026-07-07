@@ -79,7 +79,9 @@ _SENSITIVE_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)([^/\s:@]+):([
 _POLICY_KEYS = {
     "allowed_source_prefixes",
     "bwlimit",
+    "category",
     "checkers",
+    "comfyui_mappings",
     "include_patterns",
     "preserve_folder_name",
     "require_check",
@@ -623,7 +625,9 @@ def sanitize_policy(policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {
         "allowed_source_prefixes": allowed_source_prefixes,
         "bwlimit": _normalize_bwlimit(raw_policy.get("bwlimit", bwlimit_default)),
+        "category": _normalize_policy_category(raw_policy.get("category")),
         "checkers": _positive_int(raw_policy.get("checkers"), checkers_default, maximum=TRANSFER_MAX_CHECKERS),
+        "comfyui_mappings": _normalize_comfyui_mappings(raw_policy.get("comfyui_mappings")),
         "include_patterns": include_patterns,
         "preserve_folder_name": _bool_value(raw_policy.get("preserve_folder_name"), default=True),
         "require_check": _bool_value(raw_policy.get("require_check"), default=False),
@@ -651,6 +655,25 @@ def build_remote_destination(
 
     destination_path = "/".join(path_parts)
     return f"{remote}:{destination_path}" if destination_path else f"{remote}:"
+
+
+def policy_destination_subpath_for_source(source_path: str | Path, policy: Mapping[str, Any] | None = None) -> str:
+    clean_policy = sanitize_policy(policy)
+    mappings = clean_policy.get("comfyui_mappings") or {}
+    if not isinstance(mappings, dict):
+        return ""
+    relative_path = normalize_remote_path(str(source_path))
+    best_prefix = ""
+    best_destination = ""
+    for prefix, destination_subpath in mappings.items():
+        clean_prefix = normalize_remote_path(str(prefix))
+        if not clean_prefix:
+            continue
+        if relative_path == clean_prefix or relative_path.startswith(f"{clean_prefix}/"):
+            if len(clean_prefix) > len(best_prefix):
+                best_prefix = clean_prefix
+                best_destination = validate_destination_subpath(str(destination_subpath or ""))
+    return best_destination
 
 
 def build_receiver_destination_path(
@@ -982,6 +1005,40 @@ def _normalize_include_patterns(value: Any) -> list[str]:
             normalized.append(pattern)
             seen.add(pattern)
     return normalized
+
+
+def _normalize_policy_category(value: Any) -> str:
+    text = str(value or "").strip().lower().replace(" ", "-")
+    if not text:
+        return ""
+    if "\x00" in text or "\n" in text or "\\" in text or text.startswith("-"):
+        raise ValueError("Invalid transfer policy category")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,31}", text):
+        raise ValueError("Invalid transfer policy category")
+    return text
+
+
+def _normalize_comfyui_mappings(value: Any) -> dict[str, str]:
+    if value is None or value == "":
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("Transfer ComfyUI mappings must be an object")
+    mappings: dict[str, str] = {}
+    for raw_source_prefix, raw_destination in value.items():
+        source_prefix = normalize_remote_path(str(raw_source_prefix or ""))
+        if not source_prefix:
+            continue
+        if not path_is_stable_diffusion_prefix(source_prefix):
+            raise ValueError("Transfer ComfyUI mapping source must be under stable-diffusion")
+        destination_subpath = validate_destination_subpath(str(raw_destination or ""))
+        if destination_subpath:
+            mappings[source_prefix] = destination_subpath
+    return mappings
+
+
+def path_is_stable_diffusion_prefix(path: str) -> bool:
+    normalized = normalize_remote_path(path)
+    return normalized == "stable-diffusion" or normalized.startswith("stable-diffusion/")
 
 
 def _list_value(value: Any) -> list[Any]:

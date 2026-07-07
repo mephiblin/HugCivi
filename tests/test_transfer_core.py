@@ -512,6 +512,39 @@ def test_env_numeric_defaults_are_clamped(monkeypatch: pytest.MonkeyPatch) -> No
     assert transfer_max_concurrent() == TRANSFER_MAX_CONCURRENT_HARD_LIMIT
 
 
+def test_policy_category_hint_is_sanitized() -> None:
+    policy = sanitize_policy({"category": "civitai", "allowed_source_prefixes": ["stable-diffusion"]})
+
+    assert policy["category"] == "civitai"
+
+    with pytest.raises(ValueError, match="policy category"):
+        sanitize_policy({"category": "../escape"})
+
+
+def test_comfyui_policy_mappings_are_sanitized() -> None:
+    policy = sanitize_policy(
+        {
+            "allowed_source_prefixes": ["stable-diffusion"],
+            "comfyui_mappings": {
+                "stable-diffusion/checkpoints": "checkpoints",
+                "stable-diffusion/loras": "custom/loras",
+                "stable-diffusion/vae": "",
+            },
+        }
+    )
+
+    assert policy["comfyui_mappings"] == {
+        "stable-diffusion/checkpoints": "checkpoints",
+        "stable-diffusion/loras": "custom/loras",
+    }
+
+    with pytest.raises(ValueError, match="under stable-diffusion"):
+        sanitize_policy({"comfyui_mappings": {"huggingface/models": "models"}})
+
+    with pytest.raises(ValueError, match="Remote path"):
+        sanitize_policy({"comfyui_mappings": {"stable-diffusion/checkpoints": "../escape"}})
+
+
 def test_sync_move_delete_policy_inputs_are_rejected() -> None:
     for policy in (
         {"mode": "sync"},

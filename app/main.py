@@ -1434,7 +1434,10 @@ def transfer_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], Pat
         source = transfer_source_path(str(payload.get("source_path") or ""), target)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return target, source, relative_data_path(source), destination_subpath
+    relative_path = relative_data_path(source)
+    if not destination_subpath:
+        destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
+    return target, source, relative_path, destination_subpath
 
 
 def transfer_data_root_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:

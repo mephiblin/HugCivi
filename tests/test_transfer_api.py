@@ -165,6 +165,56 @@ def test_transfer_target_api_create_list_and_rejects_mode(app_modules: tuple) ->
     assert mode_response.status_code == 400
 
 
+def test_transfer_preflight_uses_comfyui_mapping_when_destination_is_empty(app_modules: tuple) -> None:
+    _db, main, data_root, _config_root = app_modules
+    source = data_root / "stable-diffusion" / "checkpoints" / "Model.safetensors"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"model")
+    client = TestClient(main.app)
+
+    create_response = client.post(
+        "/api/transfer/targets",
+        json={
+            "name": "PC ComfyUI Models",
+            "remote_name": "pc-comfyui",
+            "remote_path": "ComfyUI/models",
+            "policy": {
+                "allowed_source_prefixes": ["stable-diffusion"],
+                "category": "comfyui",
+                "comfyui_mappings": {
+                    "stable-diffusion/checkpoints": "checkpoints",
+                    "stable-diffusion/loras": "loras",
+                },
+            },
+        },
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert create_response.status_code == 200
+    target = create_response.json()["target"]
+    assert target["policy"]["comfyui_mappings"]["stable-diffusion/checkpoints"] == "checkpoints"
+
+    preflight_response = client.post(
+        "/api/transfer/preflight",
+        json={"target_id": target["id"], "source_path": "stable-diffusion/checkpoints/Model.safetensors"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert preflight_response.status_code == 200
+    assert preflight_response.json()["destination"] == "pc-comfyui:ComfyUI/models/checkpoints/Model.safetensors"
+
+    explicit_response = client.post(
+        "/api/transfer/preflight",
+        json={
+            "target_id": target["id"],
+            "source_path": "stable-diffusion/checkpoints/Model.safetensors",
+            "destination_subpath": "manual",
+        },
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert explicit_response.status_code == 200
+    assert explicit_response.json()["destination"] == "pc-comfyui:ComfyUI/models/manual/Model.safetensors"
+
+
 def test_receiver_transfer_target_api_hides_token_and_preflights(app_modules: tuple) -> None:
     _db, main, data_root, _config_root = app_modules
     source = data_root / "stable-diffusion" / "checkpoints" / "Model.safetensors"
@@ -839,7 +889,12 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert '<option value="local_mount">연결 폴더 (/data_remote)</option>' in template
     assert 'class="transfer-settings-stack"' in template
     assert 'class="transfer-settings-panel"' in template
+    assert 'class="transfer-settings-panel transfer-category-panel"' in template
+    assert 'class="transfer-settings-panel transfer-registration-panel"' in template
     assert 'class="transfer-advanced-targets"' in template
+    assert 'id="transfer-setting-form-title"' in template
+    assert 'id="transfer-comfyui-mapping"' in template
+    assert 'data-transfer-comfyui-map' in template
     assert '연결 폴더 저장' in template
     assert 'Receiver 또는 rclone 대상 만들기' in template
     assert 'value="civitai, stable-diffusion, huggingface, gallery-dl, hitomi, asmr.one"' in template
@@ -851,12 +906,20 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'id="transfer-root-target"' in template
     assert 'id="transfer-root-submit"' in template
     assert "TRANSFER_TARGET_GROUPS" in template
+    assert "TRANSFER_SETTING_GROUP_PRESETS" in template
+    assert "TRANSFER_COMFYUI_MAPPING_ROUTES" in template
+    assert "function updateTransferSettingCategoryFields" in template
+    assert "function updateTransferComfyuiMappingPanel" in template
+    assert "function transferTargetSuggestedDestinationSubpath" in template
+    assert "transferRootPanel.hidden" in template
     for group_label in ("종합", "ComfyUI", "Hugging Face", "Civitai", "Hitomi", "Movie", "ASMR"):
         assert group_label in template
     assert "function transferTargetMatchesGroup" in template
     assert "function renderTransferTargetGroupButtons" in template
     assert "activeTransferTargetGroup = knownTransferTargetGroup" in template
     assert "activeTransferSettingGroup = knownTransferTargetGroup" in template
+    assert "category: knownTransferTargetGroup(activeTransferSettingGroup)" in template
+    assert "comfyui_mappings" in template
     assert 'data-action="transfer"' in template
     assert "fetch('/api/transfer/targets')" in template
     assert "/${treeKind}/tree?path=" in template

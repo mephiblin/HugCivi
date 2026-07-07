@@ -1074,6 +1074,14 @@ a:hover {
   background: #ffffff;
 }
 
+.transfer-category-panel {
+  padding-bottom: 14px;
+}
+
+.transfer-registration-panel {
+  background: #fbfdff;
+}
+
 .transfer-settings-head {
   margin-bottom: 14px;
 }
@@ -1104,12 +1112,75 @@ a:hover {
   margin-top: 12px;
 }
 
+.transfer-comfyui-mapping {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  border-top: 1px solid #edf1f7;
+  padding-top: 12px;
+}
+
+.transfer-comfyui-mapping[hidden] {
+  display: none;
+}
+
+.transfer-comfyui-mapping-head h4 {
+  margin: 0;
+  color: #172033;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.transfer-comfyui-map-list {
+  display: grid;
+  gap: 8px;
+}
+
+.transfer-comfyui-map-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.85fr) minmax(180px, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.transfer-comfyui-source {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.transfer-comfyui-source small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.transfer-comfyui-source strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.transfer-comfyui-map-row input {
+  width: 100%;
+  min-width: 0;
+}
+
 .transfer-target-groups {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
   margin: 2px 0 8px;
+}
+
+.transfer-category-panel .transfer-target-groups {
+  margin-bottom: 0;
 }
 
 .transfer-target-groups:empty {
@@ -2613,6 +2684,11 @@ a:hover {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 5px;
+}
+
+.library-page-buttons {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .jobs-page-buttons button {
@@ -5019,6 +5095,11 @@ a:hover {
 
   .transfer-target-actions .settings-cancel {
     flex: 1 1 120px;
+  }
+
+  .transfer-comfyui-map-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 
   .comfyui-check-head {
