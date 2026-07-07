@@ -405,6 +405,8 @@ def test_civitai_image_cards_are_media_archives_before_library_scan(app_modules:
     assert 'data-action="civitai-refresh"' in template
     assert "data-civitai-refresh=" in template
     assert "async function refreshCivitaiArchive(target)" in template
+    assert 'data-civitai-resource-transfer=' in template
+    assert 'data-civitai-resources-only' in template
     assert "componentDownloads" in template
     assert "Downloaded components" in template
     assert "Check components" in template

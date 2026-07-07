@@ -94,6 +94,8 @@ The `전송` context-menu action copies an existing `/data` file or folder to a 
 
 Recommended internal-LAN PC/NAS transfer is a `연결 폴더 (/data_remote)` target. Mount PC SMB shares, Synology remote folders, or other host-managed folders under a host directory, bind that directory to `/data_remote`, then register one or more `local_mount` targets with a `/data_remote`-relative base path. HugCivi browses only the registered target base through `/api/transfer/targets/{target_id}/local-mount/tree`, sends only `target_id`, `/data` `source_path`, and `destination_subpath`, and never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
 
+For Civitai image-page archives, the library card action row and context menu have `사용 리소스 전송`. This checks the image archive's Resources used metadata, finds locally present model-version archives through jobs/sidecars, resolves each present resource to its primary model file, and queues separate `transfer_copy` jobs through `/api/transfer/civitai-resources/jobs`. With a ComfyUI category target that stores `policy.comfyui_mappings`, checkpoint/LoRA/VAE-style files are placed under the configured ComfyUI model subfolders by their HugCivi `stable-diffusion/...` source path.
+
 For a one-shot archive clone, open Settings -> `전송 대상` -> `종합` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
 
 Local mount compose shape:
@@ -207,7 +209,7 @@ For normal model/version URLs, HugCivi downloads the primary model file plus add
 
 The model-card `갱신` action queues a Civitai refresh job against the existing archive folder. Refresh requires a Civitai model folder with usable sidecar metadata and no active jobs under that folder. It keeps the existing primary file and any existing expected component files, downloads missing required components, and refreshes sidecars/previews rather than deleting and rebuilding the folder.
 
-The media viewer's Civitai health check uses `/api/civitai/resource-health`. Image-page archives check referenced model-version resources from jobs/sidecars. Model archives also send the archive path and `component_downloads`, so `Check components` verifies whether local required files are present in that folder.
+The media viewer's Civitai health check uses `/api/civitai/resource-health`. Image-page archives check referenced model-version resources from jobs/sidecars; the card/context `사용 리소스 전송` flow reuses that local presence information before creating copy-only transfer jobs for present primary files. Model archives also send the archive path and `component_downloads`, so `Check components` verifies whether local required files are present in that folder.
 
 ## ASMR.one Downloads
 

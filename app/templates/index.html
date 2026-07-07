@@ -850,13 +850,13 @@
         <button type="button" class="bulk-add-close" id="transfer-close" aria-label="전송 닫기">×</button>
       </header>
       <div class="transfer-form-body">
-        <label class="setting-field" for="transfer-target">
-          <span>대상</span>
+        <div class="setting-field">
+          <span><label for="transfer-target">대상</label></span>
           <div class="transfer-target-groups" id="transfer-target-groups" role="tablist" aria-label="전송 대상 분류"></div>
           <select id="transfer-target" required>
             <option value="">대상을 불러오는 중</option>
           </select>
-        </label>
+        </div>
         <div class="transfer-source-row">
           <span>원본</span>
           <strong id="transfer-source">/data</strong>
@@ -881,6 +881,38 @@
     </form>
   </section>
 
+  <section class="bulk-add-modal transfer-modal" id="resource-transfer-modal" role="dialog" aria-modal="true" aria-labelledby="resource-transfer-title" hidden>
+    <form class="bulk-add-panel transfer-modal-panel resource-transfer-panel" id="resource-transfer-form">
+      <header class="bulk-add-head">
+        <div>
+          <h2 id="resource-transfer-title">사용 리소스 전송</h2>
+          <p id="resource-transfer-summary">Resources used 확인</p>
+        </div>
+        <button type="button" class="bulk-add-close" id="resource-transfer-close" aria-label="사용 리소스 전송 닫기">×</button>
+      </header>
+      <div class="transfer-form-body">
+        <div class="setting-field">
+          <span><label for="resource-transfer-target">대상</label></span>
+          <div class="transfer-target-groups" id="resource-transfer-target-groups" role="tablist" aria-label="사용 리소스 전송 대상 분류"></div>
+          <select id="resource-transfer-target" required>
+            <option value="">대상을 불러오는 중</option>
+          </select>
+        </div>
+        <div class="transfer-source-row">
+          <span>원본 이미지</span>
+          <strong id="resource-transfer-source">/data</strong>
+        </div>
+        <div class="transfer-policy-list" id="resource-transfer-policy"></div>
+        <div class="transfer-preflight resource-transfer-preflight" id="resource-transfer-preflight" role="status" aria-live="polite"></div>
+      </div>
+      <div class="bulk-add-status" id="resource-transfer-status" role="status" aria-live="polite"></div>
+      <footer class="bulk-add-footer">
+        <button type="button" class="settings-cancel" id="resource-transfer-cancel">취소</button>
+        <button type="submit" class="settings-save" id="resource-transfer-submit" disabled>전송 큐에 추가</button>
+      </footer>
+    </form>
+  </section>
+
   <div class="context-menu" id="context-menu" role="menu" hidden>
     <div class="context-menu-title" id="context-menu-title">/data</div>
     <button type="button" data-action="create-folder" data-folder-only role="menuitem" hidden>새 폴더</button>
@@ -890,6 +922,7 @@
     <button type="button" data-action="properties" role="menuitem">속성</button>
     <button type="button" data-action="download" role="menuitem">다운로드</button>
     <button type="button" data-action="transfer" role="menuitem">전송</button>
+    <button type="button" data-action="transfer-resources" data-civitai-resources-only role="menuitem" hidden>사용 리소스 전송</button>
     <button type="button" data-action="rename" role="menuitem">이름 변경</button>
     <button type="button" data-action="move" role="menuitem">이동</button>
     <button type="button" data-action="delete" role="menuitem" class="danger">삭제</button>
@@ -1155,6 +1188,17 @@
     const transferPreflight = document.getElementById('transfer-preflight');
     const transferStatus = document.getElementById('transfer-status');
     const transferSubmit = document.getElementById('transfer-submit');
+    const resourceTransferModal = document.getElementById('resource-transfer-modal');
+    const resourceTransferForm = document.getElementById('resource-transfer-form');
+    const resourceTransferClose = document.getElementById('resource-transfer-close');
+    const resourceTransferCancel = document.getElementById('resource-transfer-cancel');
+    const resourceTransferTargetSelect = document.getElementById('resource-transfer-target');
+    const resourceTransferTargetGroups = document.getElementById('resource-transfer-target-groups');
+    const resourceTransferSource = document.getElementById('resource-transfer-source');
+    const resourceTransferPolicy = document.getElementById('resource-transfer-policy');
+    const resourceTransferPreflight = document.getElementById('resource-transfer-preflight');
+    const resourceTransferStatus = document.getElementById('resource-transfer-status');
+    const resourceTransferSubmit = document.getElementById('resource-transfer-submit');
     const transferSettingName = document.getElementById('transfer-setting-name');
     const transferSettingKind = document.getElementById('transfer-setting-kind');
     const transferSettingRemote = document.getElementById('transfer-setting-remote');
@@ -1317,6 +1361,10 @@
     let activeTransferTarget = null;
     let activeTransferDestinationSubpath = '';
     let activeTransferTargetGroup = 'all';
+    let activeResourceTransferSource = null;
+    let activeResourceTransferTargetGroup = 'comfyui';
+    let resourceTransferTargets = [];
+    let resourceTransferPreflightRequestId = 0;
     let activeTransferSettingGroup = 'all';
     let transferTargets = [];
     let transferSettingTargets = [];
@@ -1560,6 +1608,7 @@
       closeFolderCreateModal();
       closeFolderMoveModal();
       closeTransferModal();
+      closeResourceTransferModal();
       closePropertiesModal();
       closeMediaViewer();
       closeWorkflowViewer();
@@ -1578,6 +1627,7 @@
         closeFolderCreateModal();
         closeFolderMoveModal();
         closeTransferModal();
+        closeResourceTransferModal();
         closePropertiesModal();
         closeMediaViewer();
         closeWorkflowViewer();
@@ -1668,6 +1718,23 @@
       await refreshTransferReceiverBrowser();
       await refreshTransferPreflight();
     });
+    resourceTransferModal.addEventListener('click', event => {
+      if (event.target === resourceTransferModal) {
+        closeResourceTransferModal();
+      }
+      event.stopPropagation();
+    });
+    resourceTransferClose.addEventListener('click', closeResourceTransferModal);
+    resourceTransferCancel.addEventListener('click', closeResourceTransferModal);
+    resourceTransferTargetSelect.addEventListener('change', refreshResourceTransferPreflight);
+    resourceTransferTargetGroups.addEventListener('click', async event => {
+      const button = event.target.closest('[data-transfer-target-group]');
+      if (!button) return;
+      event.preventDefault();
+      activeResourceTransferTargetGroup = knownTransferTargetGroup(button.dataset.transferTargetGroup);
+      renderResourceTransferTargets(resourceTransferTargets);
+      await refreshResourceTransferPreflight();
+    });
     transferReceiverTree.addEventListener('click', async event => {
       const toggle = event.target.closest('[data-receiver-toggle]');
       if (toggle) {
@@ -1687,6 +1754,7 @@
       saveTransferSettingTarget();
     });
     transferForm.addEventListener('submit', submitTransferJob);
+    resourceTransferForm.addEventListener('submit', submitResourceTransferJobs);
     transferSettingKind.addEventListener('change', updateTransferSettingKindFields);
     transferSettingPath.addEventListener('input', () => updateTransferComfyuiMappingPanel());
     transferSettingSave.addEventListener('click', saveTransferSettingTarget);
@@ -1827,6 +1895,7 @@
         isMediaArchive: card.dataset.mediaArchive === 'true',
         isWorkflow: card.dataset.workflow === 'true',
         canCivitaiRefresh: card.dataset.civitaiRefresh === 'true',
+        canCivitaiResourceTransfer: card.dataset.civitaiResourceTransfer === 'true',
       });
     });
     libraryGrid.addEventListener('click', event => {
@@ -1850,6 +1919,11 @@
           openWorkflowViewer({
             path,
             name: card?.dataset.name || path || '워크플로',
+          });
+        } else if (action === 'transfer-resources') {
+          openResourceTransferModal({
+            path,
+            name: card?.dataset.name || path || 'model',
           });
         }
         return;
@@ -2527,6 +2601,206 @@
       }
     }
 
+    function openResourceTransferModal(target) {
+      const path = normalizePath(target?.path || '');
+      if (!path) return;
+      activeResourceTransferSource = {...target, path};
+      activeResourceTransferTargetGroup = 'comfyui';
+      resourceTransferTargets = [];
+      resourceTransferPreflightRequestId += 1;
+      resourceTransferSource.textContent = `/data/${path}`;
+      resourceTransferStatus.textContent = '';
+      resourceTransferPreflight.textContent = '';
+      resourceTransferPolicy.textContent = '';
+      resourceTransferSubmit.disabled = true;
+      resourceTransferTargetSelect.disabled = true;
+      resourceTransferTargetSelect.innerHTML = '<option value="">대상을 불러오는 중</option>';
+      resourceTransferModal.hidden = false;
+      document.body.classList.add('modal-open');
+      loadResourceTransferTargets();
+      window.setTimeout(() => resourceTransferTargetSelect.focus(), 0);
+    }
+
+    function closeResourceTransferModal() {
+      if (resourceTransferModal.hidden) return;
+      resourceTransferModal.hidden = true;
+      activeResourceTransferSource = null;
+      resourceTransferTargets = [];
+      resourceTransferPreflightRequestId += 1;
+      resourceTransferSubmit.disabled = true;
+      document.body.classList.remove('modal-open');
+    }
+
+    async function loadResourceTransferTargets() {
+      resourceTransferStatus.textContent = '전송 대상을 불러오는 중';
+      try {
+        const response = await fetch('/api/transfer/targets');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          resourceTransferStatus.textContent = data.detail || '전송 대상을 불러오지 못했습니다.';
+          renderResourceTransferTargets([]);
+          return;
+        }
+        resourceTransferTargets = normalizeTransferTargets(data);
+        renderResourceTransferTargets(resourceTransferTargets);
+        resourceTransferStatus.textContent = resourceTransferTargets.length ? '' : '등록된 전송 대상이 없습니다.';
+        await refreshResourceTransferPreflight();
+      } catch (err) {
+        resourceTransferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+        renderResourceTransferTargets([]);
+      }
+    }
+
+    function renderResourceTransferTargets(targets) {
+      activeResourceTransferTargetGroup = transferTargetGroupWithEnabledTargets(targets, activeResourceTransferTargetGroup);
+      renderTransferTargetGroupButtons(resourceTransferTargetGroups, activeResourceTransferTargetGroup, targets);
+      const enabledTargets = transferTargetsForGroup(targets, activeResourceTransferTargetGroup);
+      if (!targets.some(target => target.enabled)) {
+        resourceTransferTargetSelect.innerHTML = '<option value="">등록된 대상 없음</option>';
+        resourceTransferTargetSelect.disabled = true;
+        resourceTransferSubmit.disabled = true;
+        renderResourceTransferPolicy(null);
+        return;
+      }
+      if (!enabledTargets.length) {
+        resourceTransferTargetSelect.innerHTML = '<option value="">이 분류에 등록된 대상 없음</option>';
+        resourceTransferTargetSelect.disabled = true;
+        resourceTransferSubmit.disabled = true;
+        renderResourceTransferPolicy(null);
+        return;
+      }
+      resourceTransferTargetSelect.disabled = false;
+      resourceTransferTargetSelect.innerHTML = enabledTargets.map(target => (
+        `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`
+      )).join('');
+      renderResourceTransferPolicy(selectedResourceTransferTarget());
+    }
+
+    function selectedResourceTransferTarget() {
+      const selectedId = String(resourceTransferTargetSelect.value || '');
+      return transferTargetsForGroup(resourceTransferTargets, activeResourceTransferTargetGroup)
+        .find(target => target.id === selectedId) || null;
+    }
+
+    function renderResourceTransferPolicy(target) {
+      if (!target) {
+        resourceTransferPolicy.innerHTML = '<div class="transfer-policy-row"><span>대상</span><strong>-</strong></div>';
+        return;
+      }
+      resourceTransferPolicy.innerHTML = transferPolicyRowsHtml(target);
+    }
+
+    function resourceTransferJobPayload(target = selectedResourceTransferTarget()) {
+      const numericId = Number(target?.id);
+      return {
+        target_id: Number.isFinite(numericId) ? numericId : target?.id,
+        path: normalizePath(activeResourceTransferSource?.path || ''),
+      };
+    }
+
+    async function refreshResourceTransferPreflight() {
+      if (resourceTransferModal.hidden) return;
+      const requestId = ++resourceTransferPreflightRequestId;
+      const target = selectedResourceTransferTarget();
+      renderResourceTransferPolicy(target);
+      resourceTransferSubmit.disabled = true;
+      if (!target || !activeResourceTransferSource?.path) {
+        resourceTransferPreflight.textContent = '';
+        return;
+      }
+      resourceTransferPreflight.textContent = 'Resources used 확인 중';
+      resourceTransferStatus.textContent = '';
+      try {
+        const response = await fetch('/api/transfer/civitai-resources/preflight', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(resourceTransferJobPayload(target)),
+        });
+        const data = await readJsonResponse(response);
+        if (requestId !== resourceTransferPreflightRequestId) return;
+        if (!response.ok) {
+          resourceTransferPreflight.textContent = data.detail || '사용 리소스를 전송할 수 없습니다.';
+          resourceTransferSubmit.disabled = true;
+          return;
+        }
+        resourceTransferPreflight.innerHTML = renderResourceTransferPreflight(data);
+        resourceTransferSubmit.disabled = Number(data.transferable_count || 0) <= 0;
+      } catch (err) {
+        if (requestId !== resourceTransferPreflightRequestId) return;
+        resourceTransferPreflight.textContent = '사용 리소스 확인을 완료하지 못했습니다.';
+        resourceTransferSubmit.disabled = true;
+      }
+    }
+
+    function renderResourceTransferPreflight(data) {
+      const resources = Array.isArray(data?.resources) ? data.resources : [];
+      const skipped = Array.isArray(data?.skipped) ? data.skipped : [];
+      const missing = Array.isArray(data?.missing_resources) ? data.missing_resources : [];
+      const totalCount = Number(data?.requested_count || 0);
+      const sizeText = data?.source_human || (data?.source_bytes !== undefined ? formatFileSize(data.source_bytes) : '');
+      const summaryRows = [
+        ['Resources used', `${formatCount(totalCount)}개`],
+        ['전송 가능', `${formatCount(resources.length)}개`],
+        skipped.length ? ['제외', `${formatCount(skipped.length)}개`] : null,
+        missing.length ? ['미보유', `${formatCount(missing.length)}개`] : null,
+        sizeText ? ['예상 용량', sizeText] : null,
+      ].filter(Boolean);
+      const summary = summaryRows.map(([label, value]) => `
+        <div class="transfer-policy-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join('');
+      const list = resources.length ? `
+        <ul class="resource-transfer-list">
+          ${resources.slice(0, 12).map(resource => {
+            const label = resource.name || resource.source_name || resource.model_version_id || 'Resource';
+            const type = resource.type ? ` · ${resource.type}` : '';
+            const destination = resource.destination || resource.destination_subpath || '-';
+            return `<li>
+              <strong>${escapeHtml(label)}${escapeHtml(type)}</strong>
+              <span>${escapeHtml(resource.source_path || '')}</span>
+              <small>${escapeHtml(destination)}</small>
+            </li>`;
+          }).join('')}
+          ${resources.length > 12 ? `<li><strong>+${escapeHtml(resources.length - 12)}개 더</strong></li>` : ''}
+        </ul>
+      ` : '<div class="resource-transfer-empty">전송 가능한 로컬 리소스가 없습니다.</div>';
+      const notes = [...skipped, ...missing].slice(0, 6).map(resource => {
+        const label = resource.name || resource.model_version_id || 'Resource';
+        return `<li>${escapeHtml(label)}: ${escapeHtml(resource.reason || '전송 제외')}</li>`;
+      }).join('');
+      const noteList = notes ? `<ul class="resource-transfer-notes">${notes}</ul>` : '';
+      return `${summary}${list}${noteList}`;
+    }
+
+    async function submitResourceTransferJobs(event) {
+      event.preventDefault();
+      const target = selectedResourceTransferTarget();
+      if (!target || !activeResourceTransferSource?.path) return;
+      resourceTransferSubmit.disabled = true;
+      resourceTransferStatus.textContent = '사용 리소스 전송 작업을 추가하는 중';
+      try {
+        const response = await fetch('/api/transfer/civitai-resources/jobs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(resourceTransferJobPayload(target)),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          resourceTransferStatus.textContent = data.detail || '사용 리소스 전송 작업을 추가하지 못했습니다.';
+          resourceTransferSubmit.disabled = false;
+          return;
+        }
+        activeJobSource = 'transfer';
+        closeResourceTransferModal();
+        await refreshJobs({page: 1, source: 'transfer'});
+      } catch (err) {
+        resourceTransferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+        resourceTransferSubmit.disabled = false;
+      }
+    }
+
     function normalizeTransferTargets(data) {
       const rows = Array.isArray(data) ? data : (Array.isArray(data?.targets) ? data.targets : []);
       return rows
@@ -2685,16 +2959,25 @@
       });
     }
 
+    function clearTransferComfyuiDefaultMappings() {
+      transferComfyuiMappingInputs().forEach(input => {
+        input.value = '';
+      });
+    }
+
     function updateTransferComfyuiMappingPanel(options = {}) {
       if (!transferComfyuiMapping) return;
       const isComfyuiCategory = knownTransferTargetGroup(activeTransferSettingGroup) === 'comfyui';
       transferComfyuiMapping.hidden = !isComfyuiCategory;
       if (!isComfyuiCategory) return;
       renderTransferComfyuiMappingInputs();
-      const shouldUseDefaults = transferSettingPathLooksComfyuiModelsRoot()
+      const pathLooksModelsRoot = transferSettingPathLooksComfyuiModelsRoot();
+      const shouldUseDefaults = pathLooksModelsRoot
         && (options.force === true || transferComfyuiMappingIsEmpty() || transferComfyuiMappingIsDefaultPreset());
       if (shouldUseDefaults) {
         applyTransferComfyuiDefaultMappings();
+      } else if (!pathLooksModelsRoot && transferComfyuiMappingIsDefaultPreset()) {
+        clearTransferComfyuiDefaultMappings();
       }
     }
 
@@ -2777,6 +3060,15 @@
       return (Array.isArray(targets) ? targets : [])
         .filter(target => includeDisabled || target.enabled)
         .filter(target => transferTargetMatchesGroup(target, groupId));
+    }
+
+    function transferTargetGroupWithEnabledTargets(targets, preferredGroup) {
+      const preferred = knownTransferTargetGroup(preferredGroup);
+      if (transferTargetsForGroup(targets, preferred).length) return preferred;
+      const fallback = TRANSFER_TARGET_GROUPS
+        .map(group => group.id)
+        .find(groupId => transferTargetsForGroup(targets, groupId).length);
+      return fallback || preferred;
     }
 
     function renderTransferTargetGroupButtons(container, activeGroup, targets, options = {}) {
@@ -3011,6 +3303,7 @@
     }
 
     function renderTransferTargets(targets) {
+      activeTransferTargetGroup = transferTargetGroupWithEnabledTargets(targets, activeTransferTargetGroup);
       renderTransferTargetGroupButtons(transferTargetGroups, activeTransferTargetGroup, targets);
       const enabledTargets = transferTargetsForGroup(targets, activeTransferTargetGroup);
       if (!targets.some(target => target.enabled)) {
@@ -3045,6 +3338,10 @@
         transferPolicy.innerHTML = '<div class="transfer-policy-row"><span>대상</span><strong>-</strong></div>';
         return;
       }
+      transferPolicy.innerHTML = transferPolicyRowsHtml(target);
+    }
+
+    function transferPolicyRowsHtml(target) {
       const policy = target.policy || {};
       const kindLabel = target.kind === 'local_mount'
         ? '연결 폴더'
@@ -3064,7 +3361,7 @@
         ['포함', includes || '-'],
         ['제한', limits || '-'],
       ];
-      transferPolicy.innerHTML = rows.map(([label, value]) => `
+      return rows.map(([label, value]) => `
         <div class="transfer-policy-row">
           <span>${escapeHtml(label)}</span>
           <strong>${escapeHtml(value)}</strong>
@@ -5733,14 +6030,16 @@
         const workflow = isWorkflowJob(job) && Boolean(targetPath);
         const mediaArchive = isMediaArchiveJob(job);
         const civitaiRefresh = isCivitaiRefreshableJob(job);
+        const civitaiResourceTransfer = Boolean(targetPath) && isCivitaiImagePageJob(job);
         const classes = ['asset-card', hasThumbnail ? '' : 'no-thumb', mediaArchive ? 'media-archive' : ''].filter(Boolean).join(' ');
-        return `<article class="${classes}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" data-civitai-refresh="${civitaiRefresh ? 'true' : 'false'}" data-has-thumbnail="${hasThumbnail ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
+        return `<article class="${classes}" data-path="${escapeHtml(targetPath)}" data-name="${escapeHtml(title)}" data-media-archive="${mediaArchive ? 'true' : 'false'}" data-workflow="${workflow ? 'true' : 'false'}" data-civitai-refresh="${civitaiRefresh ? 'true' : 'false'}" data-civitai-resource-transfer="${civitaiResourceTransfer ? 'true' : 'false'}" data-has-thumbnail="${hasThumbnail ? 'true' : 'false'}" ${mediaArchive ? `tabindex="0" aria-label="미디어 보기: ${escapeHtml(title)}"` : ''}>
           ${image}
           <div class="asset-topline">
             <span class="asset-source-badge">${escapeHtml(shortSource(job.source))}</span>
             <div class="asset-actions">
               ${mediaArchive ? mediaActionButton() : ''}
               ${workflow ? workflowActionButton() : ''}
+              ${civitaiResourceTransfer ? resourceTransferActionButton() : ''}
               <button type="button" class="asset-action" data-card-action="open" data-url="${escapeHtml(sourceUrl)}" title="URL 바로가기" aria-label="URL 바로가기" ${sourceUrl ? '' : 'disabled'}>
                 <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
                   <path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm6.9 9a8 8 0 0 0-1.5-4.1h-2.5c.4 1.2.7 2.6.8 4.1h3.2Zm-5.2 0a15 15 0 0 0-.9-4.1h-1.6a15 15 0 0 0-.9 4.1h3.4Zm-5.4 0c.1-1.5.4-2.9.8-4.1H6.6A8 8 0 0 0 5.1 11h3.2Zm0 2H5.1a8 8 0 0 0 1.5 4.1h2.5A17 17 0 0 1 8.3 13Zm2 0c.1 1.6.4 3 .9 4.1h1.6c.5-1.1.8-2.5.9-4.1h-3.4Zm5.4 0c-.1 1.5-.4 2.9-.8 4.1h2.5a8 8 0 0 0 1.5-4.1h-3.2Zm.1 6.1h-1.7l-.3.5c.7-.2 1.4-.4 2-.5Zm-5.6.5-.3-.5H8.2c.6.2 1.3.3 2 .5Zm0-15.2c-.7.2-1.4.4-2 .5h1.7l.3-.5Zm3.6 0 .3.5h1.7a8 8 0 0 0-2-.5Z"/>
@@ -5865,6 +6164,14 @@
       return `<button type="button" class="asset-action workflow" data-card-action="workflow" title="워크플로 보기" aria-label="워크플로 보기">
         <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
           <path d="M7 4a3 3 0 0 1 2.8 2h4.4A3 3 0 1 1 17 10a3 3 0 0 1-2.8-2H9.8A3 3 0 0 1 8 9.8v4.4a3 3 0 1 1-2 0V9.8A3 3 0 0 1 7 4Zm0 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2ZM7 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/>
+        </svg>
+      </button>`;
+    }
+
+    function resourceTransferActionButton() {
+      return `<button type="button" class="asset-action resource-transfer" data-card-action="transfer-resources" title="사용 리소스 전송" aria-label="사용 리소스 전송">
+        <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+          <path d="M5 4h7a3 3 0 0 1 3 3v1h2.6a2 2 0 0 1 1.7.9l2.1 3.2c.2.3.3.7.3 1.1V17a3 3 0 0 1-3 3h-.4a3 3 0 0 1-5.6 0H9.3a3 3 0 0 1-5.6 0H3a1 1 0 0 1-1-1V7a3 3 0 0 1 3-3Zm10 6v4h4.7l-2.1-3.2a.2.2 0 0 0-.1 0H15ZM5 6a1 1 0 0 0-1 1v11h.8a3 3 0 0 1 4.4 0h3.6c.1-.2.2-.4.4-.6V7a1 1 0 0 0-1-1H5Zm1.5 12a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm9 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/>
         </svg>
       </button>`;
     }
@@ -6040,6 +6347,11 @@
         button.hidden = !visible;
         button.disabled = disabled || !visible;
       });
+      contextMenu.querySelectorAll('[data-civitai-resources-only]').forEach(button => {
+        const visible = Boolean(target.canCivitaiResourceTransfer);
+        button.hidden = !visible;
+        button.disabled = disabled || !visible;
+      });
       const rect = contextMenu.getBoundingClientRect();
       const left = Math.min(x, window.innerWidth - rect.width - 8);
       const top = Math.min(y, window.innerHeight - rect.height - 8);
@@ -6092,6 +6404,11 @@
 
       if (action === 'transfer') {
         openTransferModal(target);
+        return;
+      }
+
+      if (action === 'transfer-resources') {
+        openResourceTransferModal(target);
         return;
       }
 

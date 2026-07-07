@@ -215,6 +215,120 @@ def test_transfer_preflight_uses_comfyui_mapping_when_destination_is_empty(app_m
     assert explicit_response.json()["destination"] == "pc-comfyui:ComfyUI/models/manual/Model.safetensors"
 
 
+def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, main, data_root, _config_root = app_modules
+    image_archive = data_root / "civitai" / "images" / "creator" / "image_135"
+    image_archive.mkdir(parents=True)
+    (image_archive / "image_135.jpg").write_bytes(b"image")
+    (image_archive / "_civitai_image_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "kind": "civitai_image_page",
+                "generation_data": {
+                    "resources": [
+                        {
+                            "name": "Example LoRA",
+                            "type": "LORA",
+                            "model_id": "123",
+                            "model_version_id": "456",
+                            "href": "https://civitai.com/models/123",
+                        }
+                    ],
+                    "model_version_ids": ["456"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    model_archive = data_root / "stable-diffusion" / "loras" / "example" / "version_456"
+    model_archive.mkdir(parents=True)
+    (model_archive / "example.safetensors").write_bytes(b"model")
+    (model_archive / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "version_id": "456",
+                "component_downloads": [
+                    {
+                        "role": "primary",
+                        "name": "example.safetensors",
+                        "filename": "example.safetensors",
+                        "local_file": "example.safetensors",
+                        "type": "Model",
+                        "status": "downloaded",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    target_id = db.create_transfer_target(
+        name="PC ComfyUI Models",
+        remote_name="pc-comfyui",
+        remote_path="ComfyUI/models",
+        policy={
+            "allowed_source_prefixes": ["stable-diffusion"],
+            "category": "comfyui",
+            "comfyui_mappings": {"stable-diffusion/loras": "loras"},
+        },
+    )
+    enqueued: list[int] = []
+    monkeypatch.setattr(main.internal_jobs, "enqueue_job", lambda job_id: enqueued.append(job_id))
+    client = TestClient(main.app)
+
+    preflight_response = client.post(
+        "/api/transfer/civitai-resources/preflight",
+        json={"target_id": target_id, "path": "civitai/images/creator/image_135"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert preflight_response.status_code == 200
+    preflight = preflight_response.json()
+    assert preflight["requested_count"] == 1
+    assert preflight["transferable_count"] == 1
+    assert preflight["resources"][0]["name"] == "Example LoRA"
+    assert preflight["resources"][0]["source_path"] == "stable-diffusion/loras/example/version_456/example.safetensors"
+    assert preflight["resources"][0]["destination_subpath"] == "loras"
+    assert preflight["resources"][0]["destination"] == "pc-comfyui:ComfyUI/models/loras/example.safetensors"
+
+    job_response = client.post(
+        "/api/transfer/civitai-resources/jobs",
+        json={"target_id": target_id, "path": "civitai/images/creator/image_135"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert job_response.status_code == 200
+    payload = job_response.json()
+    assert payload["queued_count"] == 1
+    job_id = payload["jobs"][0]["id"]
+    assert enqueued == [job_id]
+    job = db.get_job(job_id)
+    assert job is not None
+    assert db.parse_internal_job_payload(job) == {
+        "target_id": target_id,
+        "source_path": "stable-diffusion/loras/example/version_456/example.safetensors",
+        "destination_subpath": "loras",
+    }
+    metadata = json.loads(job["metadata_json"])
+    assert metadata["civitai_resource_transfer"]["archive_path"] == "civitai/images/creator/image_135"
+    assert metadata["civitai_resource_transfer"]["model_version_id"] == "456"
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(main, "run_transfer_process", lambda _job_id, command: commands.append(command))
+    main.run_transfer_copy_job(job_id, db.get_job(job_id) or {})
+    updated_job = db.get_job(job_id)
+    assert updated_job is not None
+    updated_metadata = json.loads(updated_job["metadata_json"])
+    assert updated_metadata["civitai_resource_transfer"]["archive_path"] == "civitai/images/creator/image_135"
+    assert updated_metadata["civitai_resource_transfer"]["model_version_id"] == "456"
+    assert updated_metadata["transfer_preflight"]["destination"] == "pc-comfyui:ComfyUI/models/loras/example.safetensors"
+    assert commands
+
+
 def test_receiver_transfer_target_api_hides_token_and_preflights(app_modules: tuple) -> None:
     _db, main, data_root, _config_root = app_modules
     source = data_root / "stable-diffusion" / "checkpoints" / "Model.safetensors"
@@ -311,6 +425,66 @@ def test_receiver_tree_api_proxies_registered_target_token(app_modules: tuple, m
             "timeout": 15,
         }
     ]
+
+
+def test_transfer_tree_apis_reject_disabled_targets(app_modules: tuple) -> None:
+    db, main, _data_root, _config_root = app_modules
+    receiver_id = create_receiver_target(db)
+    local_id = create_local_mount_target(db)
+    assert db.update_transfer_target(receiver_id, enabled=False)
+    assert db.update_transfer_target(local_id, enabled=False)
+    client = TestClient(main.app)
+
+    receiver_response = client.get(
+        f"/api/transfer/targets/{receiver_id}/receiver/tree",
+        auth=("admin", "test-password-that-is-long"),
+    )
+    local_response = client.get(
+        f"/api/transfer/targets/{local_id}/local-mount/tree",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert receiver_response.status_code == 400
+    assert local_response.status_code == 400
+    assert "비활성화" in receiver_response.json()["detail"]
+    assert "비활성화" in local_response.json()["detail"]
+
+
+def test_receiver_tree_api_rejects_remote_absolute_paths_without_leaking(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, main, _data_root, _config_root = app_modules
+    target_id = create_receiver_target(db)
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"ok": true}'
+        content = b'{"ok": true}'
+
+        def json(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "path": "/home/alice/ComfyUI/models",
+                "root": {
+                    "name": "models",
+                    "path": "/home/alice/ComfyUI/models",
+                    "kind": "directory",
+                    "children": [],
+                },
+            }
+
+    monkeypatch.setattr(main.requests, "get", lambda *args, **kwargs: FakeResponse())
+    client = TestClient(main.app)
+
+    response = client.get(
+        f"/api/transfer/targets/{target_id}/receiver/tree",
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Receiver 폴더 응답 형식이 올바르지 않습니다."
+    assert "/home/alice" not in json.dumps(response.json(), ensure_ascii=False)
 
 
 def test_local_mount_tree_preflight_and_job_payload_hide_raw_mount_paths(
@@ -905,11 +1079,17 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'id="transfer-setting-groups"' in template
     assert 'id="transfer-root-target"' in template
     assert 'id="transfer-root-submit"' in template
+    assert '<span><label for="transfer-target">대상</label></span>' in template
+    assert '<span><label for="resource-transfer-target">대상</label></span>' in template
+    assert '<label class="setting-field" for="transfer-target">' not in template
+    assert '<label class="setting-field" for="resource-transfer-target">' not in template
     assert "TRANSFER_TARGET_GROUPS" in template
     assert "TRANSFER_SETTING_GROUP_PRESETS" in template
     assert "TRANSFER_COMFYUI_MAPPING_ROUTES" in template
     assert "function updateTransferSettingCategoryFields" in template
     assert "function updateTransferComfyuiMappingPanel" in template
+    assert "function clearTransferComfyuiDefaultMappings" in template
+    assert "function transferTargetGroupWithEnabledTargets" in template
     assert "function transferTargetSuggestedDestinationSubpath" in template
     assert "transferRootPanel.hidden" in template
     for group_label in ("종합", "ComfyUI", "Hugging Face", "Civitai", "Hitomi", "Movie", "ASMR"):
@@ -921,6 +1101,11 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert "category: knownTransferTargetGroup(activeTransferSettingGroup)" in template
     assert "comfyui_mappings" in template
     assert 'data-action="transfer"' in template
+    assert 'data-action="transfer-resources"' in template
+    assert 'data-card-action="transfer-resources"' in template
+    assert "function resourceTransferActionButton" in template
+    assert 'id="resource-transfer-modal"' in template
+    assert 'id="resource-transfer-target-groups"' in template
     assert "fetch('/api/transfer/targets')" in template
     assert "/${treeKind}/tree?path=" in template
     assert "'local-mount'" in template
@@ -930,6 +1115,8 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert "successStatus: '전송 대상이 저장되었습니다.'" in template
     assert "fetch('/api/transfer/preflight'" in template
     assert "fetch('/api/transfer/jobs'" in template
+    assert "fetch('/api/transfer/civitai-resources/preflight'" in template
+    assert "fetch('/api/transfer/civitai-resources/jobs'" in template
     assert "fetch('/api/transfer/data-root/preflight'" in template
     assert "fetch('/api/transfer/data-root/jobs'" in template
     assert "data-transfer-comfyui-check" in template

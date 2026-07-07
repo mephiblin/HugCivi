@@ -1004,6 +1004,47 @@ a:hover {
   display: none;
 }
 
+.resource-transfer-list,
+.resource-transfer-notes {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.resource-transfer-list li,
+.resource-transfer-notes li,
+.resource-transfer-empty {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 1px solid #edf1f7;
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.resource-transfer-list strong {
+  min-width: 0;
+  color: #1f2937;
+  overflow-wrap: anywhere;
+}
+
+.resource-transfer-list span,
+.resource-transfer-list small,
+.resource-transfer-notes li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-transfer-list small {
+  color: #64748b;
+}
+
 .transfer-receiver-browser {
   display: grid;
   min-width: 0;
@@ -2940,6 +2981,10 @@ a:hover {
 
 .asset-action.media {
   background: rgba(2, 6, 23, 0.32);
+}
+
+.asset-action.resource-transfer {
+  background: rgba(20, 83, 45, 0.42);
 }
 
 .asset-action.workflow:hover {

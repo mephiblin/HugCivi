@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import app.transfer as transfer_module
 from app.transfer import (
     COMFYUI_MODEL_FOLDER_ALIASES,
     DEFAULT_DATA_REMOTE_DIR,
@@ -356,6 +357,37 @@ def test_local_mount_preflight_and_copy_skip_existing_with_manifest_entries(tmp_
     assert str(data_root) not in str(result)
     assert str(data_remote_root) not in str(result)
     assert logs and all(str(data_remote_root) not in line for line in logs)
+
+
+def test_local_mount_copy_skip_existing_does_not_replace_late_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    data_remote_root = tmp_path / "data_remote"
+    source = data_root / "stable-diffusion" / "checkpoints" / "Model.ckpt"
+    destination = data_remote_root / "pc-comfyui" / "checkpoints" / "Model.ckpt"
+    source.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"new")
+
+    def fake_link(_temp_path: Path | str, destination_path: Path | str) -> None:
+        Path(destination_path).write_bytes(b"late")
+        raise FileExistsError
+
+    monkeypatch.setattr(transfer_module.os, "link", fake_link)
+
+    action = transfer_module._copy_source_file_to_local_mount(
+        source,
+        destination,
+        base=data_remote_root / "pc-comfyui" / "checkpoints",
+        job_id=99,
+        skip_existing=True,
+    )
+
+    assert action == "skipped_existing"
+    assert destination.read_bytes() == b"late"
+    assert all(".part." not in part.name for part in destination.parent.iterdir())
 
 
 def test_local_mount_data_root_clone_copies_contents_without_data_folder(tmp_path: Path) -> None:

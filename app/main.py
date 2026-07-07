@@ -757,6 +757,8 @@ def api_transfer_receiver_tree(
     target = db.get_transfer_target(target_id)
     if not target:
         raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if not bool(target.get("enabled")):
+        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
     if transfer_target_kind(target) != transfer.TARGET_KIND_RECEIVER:
         raise HTTPException(status_code=400, detail="Receiver 대상만 탐색할 수 있습니다.")
     try:
@@ -778,6 +780,8 @@ def api_transfer_local_mount_tree(
     target = db.get_transfer_target(target_id)
     if not target:
         raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if not bool(target.get("enabled")):
+        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
     if transfer_target_kind(target) != TARGET_KIND_LOCAL_MOUNT:
         raise HTTPException(status_code=400, detail="연결 폴더 대상만 탐색할 수 있습니다.")
     try:
@@ -866,6 +870,100 @@ async def api_create_transfer_job(request: Request, _: str = Depends(require_aut
     db.add_job_content_ref(job_id, path=source, role="transfer_source")
     internal_jobs.enqueue_job(job_id)
     return JSONResponse({"ok": True, "job": decorate_job(db.get_job(job_id) or {}), "preflight": preflight, **preflight})
+
+
+@app.post("/api/transfer/civitai-resources/preflight")
+async def api_transfer_civitai_resources_preflight(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    _target, plan = civitai_resource_transfer_plan(payload)
+    return JSONResponse(plan)
+
+
+@app.post("/api/transfer/civitai-resources/jobs")
+async def api_create_transfer_civitai_resource_jobs(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object is required")
+    target, plan = civitai_resource_transfer_plan(payload)
+    resources = plan.get("resources") if isinstance(plan.get("resources"), list) else []
+    if not resources:
+        raise HTTPException(status_code=400, detail="전송할 Resources used 파일이 없습니다.")
+
+    job_specs: list[dict[str, Any]] = []
+    for resource in resources:
+        source_path = str(resource.get("source_path") or "")
+        destination_subpath = str(resource.get("destination_subpath") or "")
+        source = transfer_source_path(source_path, target)
+        relative_path = relative_data_path(source)
+        preflight = transfer_preflight_payload(
+            source,
+            target,
+            destination_subpath,
+            relative_path=relative_path,
+        )
+        job_specs.append(
+            {
+                "payload": {
+                    "target_id": int(target["id"]),
+                    "source_path": relative_path,
+                    "destination_subpath": destination_subpath,
+                },
+                "source": source,
+                "relative_path": relative_path,
+                "preflight": preflight,
+                "metadata": {
+                    "transfer_preflight": preflight,
+                    "civitai_resource_transfer": {
+                        "archive_path": plan.get("archive_path"),
+                        "model_version_id": resource.get("model_version_id"),
+                        "resource_name": resource.get("name"),
+                        "resource_type": resource.get("type"),
+                    },
+                },
+            }
+        )
+
+    jobs: list[dict[str, Any]] = []
+    created_job_ids: list[int] = []
+    try:
+        for spec in job_specs:
+            source = spec["source"]
+            preflight = spec["preflight"]
+            relative_path = str(spec["relative_path"])
+            job_id = db.create_internal_job(
+                INTERNAL_JOB_TRANSFER_COPY,
+                input_text=f"transfer:{relative_path}",
+                payload=spec["payload"],
+                source="transfer",
+                target_dir=str(source),
+                filename=source.name,
+                total_bytes=int(preflight["source_bytes"]),
+                metadata=spec["metadata"],
+            )
+            created_job_ids.append(job_id)
+            db.add_job_content_ref(job_id, path=source, role="transfer_source")
+    except Exception:
+        for job_id in created_job_ids:
+            db.update_job(job_id, status="failed", error="resource transfer batch creation failed before enqueue")
+            db.append_log(job_id, "resource transfer batch creation failed before enqueue")
+        raise
+    for job_id in created_job_ids:
+        internal_jobs.enqueue_job(job_id)
+        job = db.get_job(job_id)
+        if job:
+            jobs.append(decorate_job(job, include_log=False))
+
+    return JSONResponse(
+        {
+            **plan,
+            "ok": True,
+            "queued_count": len(jobs),
+            "job_ids": [job.get("id") for job in jobs],
+            "jobs": jobs,
+        }
+    )
 
 
 @app.post("/api/transfer/data-root/preflight")
@@ -1417,15 +1515,7 @@ def transfer_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], Pat
     forbidden.extend(sorted(set(payload) - allowed_request_fields))
     if forbidden:
         raise HTTPException(status_code=400, detail="전송은 복사만 지원합니다.")
-    try:
-        target_id = int(payload.get("target_id"))
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="전송 대상을 선택하세요.") from exc
-    target = db.get_transfer_target(target_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
-    if not bool(target.get("enabled")):
-        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
+    target = transfer_target_from_payload(payload)
     try:
         destination_subpath = transfer.validate_destination_subpath(str(payload.get("destination_subpath") or ""))
     except ValueError as exc:
@@ -1438,6 +1528,19 @@ def transfer_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], Pat
     if not destination_subpath:
         destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
     return target, source, relative_path, destination_subpath
+
+
+def transfer_target_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        target_id = int(payload.get("target_id"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="전송 대상을 선택하세요.") from exc
+    target = db.get_transfer_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="전송 대상을 찾을 수 없습니다.")
+    if not bool(target.get("enabled")):
+        raise HTTPException(status_code=400, detail="비활성화된 전송 대상입니다.")
+    return target
 
 
 def transfer_data_root_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -1479,6 +1582,201 @@ def transfer_source_path(path: str, target: dict[str, Any]) -> Path:
     if not any(path_is_under_prefix(relative_path, str(prefix)) for prefix in allowed_prefixes):
         raise HTTPException(status_code=400, detail="이 전송 대상에서 허용되지 않은 원본 경로입니다.")
     return source
+
+
+def civitai_resource_transfer_plan(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    forbidden = copy_forbidden_fields(payload)
+    allowed_request_fields = {"target_id", "path"}
+    forbidden.extend(sorted(set(payload) - allowed_request_fields))
+    if forbidden:
+        raise HTTPException(status_code=400, detail="전송은 복사만 지원합니다.")
+
+    target = transfer_target_from_payload(payload)
+    archive = existing_data_path(str(payload.get("path") or ""))
+    ensure_downloadable_path(archive)
+    if archive.is_symlink() or has_symlink_ancestor(archive):
+        raise HTTPException(status_code=400, detail="symlink 경로는 전송할 수 없습니다.")
+
+    metadata = civitai_image_archive_metadata(archive)
+    if not metadata:
+        raise HTTPException(status_code=400, detail="Civitai 이미지 archive metadata를 찾지 못했습니다.")
+    resources = civitai_generation_resource_entries(metadata)
+    if not resources:
+        raise HTTPException(status_code=400, detail="Resources used 정보가 없습니다.")
+    if len(resources) > 100:
+        raise HTTPException(status_code=400, detail="한 번에 100개 이하의 리소스만 전송할 수 있습니다.")
+
+    ids = [str(resource["model_version_id"]) for resource in resources]
+    health_rows = civitai_resource_health_payload(ids)
+    resource_by_id = {str(resource["model_version_id"]): resource for resource in resources}
+    transferable: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+
+    for health in health_rows:
+        version_id = str(health.get("model_version_id") or "")
+        resource = resource_by_id.get(version_id, {"model_version_id": version_id})
+        base_row = {
+            "model_version_id": version_id,
+            "name": str(resource.get("name") or ""),
+            "type": str(resource.get("type") or ""),
+            "model_id": str(resource.get("model_id") or ""),
+            "href": str(resource.get("href") or ""),
+            "target_path": str(health.get("target_path") or ""),
+        }
+        if not health.get("present"):
+            missing.append({**base_row, "reason": "로컬에 다운로드된 리소스를 찾지 못했습니다."})
+            continue
+
+        try:
+            source = civitai_resource_transfer_source_path(str(health.get("target_path") or ""))
+            if source is None:
+                skipped.append({**base_row, "reason": "전송할 모델 파일을 찾지 못했습니다."})
+                continue
+            checked_source = transfer_source_path(relative_data_path(source), target)
+            relative_path = relative_data_path(checked_source)
+            if relative_path in seen_sources:
+                skipped.append({**base_row, "source_path": relative_path, "reason": "이미 같은 파일이 포함되었습니다."})
+                continue
+            destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
+            preflight = transfer_preflight_payload(
+                checked_source,
+                target,
+                destination_subpath,
+                relative_path=relative_path,
+            )
+        except HTTPException as exc:
+            skipped.append({**base_row, "reason": str(exc.detail)})
+            continue
+        except (OSError, ValueError) as exc:
+            skipped.append({**base_row, "reason": str(exc)})
+            continue
+
+        seen_sources.add(relative_path)
+        transferable.append(
+            {
+                **base_row,
+                "source_path": relative_path,
+                "source_name": checked_source.name,
+                "destination_subpath": destination_subpath,
+                "destination": str(preflight.get("destination") or ""),
+                "source_bytes": int(preflight.get("source_bytes") or 0),
+                "source_human": str(preflight.get("source_human") or ""),
+                "file_count": int(preflight.get("file_count") or 0),
+                "preflight": preflight,
+            }
+        )
+
+    total_bytes = sum(int(resource.get("source_bytes") or 0) for resource in transferable)
+    plan = {
+        "ok": True,
+        "target": transfer_target_payload(target),
+        "archive_path": relative_data_path(archive),
+        "requested_count": len(resources),
+        "present_count": sum(1 for row in health_rows if row.get("present")),
+        "transferable_count": len(transferable),
+        "missing_count": len(missing),
+        "skipped_count": len(skipped),
+        "source_bytes": total_bytes,
+        "source_human": human_bytes(total_bytes),
+        "file_count": sum(int(resource.get("file_count") or 0) for resource in transferable),
+        "resources": transferable,
+        "missing_resources": missing,
+        "skipped": skipped,
+    }
+    return target, plan
+
+
+def civitai_generation_resource_entries(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    generation = metadata.get("generation_data") if isinstance(metadata.get("generation_data"), dict) else {}
+    if not generation and isinstance(metadata.get("generationData"), dict):
+        generation = metadata["generationData"]
+
+    entries: dict[str, dict[str, Any]] = {}
+
+    def ensure_entry(version_id: Any) -> dict[str, Any] | None:
+        text = str(version_id or "").strip()
+        if not text:
+            return None
+        entry = entries.setdefault(text, {"model_version_id": text, "name": "", "type": "", "model_id": "", "href": ""})
+        return entry
+
+    raw_ids = generation.get("model_version_ids", generation.get("modelVersionIds"))
+    if isinstance(raw_ids, list):
+        for value in raw_ids:
+            ensure_entry(value)
+
+    raw_resources = generation.get("resources")
+    if isinstance(raw_resources, list):
+        for resource in raw_resources:
+            if not isinstance(resource, dict):
+                continue
+            version_id = first_metadata_text(
+                resource.get("model_version_id"),
+                resource.get("modelVersionId"),
+                resource.get("version_id"),
+                resource.get("versionId"),
+            )
+            entry = ensure_entry(version_id)
+            if entry is None:
+                continue
+            entry["name"] = first_metadata_text(resource.get("name"), entry.get("name"))
+            entry["type"] = first_metadata_text(resource.get("type"), entry.get("type"))
+            entry["model_id"] = first_metadata_text(resource.get("model_id"), resource.get("modelId"), entry.get("model_id"))
+            entry["href"] = first_metadata_text(resource.get("href"), resource.get("url"), entry.get("href"))
+
+    return list(entries.values())
+
+
+def civitai_resource_transfer_source_path(target_path: str) -> Path | None:
+    if not target_path:
+        return None
+    source = existing_data_path(target_path)
+    ensure_downloadable_path(source)
+    if source.is_symlink() or has_symlink_ancestor(source):
+        raise HTTPException(status_code=400, detail="symlink 경로는 전송할 수 없습니다.")
+    if source.is_file():
+        return source if is_model_file(source) else None
+    if not source.is_dir():
+        return None
+    return civitai_primary_model_file_for_archive(source) or first_model_file_under(source)
+
+
+def civitai_primary_model_file_for_archive(path: Path) -> Path | None:
+    metadata = civitai_archive_generation_metadata(path)
+    components = metadata.get("component_downloads") if isinstance(metadata.get("component_downloads"), list) else []
+    for primary_only in (True, False):
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            role = first_metadata_text(component.get("role")).lower()
+            if primary_only and role != "primary":
+                continue
+            for name in civitai_component_candidate_names(component):
+                candidate = path / name
+                try:
+                    if candidate.is_file() and not candidate.is_symlink() and is_model_file(candidate):
+                        return candidate
+                except OSError:
+                    continue
+    return None
+
+
+def first_model_file_under(path: Path, limit: int = 10000) -> Path | None:
+    try:
+        if path.is_file():
+            return path if is_model_file(path) else None
+        if not path.is_dir():
+            return None
+        for index, item in enumerate(path.rglob("*")):
+            if index >= limit:
+                return None
+            if item.is_file() and not item.is_symlink() and is_model_file(item):
+                return item
+    except OSError:
+        return None
+    return None
 
 
 def path_is_under_prefix(path: str, prefix: str) -> bool:
@@ -1604,13 +1902,12 @@ def fetch_receiver_tree(target: dict[str, Any], path: str) -> dict[str, Any]:
             timeout=min(15, transfer.receiver_timeout_seconds()),
         )
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Receiver에 연결하지 못했습니다: {exc}") from exc
+        raise HTTPException(status_code=502, detail="Receiver에 연결하지 못했습니다.") from exc
 
     if response.status_code != 200:
-        detail = receiver_error_detail(response)
         if response.status_code == 401:
-            detail = "Receiver token이 거부되었습니다."
-        raise HTTPException(status_code=502, detail=f"Receiver 폴더를 불러오지 못했습니다: {detail}")
+            raise HTTPException(status_code=502, detail="Receiver token이 거부되었습니다.")
+        raise HTTPException(status_code=502, detail="Receiver 폴더를 불러오지 못했습니다.")
 
     try:
         payload = response.json()
@@ -1618,12 +1915,40 @@ def fetch_receiver_tree(target: dict[str, Any], path: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="Receiver가 JSON이 아닌 응답을 반환했습니다.") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("root"), dict):
         raise HTTPException(status_code=502, detail="Receiver 폴더 응답 형식이 올바르지 않습니다.")
-    root = payload["root"]
-    children = root.get("children") if isinstance(root.get("children"), list) else []
+    root = sanitize_receiver_tree_node(payload["root"], fallback_path=path)
     return {
-        "path": str(payload.get("path") or root.get("path") or path),
+        "path": sanitize_receiver_tree_path(payload.get("path"), fallback_path=root["path"]),
         "root": root,
+        "children": list(root.get("children") or []),
+    }
+
+
+def sanitize_receiver_tree_path(value: Any, *, fallback_path: str = "") -> str:
+    text = "" if value is None else str(value)
+    if not text:
+        text = fallback_path
+    try:
+        return transfer.validate_destination_subpath(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Receiver 폴더 응답 형식이 올바르지 않습니다.") from exc
+
+
+def sanitize_receiver_tree_node(node: dict[str, Any], *, fallback_path: str = "") -> dict[str, Any]:
+    clean_path = sanitize_receiver_tree_path(node.get("path"), fallback_path=fallback_path)
+    raw_children = node.get("children") if isinstance(node.get("children"), list) else []
+    children = [
+        sanitize_receiver_tree_node(child)
+        for child in raw_children
+        if isinstance(child, dict)
+    ]
+    return {
+        "name": str(node.get("name") or (clean_path.rsplit("/", 1)[-1] if clean_path else "receive")),
+        "path": clean_path,
+        "kind": "directory",
+        "has_children": bool(node.get("has_children") or node.get("hasChildren") or children),
+        "children_loaded": bool(node.get("children_loaded") or node.get("childrenLoaded") or isinstance(node.get("children"), list)),
         "children": children,
+        "truncated": bool(node.get("truncated")),
     }
 
 
@@ -5187,13 +5512,15 @@ def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
             relative_path=relative_data_path(source),
         )
         source_filename = source.name
+    metadata = parse_json_object(job.get("metadata_json"))
+    metadata["transfer_preflight"] = preflight
     db.update_job(
         job_id,
         target_dir=str(source),
         filename=source_filename,
         progress_bytes=0,
         total_bytes=int(preflight["source_bytes"]),
-        metadata_json=json.dumps({"transfer_preflight": preflight}, ensure_ascii=False),
+        metadata_json=json.dumps(metadata, ensure_ascii=False),
     )
     with TRANSFER_COPY_SEMAPHORE:
         if kind == transfer.TARGET_KIND_RECEIVER:

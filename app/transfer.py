@@ -1274,14 +1274,26 @@ def _copy_source_file_to_local_mount(
             shutil.copystat(source, temp_path, follow_symlinks=False)
         except OSError:
             pass
+        return _finalize_local_mount_temp_file(temp_path, destination, skip_existing=skip_existing)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _finalize_local_mount_temp_file(temp_path: Path, destination: Path, *, skip_existing: bool) -> str:
+    try:
+        os.link(temp_path, destination)
+    except FileExistsError:
+        if skip_existing:
+            return "skipped_existing"
+        raise ValueError("Local mount destination file already exists")
+    except OSError:
         if destination.exists():
             if skip_existing:
                 return "skipped_existing"
             raise ValueError("Local mount destination file already exists")
         temp_path.rename(destination)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+        return "copied"
     return "copied"
 
 
