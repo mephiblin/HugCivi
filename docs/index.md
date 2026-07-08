@@ -1,6 +1,6 @@
 # HugCivi Documentation Index
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 Use this page to decide which document is authoritative for current development.
 
@@ -32,6 +32,7 @@ The dated documents below are useful context, but code and current reference doc
 | Document | Status |
 | --- | --- |
 | [ComfyUI Transfer Folder Check Design 2026-07-07](comfyui-transfer-folder-check-design-2026-07-07.md) | partially implemented planning record. Current code checks `local_mount` ComfyUI `models` folders from the settings pane and returns HugCivi `/data` source-prefix mapping hints; automatic transfer-modal destination filling remains future work. Existing `/data` routes remain unchanged. |
+| [Library Category Index Refresh Plan 2026-07-08](library-category-index-refresh-plan-2026-07-08.md) | partially implemented planning record. Current code has SQLite source/category/search columns, DB-first selected-folder pages, `source_group` UI/API filters, and scoped synchronous `/api/library/reindex`; internal `library_reindex` jobs and deeper provider-specific category UI remain future work. |
 | [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md) | partially implemented reference. Current code has root-direct `/api/folders` plus lazy `/api/folders/children`; server-side folder search and optional folder indexing remain future work. |
 | [`/data_remote` Connected Transfer Design 2026-07-06](data-remote-transfer-design-2026-07-06.md) | implemented reference for destination-only `local_mount` transfer targets. Current code supports `/data_remote` tree browsing, preflight, temp-file copy, skip-existing behavior, and settings-pane `/data` root clone; read-only import/friend-library ideas remain future work. |
 | [Library Card Performance Plan 2026-07-05](library-card-performance-plan-2026-07-05.md) | implemented planning record. Current behavior is documented in Architecture, Feature and Code Map, Operations, and the 2026-07-05 patch notes. |

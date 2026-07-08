@@ -2790,7 +2790,9 @@ a:hover {
 .library-controls {
   display: flex;
   min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -2811,6 +2813,7 @@ a:hover {
   font-weight: 700;
 }
 
+.library-refresh-button,
 .library-thumbnail-job-button {
   min-height: 30px;
   border: 1px solid #d8dee8;
@@ -2824,11 +2827,13 @@ a:hover {
   cursor: pointer;
 }
 
+.library-refresh-button:hover:not(:disabled),
 .library-thumbnail-job-button:hover:not(:disabled) {
   border-color: #b8c2d2;
   background: #f8fafc;
 }
 
+.library-refresh-button:disabled,
 .library-thumbnail-job-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;

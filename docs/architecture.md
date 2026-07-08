@@ -256,14 +256,15 @@ Indexer behavior:
 - startup launches a background library indexer after `LIBRARY_INDEXER_START_DELAY_SECONDS`
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
-- `/api/library/reindex` can reset and scan a larger batch
+- `/api/library/reindex` can reset and scan a larger batch; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category
 - `/api/library?mode=live` can force filesystem scan behavior
-- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
+- selected-folder `mode=index` pages query SQLite first, including `source_group`/`category` filters, so indexed folders can return exact totals without a filesystem scan
+- `/api/library?mode=live&path=...` explicitly scopes a live scan to the selected folder; completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
-- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias
+- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias. Optional `source_group` values are `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
 
-The index row stores the same kind of payload the UI already expects, rather than normalizing every display field into separate columns. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
+The index row stores the same kind of payload the UI already expects in `payload_json`, plus lightweight searchable columns (`source`, `source_group`, `model_category`, `parent_path`, and `sort_title`) for source/category/path navigation. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
 
 Single-media yt-dlp/gallery-dl archives can enrich their library payload from the saved `*.info.json` sidecar, using the real media title and webpage URL for the card when the folder metadata only has a fallback slug. Multi-video channel or playlist folders keep folder-level titles so one child video title does not rename the whole archive.
 

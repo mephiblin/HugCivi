@@ -151,6 +151,11 @@ def init_db() -> None:
                 kind TEXT NOT NULL,
                 name TEXT NOT NULL,
                 target_dir TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                source_group TEXT NOT NULL DEFAULT '',
+                model_category TEXT NOT NULL DEFAULT '',
+                parent_path TEXT NOT NULL DEFAULT '',
+                sort_title TEXT NOT NULL DEFAULT '',
                 payload_json TEXT NOT NULL,
                 size_bytes INTEGER DEFAULT 0,
                 mtime_ns INTEGER DEFAULT 0,
@@ -161,6 +166,9 @@ def init_db() -> None:
             )
             """
         )
+        ensure_library_item_columns(conn)
+        ensure_library_item_indexes(conn)
+        backfill_library_item_search_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS library_scan_state (
@@ -235,6 +243,186 @@ def ensure_transfer_target_columns(conn: sqlite3.Connection) -> None:
     for name, sql_type in columns.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE transfer_targets ADD COLUMN {name} {sql_type}")
+
+
+def ensure_library_item_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(library_items)").fetchall()}
+    columns = {
+        "source": "TEXT NOT NULL DEFAULT ''",
+        "source_group": "TEXT NOT NULL DEFAULT ''",
+        "model_category": "TEXT NOT NULL DEFAULT ''",
+        "parent_path": "TEXT NOT NULL DEFAULT ''",
+        "sort_title": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, sql_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE library_items ADD COLUMN {name} {sql_type}")
+
+
+def ensure_library_item_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_global_sort
+        ON library_items(stale, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_parent_sort
+        ON library_items(stale, parent_path, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_path_sort
+        ON library_items(stale, path, sort_title)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_sort
+        ON library_items(stale, source_group, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_parent_sort
+        ON library_items(stale, source_group, parent_path, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_category_sort
+        ON library_items(stale, model_category, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_mtime
+        ON library_items(stale, mtime_ns, path)
+        """
+    )
+
+
+def backfill_library_item_search_columns(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT path, name, payload_json
+        FROM library_items
+        WHERE source_group = '' OR sort_title = ''
+        """
+    ).fetchall()
+    for row in rows:
+        path = str(row["path"] or "").strip("/")
+        name = str(row["name"] or "")
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        fields = library_index_fields_from_payload(path, name=name, payload=payload)
+        conn.execute(
+            """
+            UPDATE library_items
+            SET source = ?, source_group = ?, model_category = ?, parent_path = ?, sort_title = ?
+            WHERE path = ?
+            """,
+            (
+                fields["source"],
+                fields["source_group"],
+                fields["model_category"],
+                fields["parent_path"],
+                fields["sort_title"],
+                path,
+            ),
+        )
+
+
+def library_index_fields_from_payload(path: str, *, name: str, payload: dict[str, Any]) -> dict[str, str]:
+    normalized_path = path.strip("/")
+    source = normalize_library_index_source(payload.get("source"))
+    source_url = str(payload.get("source_url") or payload.get("input_text") or "")
+    model_category = str(payload.get("model_category") or "").strip()
+    has_media = bool(payload.get("has_media"))
+    source_group = normalize_library_index_source_group(
+        source=payload.get("source_group") or source,
+        source_url=source_url,
+        model_category=model_category or payload.get("model_type"),
+        path=normalized_path,
+        has_media=has_media,
+    )
+    return {
+        "source": source,
+        "source_group": source_group,
+        "model_category": model_category,
+        "parent_path": library_parent_path(normalized_path),
+        "sort_title": library_index_sort_title(payload, name=name, path=normalized_path),
+    }
+
+
+def library_parent_path(path: str) -> str:
+    normalized = path.strip("/")
+    return normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+
+
+def library_index_sort_title(payload: dict[str, Any], *, name: str, path: str) -> str:
+    return str(payload.get("model_title") or payload.get("filename") or name or path).casefold()
+
+
+def normalize_library_index_source(value: Any) -> str:
+    source = str(value or "").strip().lower().replace("_", "-")
+    if source in {"gallery-dl", "gallerydl"}:
+        return "gallerydl"
+    if source in {"huggingface", "civitai", "generic", "comfyui", "hitomi", "asmrone", "media"}:
+        return source
+    return str(value or "").strip() or "filesystem"
+
+
+def normalize_library_index_source_group(
+    *,
+    source: Any = "",
+    source_url: Any = "",
+    model_category: Any = "",
+    path: str = "",
+    has_media: bool = False,
+) -> str:
+    source_text = normalize_library_index_source(source)
+    source_url_text = str(source_url or "").strip().lower()
+    category_text = str(model_category or "").strip().lower()
+    path_text = path.strip("/").lower()
+    aliases = {
+        "gallery-dl": "gallerydl",
+        "gallerydl": "gallerydl",
+        "yt-dlp": "ytdlp",
+        "ytdlp": "ytdlp",
+        "youtube": "ytdlp",
+        "asmr": "asmrone",
+        "asmr.one": "asmrone",
+        "asmrone": "asmrone",
+        "hugging-face": "huggingface",
+        "huggingface": "huggingface",
+    }
+    aliased = aliases.get(source_text, source_text)
+    if source_url_text.startswith("ytdl:") or "/youtube.com/" in f"/{path_text}/":
+        return "ytdlp"
+    if aliased in {"civitai", "gallerydl", "hitomi", "asmrone", "generic", "huggingface", "comfyui"}:
+        return aliased
+    if "civitai" in category_text or "civitai" in source_url_text:
+        return "civitai"
+    if "hitomi" in category_text or path_text.startswith("hitomi/"):
+        return "hitomi"
+    if "asmr" in category_text or path_text.startswith("asmr.one/"):
+        return "asmrone"
+    if path_text.startswith("generic/"):
+        return "generic"
+    if path_text.startswith("huggingface/"):
+        return "huggingface"
+    if path_text.startswith("comfyui/"):
+        return "comfyui"
+    if has_media or aliased == "media":
+        return "media"
+    return "unknown"
 
 
 def ensure_subscription_tables(conn: sqlite3.Connection) -> None:
@@ -1509,25 +1697,42 @@ def upsert_library_item(
     kind: str,
     name: str,
     target_dir: str,
+    source: str = "",
+    source_group: str = "",
+    model_category: str = "",
+    parent_path: str = "",
+    sort_title: str = "",
     payload: dict[str, Any],
     size_bytes: int,
     mtime_ns: int,
     ctime_ns: int,
 ) -> None:
     normalized = path.strip("/")
+    fields = library_index_fields_from_payload(normalized, name=name, payload=payload)
+    indexed_source = source.strip() or fields["source"]
+    indexed_source_group = source_group.strip() or fields["source_group"]
+    indexed_model_category = model_category.strip() or fields["model_category"]
+    indexed_parent_path = parent_path.strip("/") or fields["parent_path"]
+    indexed_sort_title = sort_title.strip() or fields["sort_title"]
     now = utc_now()
     with _DB_LOCK, connect() as conn:
         conn.execute(
             """
             INSERT INTO library_items (
-                path, kind, name, target_dir, payload_json, size_bytes,
+                path, kind, name, target_dir, source, source_group,
+                model_category, parent_path, sort_title, payload_json, size_bytes,
                 mtime_ns, ctime_ns, stale, updated_at, scanned_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 kind = excluded.kind,
                 name = excluded.name,
                 target_dir = excluded.target_dir,
+                source = excluded.source,
+                source_group = excluded.source_group,
+                model_category = excluded.model_category,
+                parent_path = excluded.parent_path,
+                sort_title = excluded.sort_title,
                 payload_json = excluded.payload_json,
                 size_bytes = excluded.size_bytes,
                 mtime_ns = excluded.mtime_ns,
@@ -1541,6 +1746,11 @@ def upsert_library_item(
                 kind,
                 name,
                 target_dir,
+                indexed_source,
+                indexed_source_group,
+                indexed_model_category,
+                indexed_parent_path,
+                indexed_sort_title,
                 json.dumps(payload, ensure_ascii=False),
                 size_bytes,
                 mtime_ns,
@@ -1557,9 +1767,11 @@ def list_library_index_items(
     *,
     offset: int = 0,
     path_prefix: str = "",
+    source_group: str = "",
+    category: str = "",
     sort: str = "az",
 ) -> list[dict[str, Any]]:
-    where, params = library_index_where(path_prefix)
+    where, params = library_index_where(path_prefix, source_group=source_group, category=category)
     order = library_index_order(sort)
     with _DB_LOCK, connect() as conn:
         rows = conn.execute(
@@ -1583,27 +1795,38 @@ def list_library_index_items(
     return items
 
 
-def count_library_index_items(*, path_prefix: str = "") -> int:
-    where, params = library_index_where(path_prefix)
+def count_library_index_items(*, path_prefix: str = "", source_group: str = "", category: str = "") -> int:
+    where, params = library_index_where(path_prefix, source_group=source_group, category=category)
     with _DB_LOCK, connect() as conn:
         row = conn.execute(f"SELECT COUNT(*) AS count FROM library_items {where}", params).fetchone()
     return int(row["count"] or 0) if row else 0
 
 
-def library_index_where(path_prefix: str) -> tuple[str, tuple[str, ...]]:
+def library_index_where(path_prefix: str, *, source_group: str = "", category: str = "") -> tuple[str, tuple[str, ...]]:
     prefix = path_prefix.strip("/")
+    source = source_group.strip().lower()
+    model_category = category.strip()
+    clauses = ["stale = 0"]
+    params: list[str] = []
     if not prefix:
-        return "WHERE stale = 0", ()
-    return (
-        "WHERE stale = 0 AND (path = ? OR path LIKE ? ESCAPE '\\')",
-        (prefix, escape_like(prefix.rstrip("/") + "/") + "%"),
-    )
+        pass
+    else:
+        clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
+        params.extend((prefix, escape_like(prefix.rstrip("/") + "/") + "%"))
+    if source:
+        clauses.append("source_group = ?")
+        params.append(source)
+    if model_category:
+        clauses.append("model_category = ?")
+        params.append(model_category)
+    return "WHERE " + " AND ".join(clauses), tuple(params)
 
 
 def library_index_order(sort: str) -> str:
     value = str(sort or "az").strip().lower()
+    title = "CASE WHEN sort_title = '' THEN lower(name) ELSE sort_title END"
     if value == "za":
-        return "ORDER BY lower(name) DESC, lower(path) DESC"
+        return f"ORDER BY {title} DESC, lower(path) DESC"
     if value in {"date", "date_desc", "newest"}:
         return "ORDER BY mtime_ns DESC, lower(path) ASC"
     if value in {"date_asc", "oldest"}:
@@ -1611,9 +1834,9 @@ def library_index_order(sort: str) -> str:
     if value == "favorite":
         return (
             "ORDER BY CASE WHEN path IN (SELECT path FROM favorites) THEN 0 ELSE 1 END, "
-            "lower(name) ASC, lower(path) ASC"
+            f"{title} ASC, lower(path) ASC"
         )
-    return "ORDER BY lower(name) ASC, lower(path) ASC"
+    return f"ORDER BY {title} ASC, lower(path) ASC"
 
 
 def mark_library_item_stale(path: str) -> None:
@@ -1635,6 +1858,30 @@ def clear_library_item_prefix(target_path: str) -> None:
         conn.commit()
 
 
+def clear_library_item_scope(*, path_prefix: str = "", source_group: str = "", category: str = "") -> int:
+    prefix = path_prefix.strip("/")
+    source = source_group.strip().lower()
+    model_category = category.strip()
+    clauses: list[str] = []
+    params: list[str] = []
+    if prefix:
+        clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
+        params.extend((prefix, escape_like(prefix.rstrip("/") + "/") + "%"))
+    if source:
+        clauses.append("source_group = ?")
+        params.append(source)
+    if model_category:
+        clauses.append("model_category = ?")
+        params.append(model_category)
+    if not clauses:
+        return 0
+    where = "WHERE " + " AND ".join(clauses)
+    with _DB_LOCK, connect() as conn:
+        cur = conn.execute(f"DELETE FROM library_items {where}", tuple(params))
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
 def update_library_item_path_prefix(old_path: str, new_path: str) -> None:
     old_text = old_path.strip("/")
     new_text = new_path.strip("/")
@@ -1650,8 +1897,12 @@ def update_library_item_path_prefix(old_path: str, new_path: str) -> None:
                 updated = new_text.rstrip("/") + "/" + path[len(old_prefix) :]
             else:
                 continue
+            parent_path = updated.rsplit("/", 1)[0] if "/" in updated else ""
             conn.execute("DELETE FROM library_items WHERE path = ?", (updated,))
-            conn.execute("UPDATE library_items SET path = ?, stale = 1, updated_at = ? WHERE path = ?", (updated, now, path))
+            conn.execute(
+                "UPDATE library_items SET path = ?, parent_path = ?, stale = 1, updated_at = ? WHERE path = ?",
+                (updated, parent_path, now, path),
+            )
         conn.commit()
 
 

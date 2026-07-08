@@ -166,6 +166,19 @@ LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = LIBRARY_PAGE_SIZE * 3
 LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS = 20_000
 LIVE_LIBRARY_PAGE_CACHE_DEFAULT_TTL_SECONDS = 60
 LIVE_LIBRARY_PAGE_CACHE_MAX_ENTRIES = 16
+LIBRARY_SOURCE_GROUPS = {
+    "",
+    "civitai",
+    "gallerydl",
+    "ytdlp",
+    "hitomi",
+    "asmrone",
+    "generic",
+    "huggingface",
+    "comfyui",
+    "media",
+    "unknown",
+}
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
@@ -2151,11 +2164,20 @@ def api_library(
     limit: int | None = None,
     page: int | None = None,
     sort: str = "az",
+    source_group: str = "",
+    category: str = "",
     _: str = Depends(require_auth),
 ) -> JSONResponse:
     root = existing_data_path(path) if path else None
     if limit is None and page is None:
-        return JSONResponse(library_items(mode=mode, root_path=root))
+        return JSONResponse(
+            library_items(
+                mode=mode,
+                root_path=root,
+                source_group=source_group,
+                category=category,
+            )
+        )
     return JSONResponse(
         library_items_page_payload(
             mode=mode,
@@ -2163,15 +2185,41 @@ def api_library(
             limit=limit if limit is not None else LIBRARY_PAGE_SIZE,
             page=page if page is not None else 1,
             sort=sort,
+            source_group=source_group,
+            category=category,
         )
     )
 
 
 @app.post("/api/library/reindex")
-def api_library_reindex(_: str = Depends(require_auth)) -> JSONResponse:
-    result = scan_library_index_batch(max_paths=library_reindex_batch_size(), reset=True)
+def api_library_reindex(
+    path: str = "",
+    source_group: str = "",
+    category: str = "",
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    root = existing_data_path(path) if path else None
+    normalized_source_group = normalize_library_source_group(source_group)
+    result = scan_library_index_batch(
+        max_paths=library_reindex_batch_size(),
+        reset=True,
+        root_path=root,
+        source_group=normalized_source_group,
+        category=category,
+    )
     clear_live_library_page_cache()
-    return JSONResponse({"ok": True, **result, "items": library_items()})
+    return JSONResponse(
+        {
+            "ok": True,
+            **result,
+            "scope": {
+                "path": relative_data_path(root) if root is not None else "",
+                "source_group": normalized_source_group,
+                "category": category.strip(),
+            },
+            "items": library_items(root_path=root, source_group=normalized_source_group, category=category),
+        }
+    )
 
 
 @app.get("/api/media/list")
@@ -2947,6 +2995,27 @@ def library_page_number(page: int | None) -> int:
     return max(1, value)
 
 
+def library_index_scope_key(*, path_prefix: str = "", source_group: str = "", category: str = "") -> str:
+    scope = {
+        "path": path_prefix.strip("/"),
+        "source_group": normalize_library_source_group(source_group),
+        "category": category.strip(),
+    }
+    raw = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "library.scope." + hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def library_index_scope_complete(*, path_prefix: str = "", source_group: str = "", category: str = "") -> bool:
+    if not path_prefix.strip("/") and not normalize_library_source_group(source_group) and not category.strip():
+        return (
+            bool(db.get_library_scan_state("library.last_scan_at", ""))
+            and db.get_library_scan_state("library.cursor", "") == ""
+            and db.get_library_scan_state("library.indexing", "0") == "0"
+        )
+    key = library_index_scope_key(path_prefix=path_prefix, source_group=source_group, category=category)
+    return db.get_library_scan_state(f"{key}.complete", "0") == "1"
+
+
 def library_items_page_payload(
     *,
     limit: int | None = LIBRARY_PAGE_SIZE,
@@ -2954,15 +3023,23 @@ def library_items_page_payload(
     mode: str = "index",
     root_path: Path | None = None,
     sort: str = "az",
+    source_group: str = "",
+    category: str = "",
 ) -> dict[str, Any]:
     page_limit = library_page_limit(limit)
     page_number = library_page_number(page)
     normalized_sort = normalize_library_sort(sort)
+    normalized_source_group = normalize_library_source_group(source_group)
+    normalized_category = category.strip()
     offset = (page_number - 1) * page_limit
     path_prefix = relative_data_path(root_path) if root_path is not None else ""
 
-    if root_path is None and mode != "live":
-        total_count = db.count_library_index_items(path_prefix=path_prefix)
+    if mode != "live":
+        total_count = db.count_library_index_items(
+            path_prefix=path_prefix,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
         if total_count > 0:
             if offset >= total_count:
                 page_number = max(1, (total_count + page_limit - 1) // page_limit)
@@ -2974,6 +3051,8 @@ def library_items_page_payload(
                     limit=page_limit,
                     offset=offset,
                     path_prefix=path_prefix,
+                    source_group=normalized_source_group,
+                    category=normalized_category,
                     sort=normalized_sort,
                 )
             ]
@@ -2989,9 +3068,33 @@ def library_items_page_payload(
                 "mode": "index",
                 "path": path_prefix,
                 "sort": normalized_sort,
+                "source_group": normalized_source_group,
+                "category": normalized_category,
+                "index_status": {"usable": True, "fallback": False},
                 "paged": True,
             }
-        if db.get_library_scan_state("library.indexing", "0") == "1":
+        if library_index_scope_complete(
+            path_prefix=path_prefix,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        ):
+            return {
+                "ok": True,
+                "items": [],
+                "page": 1,
+                "limit": page_limit,
+                "total_count": 0,
+                "total_pages": 1,
+                "has_next": False,
+                "mode": "index",
+                "path": path_prefix,
+                "sort": normalized_sort,
+                "source_group": normalized_source_group,
+                "category": normalized_category,
+                "index_status": {"usable": True, "fallback": False, "empty": True},
+                "paged": True,
+            }
+        if root_path is None and db.get_library_scan_state("library.indexing", "0") == "1":
             return {
                 "ok": True,
                 "items": [],
@@ -3003,6 +3106,9 @@ def library_items_page_payload(
                 "mode": "index",
                 "path": path_prefix,
                 "sort": normalized_sort,
+                "source_group": normalized_source_group,
+                "category": normalized_category,
+                "index_status": {"usable": False, "fallback": False, "indexing": True},
                 "paged": True,
             }
 
@@ -3011,6 +3117,8 @@ def library_items_page_payload(
         offset=offset,
         root_path=root_path,
         sort=normalized_sort,
+        source_group=normalized_source_group,
+        category=normalized_category,
     )
     return {
         "ok": True,
@@ -3023,6 +3131,9 @@ def library_items_page_payload(
         "mode": "live",
         "path": path_prefix,
         "sort": normalized_sort,
+        "source_group": normalized_source_group,
+        "category": normalized_category,
+        "index_status": {"usable": False, "fallback": True},
         "paged": True,
     }
 
@@ -3033,6 +3144,8 @@ def live_library_items_page(
     offset: int = 0,
     root_path: Path | None = None,
     sort: str = "az",
+    source_group: str = "",
+    category: str = "",
 ) -> tuple[list[dict[str, Any]], int, int | None, int | None, bool]:
     safe_limit = max(1, int(limit))
     safe_offset = max(0, int(offset))
@@ -3040,6 +3153,7 @@ def live_library_items_page(
     if root_path is not None:
         live_items, complete = cached_selected_folder_live_items(root_path)
         live_items = apply_library_favorites(live_items)
+        live_items = filter_library_items(live_items, source_group=source_group, category=category)
         items = sort_library_items(live_items, sort)
         total_count = len(items) if complete else None
         total_pages = max(1, (total_count + safe_limit - 1) // safe_limit) if total_count is not None else None
@@ -3052,7 +3166,9 @@ def live_library_items_page(
 
     fetch_limit = max(1, safe_offset + safe_limit + 1)
     scan_limit = max(fetch_limit, LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS)
-    items = sort_library_items(live_library_items(max_items=scan_limit, root_path=root_path), sort)
+    live_items = live_library_items(max_items=scan_limit, root_path=root_path)
+    live_items = filter_library_items(live_items, source_group=source_group, category=category)
+    items = sort_library_items(live_items, sort)
     page_items = items[safe_offset : safe_offset + safe_limit]
     return page_items, page_number, None, None, len(items) > safe_offset + safe_limit
 
@@ -3144,6 +3260,125 @@ def apply_library_favorites(items: list[dict[str, Any]]) -> list[dict[str, Any]]
     return decorated
 
 
+def filter_library_items(
+    items: list[dict[str, Any]],
+    *,
+    source_group: str = "",
+    category: str = "",
+) -> list[dict[str, Any]]:
+    normalized_source_group = normalize_library_source_group(source_group)
+    normalized_category = category.strip()
+    if not normalized_source_group and not normalized_category:
+        return items
+    return [
+        item
+        for item in items
+        if library_item_matches_filters(
+            item,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+    ]
+
+
+def library_item_matches_filters(item: dict[str, Any], *, source_group: str = "", category: str = "") -> bool:
+    if source_group:
+        item_group = normalize_library_source_group(
+            item.get("source_group")
+            or library_source_group_for_values(
+                source=item.get("source"),
+                source_url=item.get("source_url") or item.get("input_text"),
+                model_category=item.get("model_category") or item.get("model_type"),
+                target_path=item.get("target_path"),
+                has_media=bool(item.get("has_media")),
+            )
+        )
+        if item_group != source_group:
+            return False
+    if category and str(item.get("model_category") or "").strip() != category:
+        return False
+    return True
+
+
+def library_index_fields_for_item(item: dict[str, Any], path: Path) -> dict[str, str]:
+    target_path = str(item.get("target_path") or relative_data_path(path)).strip("/")
+    source = normalize_library_source(item.get("source"))
+    source_group = normalize_library_source_group(
+        item.get("source_group")
+        or library_source_group_for_values(
+            source=source,
+            source_url=item.get("source_url") or item.get("input_text"),
+            model_category=item.get("model_category") or item.get("model_type"),
+            target_path=target_path,
+            has_media=bool(item.get("has_media")),
+        )
+    )
+    return {
+        "source": source,
+        "source_group": source_group,
+        "model_category": str(item.get("model_category") or "").strip(),
+        "parent_path": target_path.rsplit("/", 1)[0] if "/" in target_path else "",
+        "sort_title": library_item_sort_title(item),
+    }
+
+
+def normalize_library_source_group(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": "",
+        "all": "",
+        "gallery-dl": "gallerydl",
+        "gallerydl": "gallerydl",
+        "yt-dlp": "ytdlp",
+        "ytdlp": "ytdlp",
+        "youtube": "ytdlp",
+        "asmr": "asmrone",
+        "asmr.one": "asmrone",
+        "asmrone": "asmrone",
+        "hugging-face": "huggingface",
+        "huggingface": "huggingface",
+        "filesystem": "unknown",
+        "local": "unknown",
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in LIBRARY_SOURCE_GROUPS else "unknown"
+
+
+def library_source_group_for_values(
+    *,
+    source: Any = "",
+    source_url: Any = "",
+    model_category: Any = "",
+    target_path: Any = "",
+    has_media: bool = False,
+) -> str:
+    source_text = normalize_library_source(source)
+    source_url_text = str(source_url or "").strip().lower()
+    category_text = str(model_category or "").strip().lower()
+    target_text = str(target_path or "").strip("/").lower()
+    if source_url_text.startswith("ytdl:") or "/youtube.com/" in f"/{target_text}/":
+        return "ytdlp"
+    if source_text == "gallerydl":
+        return "gallerydl"
+    if source_text in {"civitai", "hitomi", "asmrone", "generic", "huggingface", "comfyui"}:
+        return source_text
+    if "civitai" in category_text or "civitai" in source_url_text:
+        return "civitai"
+    if "hitomi" in category_text or target_text.startswith("hitomi/"):
+        return "hitomi"
+    if "asmr" in category_text or target_text.startswith("asmr.one/"):
+        return "asmrone"
+    if target_text.startswith("generic/"):
+        return "generic"
+    if target_text.startswith("huggingface/"):
+        return "huggingface"
+    if target_text.startswith("comfyui/"):
+        return "comfyui"
+    if has_media or source_text == "media":
+        return "media"
+    return "unknown"
+
+
 def sort_library_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
     mode = normalize_library_sort(sort)
     if mode == "date_desc":
@@ -3207,18 +3442,40 @@ def library_item_target_path(item: dict[str, Any]) -> Path | None:
     return None
 
 
-def library_items(max_items: int = 1000, *, mode: str = "index", root_path: Path | None = None) -> list[dict[str, Any]]:
-    if root_path is not None:
-        return live_library_items(max_items=max_items, root_path=root_path)
+def library_items(
+    max_items: int = 1000,
+    *,
+    mode: str = "index",
+    root_path: Path | None = None,
+    source_group: str = "",
+    category: str = "",
+) -> list[dict[str, Any]]:
+    normalized_source_group = normalize_library_source_group(source_group)
+    normalized_category = category.strip()
+    if root_path is not None and mode == "live":
+        return filter_library_items(
+            live_library_items(max_items=max_items, root_path=root_path),
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
     if mode != "live":
-        indexed_items = db.list_library_index_items(limit=max_items)
+        indexed_items = db.list_library_index_items(
+            limit=max_items,
+            path_prefix=relative_data_path(root_path) if root_path is not None else "",
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
         if indexed_items:
             favorites = db.favorite_paths()
             return [normalize_library_item_payload(item, favorites) for item in indexed_items]
         if db.get_library_scan_state("library.indexing", "0") == "1":
             return []
 
-    return live_library_items(max_items=max_items)
+    return filter_library_items(
+        live_library_items(max_items=max_items, root_path=root_path),
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
 
 
 def live_library_items(max_items: int = 1000, *, root_path: Path | None = None) -> list[dict[str, Any]]:
@@ -3321,31 +3578,65 @@ def library_reindex_batch_size() -> int:
     return max(1, nonnegative_int_env("LIBRARY_REINDEX_BATCH_SIZE", 5000))
 
 
-def scan_library_index_batch(*, max_paths: int, reset: bool = False) -> dict[str, Any]:
+def scan_library_index_batch(
+    *,
+    max_paths: int,
+    reset: bool = False,
+    root_path: Path | None = None,
+    source_group: str = "",
+    category: str = "",
+) -> dict[str, Any]:
+    normalized_source_group = normalize_library_source_group(source_group)
+    normalized_category = category.strip()
+    scope_path = relative_data_path(root_path) if root_path is not None else ""
     if reset:
-        db.clear_library_index()
+        if root_path is not None or normalized_source_group or normalized_category:
+            db.clear_library_item_scope(
+                path_prefix=scope_path,
+                source_group=normalized_source_group,
+                category=normalized_category,
+            )
+        else:
+            db.clear_library_index()
+    scoped = bool(root_path is not None or normalized_source_group or normalized_category)
     db.set_library_scan_state("library.indexing", "1")
-    cursor = "" if reset else db.get_library_scan_state("library.cursor", "")
+    cursor = "" if reset or scoped else db.get_library_scan_state("library.cursor", "")
     processed = 0
     indexed = 0
     last_path = cursor
     reached_end = True
     favorites = db.favorite_paths()
 
-    for path in iter_library_scan_paths(cursor=cursor):
+    for path in iter_library_scan_paths(cursor=cursor, root_path=root_path):
         if LIBRARY_INDEXER_STOP.is_set():
             reached_end = False
             break
         relative = relative_data_path(path)
         processed += 1
         last_path = relative
-        if index_library_path(path, favorites):
+        if index_library_path(
+            path,
+            favorites,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        ):
             indexed += 1
         if processed >= max_paths:
             reached_end = False
             break
 
-    db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
+    if not scoped:
+        db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
+    else:
+        scope_key = library_index_scope_key(
+            path_prefix=scope_path,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+        db.set_library_scan_state(f"{scope_key}.complete", "1" if reached_end else "0")
+        db.set_library_scan_state(f"{scope_key}.cursor", "" if reached_end else last_path)
+        db.set_library_scan_state(f"{scope_key}.processed", str(processed))
+        db.set_library_scan_state(f"{scope_key}.indexed", str(indexed))
     db.set_library_scan_state("library.indexing", "0")
     db.set_library_scan_state("library.last_scan_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     return {
@@ -3353,14 +3644,26 @@ def scan_library_index_batch(*, max_paths: int, reset: bool = False) -> dict[str
         "indexed": indexed,
         "cursor": "" if reached_end else last_path,
         "complete": reached_end,
+        "path": scope_path,
+        "source_group": normalized_source_group,
+        "category": normalized_category,
     }
 
 
-def iter_library_scan_paths(*, cursor: str):
+def iter_library_scan_paths(*, cursor: str, root_path: Path | None = None):
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     cursor_text = cursor.strip("/")
+    start = root_path or DATA_ROOT
     try:
-        for root, dirs, files in os.walk(DATA_ROOT):
+        if root_path is not None and lexical_absolute(root_path) != lexical_absolute(DATA_ROOT):
+            try:
+                if not should_skip_index_path(root_path):
+                    relative = relative_data_path(root_path)
+                    if not cursor_text or relative > cursor_text:
+                        yield root_path
+            except (OSError, ValueError):
+                return
+        for root, dirs, files in os.walk(start):
             dirs[:] = sorted([name for name in dirs if not name.startswith(".")])
             names = dirs + sorted(files)
             for name in names:
@@ -3378,7 +3681,13 @@ def iter_library_scan_paths(*, cursor: str):
         return
 
 
-def index_library_path(path: Path, favorites: set[str]) -> bool:
+def index_library_path(
+    path: Path,
+    favorites: set[str],
+    *,
+    source_group: str = "",
+    category: str = "",
+) -> bool:
     try:
         if path.is_dir():
             if not should_index_directory(path):
@@ -3396,11 +3705,19 @@ def index_library_path(path: Path, favorites: set[str]) -> bool:
         except Exception:
             pass
         return False
+    if not library_item_matches_filters(item, source_group=source_group, category=category):
+        return False
+    fields = library_index_fields_for_item(item, path)
     db.upsert_library_item(
         str(item.get("target_path") or relative_data_path(path)),
         kind=str(item.get("kind") or ("folder" if path.is_dir() else "file")),
         name=str(item.get("filename") or path.name),
         target_dir=str(path),
+        source=fields["source"],
+        source_group=fields["source_group"],
+        model_category=fields["model_category"],
+        parent_path=fields["parent_path"],
+        sort_title=fields["sort_title"],
         payload=item,
         size_bytes=int(item.get("progress_bytes") or 0),
         mtime_ns=stat.st_mtime_ns,
@@ -3560,10 +3877,18 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
     title = library_item_title(path, metadata)
     category = library_item_category(path, metadata, first_media)
     media_type = media_kind(first_media) if first_media else ""
+    source_group = library_source_group_for_values(
+        source=source,
+        source_url=metadata.get("source_url") or source_url_from_metadata(metadata),
+        model_category=category,
+        target_path=relative_path,
+        has_media=first_media is not None,
+    )
     return {
         "id": f"fs:{stable_path_id(relative_path)}",
         "status": "done",
         "source": source,
+        "source_group": source_group,
         "input_text": str(metadata.get("raw_input") or metadata.get("source_url") or ""),
         "filename": path.name,
         "progress_bytes": size,

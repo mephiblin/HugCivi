@@ -300,6 +300,20 @@
           <div class="library-meta">
             <span id="library-path">/data</span>
             <div class="library-controls">
+              <label for="library-source-group">소스</label>
+              <select id="library-source-group">
+                <option value="" selected>전체</option>
+                <option value="civitai">Civitai</option>
+                <option value="gallerydl">gallery-dl</option>
+                <option value="ytdlp">yt-dlp</option>
+                <option value="hitomi">Hitomi</option>
+                <option value="asmrone">ASMR</option>
+                <option value="generic">Generic</option>
+                <option value="huggingface">Hugging Face</option>
+                <option value="comfyui">ComfyUI</option>
+                <option value="media">Media</option>
+                <option value="unknown">Unknown</option>
+              </select>
               <label for="library-sort">정렬</label>
               <select id="library-sort">
                 <option value="az" selected>A-Z</option>
@@ -308,6 +322,7 @@
                 <option value="date_asc">오래된순</option>
                 <option value="favorite">즐겨찾기</option>
               </select>
+              <button type="button" class="library-refresh-button" id="library-refresh-button" title="현재 범위 다시 색인">갱신</button>
               <button type="button" class="library-thumbnail-job-button" id="library-thumbnail-job-button" title="현재 폴더의 누락 카드 썸네일 생성" disabled>썸네일 생성</button>
               <span id="library-count">0개</span>
             </div>
@@ -1088,8 +1103,10 @@
     const libraryGrid = document.getElementById('library-grid');
     const libraryPath = document.getElementById('library-path');
     const libraryCount = document.getElementById('library-count');
+    const librarySourceGroup = document.getElementById('library-source-group');
     const librarySort = document.getElementById('library-sort');
     const libraryPagination = document.getElementById('library-pagination');
+    const libraryRefreshButton = document.getElementById('library-refresh-button');
     const libraryThumbnailJobButton = document.getElementById('library-thumbnail-job-button');
     const tokenButton = document.getElementById('token-button');
     const tokenModal = document.getElementById('token-modal');
@@ -1399,6 +1416,7 @@
     let activeJobSource = normalizeJobSource(initialJobsPage?.active_source || '');
     let currentJobsPage = normalizeJobsPage(initialJobsPage, currentJobs.length);
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
+    let activeLibrarySourceGroup = normalizeLibrarySourceGroup(initialLibraryPage?.source_group || '');
     let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
     let libraryRequestId = 0;
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
@@ -1435,6 +1453,7 @@
     }
 
     applyThumbnailBlurPreference(thumbnailBlurEnabled);
+    if (librarySourceGroup) librarySourceGroup.value = activeLibrarySourceGroup;
     renderStorage(currentStorage);
     renderSubscriptions();
     setupWorkflowDropImport();
@@ -1466,7 +1485,7 @@
       event.preventDefault();
       event.stopPropagation();
       await refreshFolders({manual: true, preserveExpanded: true});
-      await refreshLibraryForActivePath({mode: 'live'});
+      await refreshLibraryForActivePath();
     });
 
     folderTree?.addEventListener('contextmenu', event => {
@@ -1815,6 +1834,11 @@
     librarySort.addEventListener('change', () => {
       refreshLibraryForActivePath({page: 1, loading: true});
     });
+    librarySourceGroup?.addEventListener('change', () => {
+      activeLibrarySourceGroup = normalizeLibrarySourceGroup(librarySourceGroup.value || '');
+      refreshLibraryForActivePath({page: 1, loading: true});
+    });
+    libraryRefreshButton?.addEventListener('click', refreshLibraryIndexScope);
     libraryThumbnailJobButton?.addEventListener('click', queueLibraryThumbnailBackfill);
     libraryPagination?.addEventListener('click', event => {
       const button = event.target.closest('[data-library-page]');
@@ -5159,8 +5183,8 @@
       commandInput.setAttribute('aria-label', 'URL 또는 CLI 입력');
       homeView.classList.remove('active');
       libraryView.classList.add('active');
-      showLibraryLoading(activeLibraryPath, 'live');
-      refreshLibraryForActivePath({mode: 'live', page: 1});
+      showLibraryLoading(activeLibraryPath, 'index');
+      refreshLibraryForActivePath({page: 1});
       if (isMobileLayout()) {
         activateMobileTab('library');
       }
@@ -5171,8 +5195,8 @@
       if (tab === 'library' && activeLibraryPath === null) {
         activeLibraryPath = '';
         setLibraryThumbnailJobButtonState();
-        showLibraryLoading(activeLibraryPath, 'live');
-        refreshLibraryForActivePath({mode: 'live', page: 1});
+        showLibraryLoading(activeLibraryPath, 'index');
+        refreshLibraryForActivePath({page: 1});
       }
       mobileTabs.forEach(button => {
         button.classList.toggle('active', button.dataset.mobileTab === tab);
@@ -5186,7 +5210,7 @@
       return window.matchMedia('(max-width: 700px)').matches;
     }
 
-    function showLibraryLoading(path, mode = 'live', options = {}) {
+    function showLibraryLoading(path, mode = 'index', options = {}) {
       const normalized = normalizePath(path || '');
       const page = Math.max(1, Number(options.page || 1));
       const limit = Math.max(1, Number(options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
@@ -5201,6 +5225,7 @@
           mode,
           path: normalized,
           sort: options.sort || librarySort?.value || currentLibraryPage.sort || 'az',
+          source_group: options.source_group ?? activeLibrarySourceGroup,
           paged: true,
         },
         0
@@ -5337,7 +5362,7 @@
     async function replaceWorkflowJobs(jobs) {
       await refreshJobs({page: 1});
       if (activeLibraryPath !== null) {
-        await refreshLibraryForActivePath({mode: 'live'});
+        await refreshLibraryForActivePath();
       }
     }
 
@@ -5401,9 +5426,34 @@
         mode: pageData?.mode || 'index',
         path: normalizePath(pageData?.path || ''),
         sort: pageData?.sort || (librarySort?.value || 'az'),
+        source_group: normalizeLibrarySourceGroup(pageData?.source_group || activeLibrarySourceGroup || ''),
+        category: String(pageData?.category || ''),
+        index_status: pageData?.index_status && typeof pageData.index_status === 'object' ? pageData.index_status : null,
         paged: Boolean(pageData?.paged),
         fallback_count: Math.max(0, Number(fallbackCount || 0)),
       };
+    }
+
+    function normalizeLibrarySourceGroup(value) {
+      const normalized = String(value || '').trim().toLowerCase().replace(/_/g, '-');
+      const aliases = {
+        all: '',
+        'gallery-dl': 'gallerydl',
+        gallerydl: 'gallerydl',
+        'yt-dlp': 'ytdlp',
+        ytdlp: 'ytdlp',
+        youtube: 'ytdlp',
+        asmr: 'asmrone',
+        'asmr.one': 'asmrone',
+        asmrone: 'asmrone',
+        'hugging-face': 'huggingface',
+        huggingface: 'huggingface',
+        filesystem: 'unknown',
+        local: 'unknown',
+      };
+      const valueOrAlias = Object.prototype.hasOwnProperty.call(aliases, normalized) ? aliases[normalized] : normalized;
+      const allowed = new Set(['', 'civitai', 'gallerydl', 'ytdlp', 'hitomi', 'asmrone', 'generic', 'huggingface', 'comfyui', 'media', 'unknown']);
+      return allowed.has(valueOrAlias) ? valueOrAlias : 'unknown';
     }
 
     async function refreshJobs(options = {}) {
@@ -5435,7 +5485,7 @@
         renderJobs(currentJobs);
         if (libraryFolder !== null && libraryFolder === normalizePath(activeLibraryPath || '')) {
           if (refreshActiveLibraryAfterRender) {
-            await refreshLibraryForActivePath({mode: 'live'});
+            await refreshLibraryForActivePath();
           } else if (librarySignatureBefore !== libraryJobSignature(currentJobs, libraryFolder)) {
             renderLibrary();
           }
@@ -5491,9 +5541,13 @@
         const page = Math.max(1, Number(options.page || currentLibraryPage.page || 1));
         const limit = Math.max(1, Number(options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
         const sort = librarySort?.value || currentLibraryPage.sort || 'az';
+        const requestedSourceGroup = normalizeLibrarySourceGroup(
+          Object.prototype.hasOwnProperty.call(options, 'source_group') ? options.source_group : activeLibrarySourceGroup
+        );
         params.set('limit', String(limit));
         params.set('page', String(page));
         params.set('sort', sort);
+        if (requestedSourceGroup) params.set('source_group', requestedSourceGroup);
         const query = params.toString();
         const response = await fetch(query ? `/api/library?${query}` : '/api/library');
         if (!response.ok) return;
@@ -5511,13 +5565,18 @@
               mode: options.mode || 'index',
               path: Object.prototype.hasOwnProperty.call(options, 'path') ? options.path : '',
               sort,
+              source_group: requestedSourceGroup,
               paged: false,
             },
             data.length
           );
+          activeLibrarySourceGroup = requestedSourceGroup;
+          if (librarySourceGroup) librarySourceGroup.value = activeLibrarySourceGroup;
         } else {
           currentLibraryItems = Array.isArray(data?.items) ? data.items : [];
           currentLibraryPage = normalizeLibraryPage(data, currentLibraryItems.length);
+          activeLibrarySourceGroup = currentLibraryPage.source_group || requestedSourceGroup;
+          if (librarySourceGroup) librarySourceGroup.value = activeLibrarySourceGroup;
         }
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
@@ -5526,15 +5585,19 @@
     }
 
     async function refreshLibraryForActivePath(options = {}) {
-      const mode = options.mode || (activeLibraryPath === null ? 'index' : 'live');
+      const mode = options.mode || 'index';
       const page = options.page || currentLibraryPage.page || 1;
       const limit = options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE;
       const path = activeLibraryPath === null ? '' : activeLibraryPath;
+      const sourceGroup = normalizeLibrarySourceGroup(
+        Object.prototype.hasOwnProperty.call(options, 'source_group') ? options.source_group : activeLibrarySourceGroup
+      );
       if (options.loading) {
         showLibraryLoading(path, mode, {
           page,
           limit,
           sort: librarySort?.value || currentLibraryPage.sort || 'az',
+          source_group: sourceGroup,
         });
       }
       if (activeLibraryPath === null) {
@@ -5542,6 +5605,7 @@
           mode,
           page,
           limit,
+          source_group: sourceGroup,
         });
         return;
       }
@@ -5550,6 +5614,7 @@
         path: activeLibraryPath,
         page,
         limit,
+        source_group: sourceGroup,
       });
     }
 
@@ -5562,6 +5627,43 @@
       libraryThumbnailJobButton.title = path
         ? (busy ? '썸네일 생성 작업 예약 중' : '현재 폴더의 누락 카드 썸네일 생성')
         : '저장 폴더를 선택한 뒤 사용할 수 있습니다.';
+    }
+
+    function setLibraryRefreshButtonState(state = 'idle') {
+      if (!libraryRefreshButton) return;
+      const busy = state === 'loading';
+      libraryRefreshButton.disabled = busy;
+      libraryRefreshButton.textContent = busy ? '갱신중' : '갱신';
+      libraryRefreshButton.title = activeLibrarySourceGroup
+        ? '현재 폴더와 소스 필터 다시 색인'
+        : '현재 폴더 다시 색인';
+    }
+
+    async function refreshLibraryIndexScope(event) {
+      event?.preventDefault();
+      event?.stopPropagation();
+      const params = new URLSearchParams();
+      const path = normalizePath(activeLibraryPath || '');
+      const sourceGroup = normalizeLibrarySourceGroup(activeLibrarySourceGroup);
+      if (path) params.set('path', path);
+      if (sourceGroup) params.set('source_group', sourceGroup);
+      setLibraryRefreshButtonState('loading');
+      try {
+        const query = params.toString();
+        const response = await fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex', {
+          method: 'POST',
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          window.alert(data.detail || '라이브러리 갱신을 완료하지 못했습니다.');
+          return;
+        }
+        await refreshLibraryForActivePath({page: 1, loading: true});
+      } catch (err) {
+        window.alert('네트워크 요청을 완료하지 못했습니다.');
+      } finally {
+        setLibraryRefreshButtonState();
+      }
     }
 
     async function queueLibraryThumbnailBackfill(event) {
@@ -6010,6 +6112,7 @@
       const matches = currentLibraryPage.paged ? filtered : sortLibraryJobs(filtered);
       libraryPath.textContent = folder ? `/data/${folder}` : '/data';
       libraryCount.textContent = libraryCountLabel(matches.length);
+      setLibraryRefreshButtonState();
       setLibraryThumbnailJobButtonState();
       if (!matches.length) {
         libraryGrid.innerHTML = '<div class="library-empty">이 폴더에 표시할 모델 카드가 없습니다.</div>';
@@ -8591,7 +8694,7 @@
           await selectFolderPath(nextPath || targetInput.value, {switchView: false, expandTree: true});
         }
         await Promise.all([
-          refreshLibraryForActivePath({mode: 'live'}),
+          refreshLibraryForActivePath(),
           refreshStorage(),
         ]);
         return true;

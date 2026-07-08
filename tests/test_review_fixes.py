@@ -1005,6 +1005,184 @@ def test_library_index_scan_populates_db_backed_library_items(app_modules: tuple
     ] == []
 
 
+def test_library_index_schema_stores_source_group_fields(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "stable-diffusion" / "loras" / "schema-card"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/100",
+                "archive_info": {"model_title": "Schema Card", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    with db.connect() as conn:
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(library_items)").fetchall()}
+        indexes = {str(row["name"]) for row in conn.execute("PRAGMA index_list(library_items)").fetchall()}
+        row = conn.execute(
+            """
+            SELECT source, source_group, model_category, parent_path, sort_title
+            FROM library_items
+            WHERE path = ?
+            """,
+            ("stable-diffusion/loras/schema-card",),
+        ).fetchone()
+
+    assert {"source", "source_group", "model_category", "parent_path", "sort_title"}.issubset(columns)
+    assert {
+        "idx_library_items_global_sort",
+        "idx_library_items_source_sort",
+        "idx_library_items_source_parent_sort",
+        "idx_library_items_category_sort",
+    }.issubset(indexes)
+    assert row is not None
+    assert row["source"] == "civitai"
+    assert row["source_group"] == "civitai"
+    assert row["model_category"] == "LoRA"
+    assert row["parent_path"] == "stable-diffusion/loras"
+    assert row["sort_title"] == "schema card"
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "metadata", "filename", "expected"),
+    [
+        (
+            "stable-diffusion/loras/civitai-card",
+            {"source": "civitai", "archive_info": {"model_title": "Civitai", "model_category": "LoRA"}},
+            "model.safetensors",
+            "civitai",
+        ),
+        (
+            "gallery-dl/example.com/gallery",
+            {"source": "gallery-dl", "source_url": "https://example.com/gallery"},
+            "image.jpg",
+            "gallerydl",
+        ),
+        (
+            "gallery-dl/youtube.com/video",
+            {"source": "gallery-dl", "source_url": "ytdl:https://www.youtube.com/watch?v=abc"},
+            "video.mp4",
+            "ytdlp",
+        ),
+        ("hitomi/123", {"source": "hitomi"}, "page.jpg", "hitomi"),
+        ("asmr.one/RJ123", {"source": "asmrone", "model_category": "ASMR.one Work"}, "cover.jpg", "asmrone"),
+        ("generic/file", {"source": "generic", "raw_input": "https://example.com/file.bin"}, "file.bin", "generic"),
+        ("huggingface/model", {"source": "huggingface", "repo_id": "org/model"}, "model.safetensors", "huggingface"),
+        ("comfyui/workflows/flow", {"source": "comfyui", "title": "Flow"}, "flow.workflow.json", "comfyui"),
+        ("plain-media", {}, "cover.jpg", "media"),
+        ("local-model", {}, "model.safetensors", "unknown"),
+    ],
+)
+def test_library_source_group_classification(
+    app_modules: tuple,
+    relative_path: str,
+    metadata: dict[str, object],
+    filename: str,
+    expected: str,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / relative_path
+    target.mkdir(parents=True)
+    if metadata:
+        (target / "_archive_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    payload = b"{}" if filename.endswith(".json") else b"content"
+    (target / filename).write_bytes(payload)
+
+    item = main.library_item_for_path(target, set())
+
+    assert item["source_group"] == expected
+
+
+def test_library_api_selected_folder_uses_index_before_live_scan(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "stable-diffusion" / "loras"
+    for index in range(3):
+        target = root / f"indexed-{index}"
+        target.mkdir(parents=True)
+        (target / "model.safetensors").write_text("model", encoding="utf-8")
+        (target / "_civitai_metadata.json").write_text(
+            json.dumps(
+                {
+                    "source": "civitai",
+                    "archive_info": {"model_title": f"Indexed {index}", "model_category": "LoRA"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    def fail_live_scan(*_args, **_kwargs):
+        raise AssertionError("selected indexed folder should not use live scan")
+
+    monkeypatch.setattr(main, "live_library_items_with_completion", fail_live_scan)
+
+    payload = json.loads(
+        main.api_library(
+            path="stable-diffusion/loras",
+            limit=2,
+            page=1,
+            source_group="civitai",
+            sort="az",
+            _="_",
+        ).body.decode("utf-8")
+    )
+
+    assert payload["mode"] == "index"
+    assert payload["source_group"] == "civitai"
+    assert payload["total_count"] == 3
+    assert payload["total_pages"] == 2
+    assert [item["source_group"] for item in payload["items"]] == ["civitai", "civitai"]
+
+
+def test_library_reindex_scope_filters_source_without_clearing_unrelated_rows(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    civitai = data_root / "mixed" / "civitai-card"
+    gallery = data_root / "mixed" / "gallery-card"
+    civitai.mkdir(parents=True)
+    gallery.mkdir(parents=True)
+    (civitai / "model.safetensors").write_text("model", encoding="utf-8")
+    (civitai / "_civitai_metadata.json").write_text(
+        json.dumps({"source": "civitai", "archive_info": {"model_title": "Civitai Card", "model_category": "LoRA"}}),
+        encoding="utf-8",
+    )
+    (gallery / "image.jpg").write_bytes(b"image")
+    (gallery / "_archive_metadata.json").write_text(
+        json.dumps({"source": "gallery-dl", "source_url": "https://example.com/gallery"}),
+        encoding="utf-8",
+    )
+    main.scan_library_index_batch(max_paths=100, reset=True)
+    assert db.count_library_index_items(path_prefix="mixed") == 2
+
+    (civitai / "_civitai_metadata.json").write_text(
+        json.dumps({"source": "civitai", "archive_info": {"model_title": "Civitai Updated", "model_category": "LoRA"}}),
+        encoding="utf-8",
+    )
+
+    result = json.loads(
+        main.api_library_reindex(path="mixed", source_group="civitai", _="_").body.decode("utf-8")
+    )
+    rows = db.list_library_index_items(path_prefix="mixed", sort="az")
+    titles = {str(item["target_path"]): str(item["model_title"]) for item in rows}
+
+    assert result["scope"]["path"] == "mixed"
+    assert result["scope"]["source_group"] == "civitai"
+    assert db.count_library_index_items(path_prefix="mixed", source_group="civitai") == 1
+    assert db.count_library_index_items(path_prefix="mixed", source_group="gallerydl") == 1
+    assert titles["mixed/civitai-card"] == "Civitai Updated"
+    assert "mixed/gallery-card" in titles
+
+
 def test_library_api_keeps_legacy_array_and_returns_paged_wrapper(app_modules: tuple) -> None:
     _utils, _db, _downloader, main, data_root, _config_root = app_modules
     root = data_root / "stable-diffusion" / "loras"
@@ -1473,10 +1651,19 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);" in template
     assert "async function refreshLibraryItems(options = {})" in template
     assert "async function refreshLibraryForActivePath(options = {})" in template
-    assert "function showLibraryLoading(path, mode = 'live', options = {})" in template
-    assert "refreshLibraryForActivePath({mode: 'live', page: 1});" in template
+    assert "function showLibraryLoading(path, mode = 'index', options = {})" in template
+    assert "refreshLibraryForActivePath({page: 1});" in template
     assert "refreshLibraryForActivePath({page: 1, loading: true});" in template
     assert "refreshLibraryForActivePath({page, loading: true});" in template
+    assert 'id="library-source-group"' in template
+    assert 'id="library-refresh-button"' in template
+    for value in ("civitai", "gallerydl", "ytdlp", "asmrone", "huggingface", "media", "unknown"):
+        assert f'value="{value}"' in template
+    assert "let activeLibrarySourceGroup" in template
+    assert "function normalizeLibrarySourceGroup(value)" in template
+    assert "params.set('source_group', requestedSourceGroup);" in template
+    assert "async function refreshLibraryIndexScope(event)" in template
+    assert "fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex'" in template
     assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
     assert "function allKnownLibraryPages(totalPages)" in template
     assert "? allKnownLibraryPages(totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
@@ -1486,7 +1673,6 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert '<option value="date_asc">오래된순</option>' in template
     assert '<option value="date">날짜순</option>' not in template
     assert "params.set('path', normalizePath(options.path || ''))" in template
-    assert "refreshLibraryForActivePath({mode: 'live'})," in template
     assert "function nextPathAfterFileAction(url, payload, data, previousLibraryPath, affectedPath, options = {})" in template
     assert "window.location.reload();" not in template
     assert "function folderSearchScopePath()" in template
@@ -1501,6 +1687,8 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert ".col-move" in stylesheet
     assert ".jobs-pagination" in stylesheet
     assert ".library-pagination" in stylesheet
+    assert ".library-refresh-button" in stylesheet
+    assert "flex-wrap: wrap;" in stylesheet
     assert "overflow-wrap: anywhere;" in stylesheet
     assert "word-break: break-word;" in stylesheet
     asset_title_style = stylesheet[

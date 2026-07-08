@@ -325,11 +325,12 @@ LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS=60
 Operational notes:
 
 - First indexing pass may take time on large archives.
-- The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>`.
+- The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>` plus optional source filters.
 - `/api/library?mode=live` can force live filesystem scanning.
-- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
+- Normal selected-folder library pages query the SQLite index first and use live scanning only as fallback. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
+- `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
-- `/api/library/reindex` resets and scans a large batch.
+- `/api/library/reindex` resets and scans a large batch. Optional `path`, `source_group`, and `category` query parameters refresh only that selected folder/provider/category scope.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.
