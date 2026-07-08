@@ -326,7 +326,7 @@ Operational notes:
 - First indexing pass may take time on large archives.
 - The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>`.
 - `/api/library?mode=live` can force live filesystem scanning.
-- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale.
+- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale. Completed selected-folder scans show known page totals; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
 - `/api/library/reindex` resets and scans a large batch.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.

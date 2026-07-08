@@ -163,6 +163,7 @@ JOB_LIST_PAGE_SIZE = 50
 LIBRARY_PAGE_SIZE = 50
 LIBRARY_PAGE_MAX_SIZE = 100
 LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = LIBRARY_PAGE_SIZE * 3
+LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS = 20_000
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
@@ -2995,7 +2996,7 @@ def library_items_page_payload(
                 "paged": True,
             }
 
-    items, has_next = live_library_items_page(
+    items, page_number, total_count, total_pages, has_next = live_library_items_page(
         limit=page_limit,
         offset=offset,
         root_path=root_path,
@@ -3006,8 +3007,8 @@ def library_items_page_payload(
         "items": items,
         "page": page_number,
         "limit": page_limit,
-        "total_count": None,
-        "total_pages": None,
+        "total_count": total_count,
+        "total_pages": total_pages,
         "has_next": has_next,
         "mode": "live",
         "path": path_prefix,
@@ -3022,12 +3023,31 @@ def live_library_items_page(
     offset: int = 0,
     root_path: Path | None = None,
     sort: str = "az",
-) -> tuple[list[dict[str, Any]], bool]:
-    fetch_limit = max(1, offset + limit + 1)
+) -> tuple[list[dict[str, Any]], int, int | None, int | None, bool]:
+    safe_limit = max(1, int(limit))
+    safe_offset = max(0, int(offset))
+    page_number = max(1, (safe_offset // safe_limit) + 1)
+    if root_path is not None:
+        live_items, complete = live_library_items_with_completion(
+            max_items=0,
+            root_path=root_path,
+            max_paths=LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS,
+        )
+        items = sort_library_items(live_items, sort)
+        total_count = len(items) if complete else None
+        total_pages = max(1, (total_count + safe_limit - 1) // safe_limit) if total_count is not None else None
+        if total_pages is not None and safe_offset >= len(items):
+            page_number = total_pages
+            safe_offset = (page_number - 1) * safe_limit
+        page_items = items[safe_offset : safe_offset + safe_limit]
+        has_next = page_number < total_pages if total_pages is not None else len(items) > safe_offset + safe_limit
+        return page_items, page_number, total_count, total_pages, has_next
+
+    fetch_limit = max(1, safe_offset + safe_limit + 1)
     scan_limit = max(fetch_limit, LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS)
     items = sort_library_items(live_library_items(max_items=scan_limit, root_path=root_path), sort)
-    page_items = items[offset : offset + limit]
-    return page_items, len(items) > offset + limit
+    page_items = items[safe_offset : safe_offset + safe_limit]
+    return page_items, page_number, None, None, len(items) > safe_offset + safe_limit
 
 
 def sort_library_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:
@@ -3108,12 +3128,27 @@ def library_items(max_items: int = 1000, *, mode: str = "index", root_path: Path
 
 
 def live_library_items(max_items: int = 1000, *, root_path: Path | None = None) -> list[dict[str, Any]]:
+    items, _complete = live_library_items_with_completion(max_items=max_items, root_path=root_path)
+    return items
+
+
+def live_library_items_with_completion(
+    max_items: int = 1000,
+    *,
+    root_path: Path | None = None,
+    max_paths: int | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
     favorites = db.favorite_paths()
     items: list[dict[str, Any]] = []
     indexed_dirs: set[Path] = set()
+    unlimited = max_items <= 0
+    path_limit = max_paths if max_paths is not None else (0 if unlimited else max_items * 6)
+    paths, paths_complete = iter_data_paths_with_completion(max_items=path_limit, root_path=root_path)
+    items_complete = paths_complete
 
-    for path in iter_data_paths(max_items=max_items * 3, root_path=root_path):
-        if len(items) >= max_items:
+    for path in paths:
+        if not unlimited and len(items) >= max_items:
+            items_complete = False
             break
         try:
             if path.is_dir() and should_index_directory(path):
@@ -3123,8 +3158,9 @@ def live_library_items(max_items: int = 1000, *, root_path: Path | None = None) 
         except OSError:
             continue
 
-    for path in iter_data_paths(max_items=max_items * 6, root_path=root_path):
-        if len(items) >= max_items:
+    for path in paths:
+        if not unlimited and len(items) >= max_items:
+            items_complete = False
             break
         try:
             if not path.is_file() or not is_library_file(path):
@@ -3136,7 +3172,7 @@ def live_library_items(max_items: int = 1000, *, root_path: Path | None = None) 
         except OSError:
             continue
 
-    return sorted(items, key=lambda item: (str(item.get("target_path") or "").lower()))
+    return sorted(items, key=lambda item: (str(item.get("target_path") or "").lower())), items_complete
 
 
 def start_library_indexer() -> None:
@@ -3297,29 +3333,35 @@ def has_indexed_library_ancestor(path: Path) -> bool:
 
 
 def iter_data_paths(*, max_items: int, root_path: Path | None = None) -> list[Path]:
+    paths, _complete = iter_data_paths_with_completion(max_items=max_items, root_path=root_path)
+    return paths
+
+
+def iter_data_paths_with_completion(*, max_items: int, root_path: Path | None = None) -> tuple[list[Path], bool]:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     root_path = root_path or DATA_ROOT
+    unlimited = max_items <= 0
     paths: list[Path] = []
     try:
         if lexical_absolute(root_path) != lexical_absolute(DATA_ROOT) and not should_skip_index_path(root_path):
             paths.append(root_path)
     except OSError:
-        return paths
-    if len(paths) >= max_items:
-        return paths
+        return paths, False
+    if not unlimited and len(paths) >= max_items:
+        return paths, False
     if not root_path.is_dir():
-        return paths
+        return paths, True
     try:
         iterator = root_path.rglob("*")
         for path in iterator:
-            if len(paths) >= max_items:
-                break
+            if not unlimited and len(paths) >= max_items:
+                return paths, False
             if should_skip_index_path(path):
                 continue
             paths.append(path)
     except OSError:
-        return paths
-    return paths
+        return paths, False
+    return paths, True
 
 
 def should_skip_index_path(path: Path) -> bool:

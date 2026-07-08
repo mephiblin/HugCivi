@@ -1071,10 +1071,125 @@ def test_library_api_date_sort_supports_newest_oldest_and_legacy_alias(app_modul
     assert newest["sort"] == "date_desc"
     assert legacy["sort"] == "date_desc"
     assert oldest["sort"] == "date_asc"
+    assert live_oldest["total_count"] == 3
+    assert live_oldest["total_pages"] == 1
+    assert live_oldest["has_next"] is False
     assert item_names(newest) == ["newest-card", "middle-card", "oldest-card"]
     assert item_names(legacy) == item_names(newest)
     assert item_names(oldest) == ["oldest-card", "middle-card", "newest-card"]
     assert item_names(live_oldest) == ["oldest-card", "middle-card", "newest-card"]
+
+
+def test_selected_folder_live_library_reports_total_pages_beyond_stable_scan_window(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "live-total-fixtures"
+    for index in range(151):
+        target = root / f"card-{index:03d}"
+        target.mkdir(parents=True)
+        (target / "preview.jpg").write_bytes(b"image")
+
+    first = json.loads(
+        main.api_library(mode="live", path="live-total-fixtures", limit=50, page=1, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+    fourth = json.loads(
+        main.api_library(mode="live", path="live-total-fixtures", limit=50, page=4, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+    out_of_range = json.loads(
+        main.api_library(mode="live", path="live-total-fixtures", limit=50, page=99, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+
+    assert first["mode"] == "live"
+    assert first["path"] == "live-total-fixtures"
+    assert first["total_count"] == 151
+    assert first["total_pages"] == 4
+    assert first["has_next"] is True
+    assert len(first["items"]) == 50
+    assert first["items"][0]["target_path"].endswith("card-000")
+
+    assert fourth["page"] == 4
+    assert fourth["total_count"] == 151
+    assert fourth["total_pages"] == 4
+    assert fourth["has_next"] is False
+    assert len(fourth["items"]) == 1
+    assert fourth["items"][0]["target_path"].endswith("card-150")
+
+    assert out_of_range["page"] == 4
+    assert out_of_range["total_pages"] == 4
+    assert out_of_range["items"][0]["target_path"].endswith("card-150")
+
+
+def test_selected_folder_live_library_five_page_boundaries_do_not_backfill_cards(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "live-five-page-fixtures"
+    for index in range(201):
+        target = root / f"card-{index:03d}"
+        target.mkdir(parents=True)
+        (target / "preview.jpg").write_bytes(b"image")
+
+    payloads = [
+        json.loads(
+            main.api_library(mode="live", path="live-five-page-fixtures", limit=50, page=page, sort="az", _="_")
+            .body.decode("utf-8")
+        )
+        for page in range(1, 6)
+    ]
+    pages = {payload["page"]: payload for payload in payloads}
+
+    assert sorted(pages) == [1, 2, 3, 4, 5]
+    assert {payload["total_count"] for payload in payloads} == {201}
+    assert {payload["total_pages"] for payload in payloads} == {5}
+    assert [len(pages[page]["items"]) for page in range(1, 6)] == [50, 50, 50, 50, 1]
+    assert [pages[page]["has_next"] for page in range(1, 6)] == [True, True, True, True, False]
+
+    page_paths = {
+        page: [str(item["target_path"]).rsplit("/", 1)[-1] for item in pages[page]["items"]]
+        for page in range(1, 6)
+    }
+    assert page_paths[1] == [f"card-{index:03d}" for index in range(0, 50)]
+    assert page_paths[2] == [f"card-{index:03d}" for index in range(50, 100)]
+    assert page_paths[3] == [f"card-{index:03d}" for index in range(100, 150)]
+    assert page_paths[4] == [f"card-{index:03d}" for index in range(150, 200)]
+    assert page_paths[5] == ["card-200"]
+    assert len({path for paths in page_paths.values() for path in paths}) == 201
+
+    out_of_range = json.loads(
+        main.api_library(mode="live", path="live-five-page-fixtures", limit=50, page=99, sort="az", _="_")
+        .body.decode("utf-8")
+    )
+    assert out_of_range["page"] == 5
+    assert len(out_of_range["items"]) == 1
+    assert str(out_of_range["items"][0]["target_path"]).endswith("card-200")
+
+
+def test_selected_folder_live_library_keeps_unknown_totals_when_scan_is_incomplete(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "live-incomplete-fixtures"
+    for index in range(3):
+        target = root / f"card-{index:03d}"
+        target.mkdir(parents=True)
+        (target / "preview.jpg").write_bytes(b"image")
+
+    monkeypatch.setattr(main, "LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS", 2)
+
+    payload = json.loads(
+        main.api_library(mode="live", path="live-incomplete-fixtures", limit=2, page=1, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+
+    assert payload["mode"] == "live"
+    assert payload["path"] == "live-incomplete-fixtures"
+    assert payload["total_count"] is None
+    assert payload["total_pages"] is None
 
 
 def test_live_library_pagination_sorts_stable_scan_window(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1094,11 +1209,21 @@ def test_live_library_pagination_sorts_stable_scan_window(app_modules: tuple, mo
 
     monkeypatch.setattr(main, "live_library_items", fake_live_library_items)
 
-    first_page, first_has_next = main.live_library_items_page(limit=50, offset=0, sort="az")
-    second_page, second_has_next = main.live_library_items_page(limit=50, offset=50, sort="az")
+    first_page, first_page_number, first_total_count, first_total_pages, first_has_next = main.live_library_items_page(
+        limit=50, offset=0, sort="az"
+    )
+    second_page, second_page_number, second_total_count, second_total_pages, second_has_next = (
+        main.live_library_items_page(limit=50, offset=50, sort="az")
+    )
     first_paths = {str(item["target_path"]) for item in first_page}
     second_paths = {str(item["target_path"]) for item in second_page}
 
+    assert first_page_number == 1
+    assert second_page_number == 2
+    assert first_total_count is None
+    assert second_total_count is None
+    assert first_total_pages is None
+    assert second_total_pages is None
     assert first_has_next is True
     assert second_has_next is True
     assert main.LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS == main.LIBRARY_PAGE_SIZE * 3

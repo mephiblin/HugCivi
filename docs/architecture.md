@@ -258,7 +258,7 @@ Indexer behavior:
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
-- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Live selected-folder pagination sorts a bounded stable scan window before slicing pages so early pages do not repeat cards as later pages expand the scanned set; the default small-folder window is three 50-card pages.
+- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
 - `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed

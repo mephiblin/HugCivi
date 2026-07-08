@@ -121,6 +121,8 @@ If preserving exact current sort semantics becomes too complex, prefer an additi
 
 For `mode=live`, avoid scanning the full tree just to compute exact totals.
 
+Status note, 2026-07-08: this remains true for incomplete or unscoped live scans, but selected-folder live pagination now reports exact `total_count`/`total_pages` when the folder scan completes within the internal path budget. If the scan cannot complete within that budget, the API still returns unknown totals and keeps the fallback behavior below.
+
 - Scan until `offset + limit + 1` matching items are found.
 - Return `items` sliced to `limit`.
 - Return `has_next` from the extra item.
