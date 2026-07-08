@@ -23,6 +23,7 @@ Use this page to decide which document is authoritative for current development.
 | [Codex Skill Pointer](../.agents/skills/hugcivi-dev-core/SKILL.md) | current Codex discovery entry | Thin auto-discovery pointer into `README_LLM.md` and `SKILL_Dev/`. |
 | [Patch Notes Guide](patch-notes/README.md) | current handoff record policy | Date-based work history format and timing. |
 | [Project Philosophy](philosophy.md) | current design reference | Project values and boundaries. |
+| [Civitai Workflow Archive URL Check 2026-07-09](civitai-workflow-archive-url-check-2026-07-09.md) | snapshot reference | Documents three Civitai `Workflows` archive URLs, their current API shape, HugCivi classification, expected archive paths, and token requirement. |
 | [gallery-dl Authentication Notes](gallery-dl-auth.md) | snapshot reference | gallery-dl supported-site auth snapshot from 2026-06-30. |
 
 ## Historical Or Planning Records
