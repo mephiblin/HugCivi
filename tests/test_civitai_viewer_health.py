@@ -225,7 +225,8 @@ def test_media_list_includes_civitai_model_generation_metadata(app_modules: tupl
     assert len(rows) == 1
     assert rows[0]["source"] == "civitai"
     assert rows[0]["model_category"] == "LoRA"
-    assert rows[0]["thumbnail_url"].endswith("civitai_example_999.jpeg")
+    assert "civitai_example_999.jpeg" in rows[0]["thumbnail_url"]
+    assert "&v=" in rows[0]["thumbnail_url"]
     assert rows[0]["has_media"] is True
     assert rows[0]["media_count"] == 1
 
@@ -321,7 +322,8 @@ def test_civitai_model_job_card_enables_media_viewer_from_local_thumbnail(app_mo
 
     row = main.decorate_jobs(db.list_jobs())[0]
 
-    assert row["thumbnail_url"].endswith("civitai_example_100.jpeg")
+    assert "civitai_example_100.jpeg" in row["thumbnail_url"]
+    assert "&v=" in row["thumbnail_url"]
     assert row["has_media"] is True
     assert row["media_count"] == 1
     assert row["media_type"] == "image"

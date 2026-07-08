@@ -455,8 +455,33 @@ def test_media_thumbnail_endpoint_creates_and_reuses_cached_image(
     assert cached.parent == config_root / "media-cache" / "thumbnails"
     assert cached.exists()
     assert Path(second.path) == cached
+    assert first.headers["cache-control"] == main.MEDIA_THUMBNAIL_CACHE_CONTROL
     assert len(calls) == 1
     assert calls[0][-1].endswith(".tmp.jpg")
+
+
+def test_library_item_marks_ready_card_thumbnail_cache(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, config_root = app_modules
+    folder = data_root / "cards" / "alpha"
+    cover = folder / "cover.png"
+    cover.parent.mkdir(parents=True)
+    cover.write_bytes(b"png")
+
+    cold = main.library_item_for_path(folder, favorites=set())
+
+    assert cold["thumbnail_url"].startswith("/api/media/thumbnail?path=cards/alpha/cover.png")
+    assert "&v=" in cold["thumbnail_url"]
+    assert cold["thumbnail_ready"] is False
+
+    cached = main.media_thumbnail_target(cover, main.MEDIA_THUMBNAIL_DEFAULT_SIZE)
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(b"jpg")
+
+    ready = main.library_item_for_path(folder, favorites=set())
+
+    assert ready["thumbnail_url"] == cold["thumbnail_url"]
+    assert ready["thumbnail_ready"] is True
+    assert cached.parent == config_root / "media-cache" / "thumbnails"
 
 
 def test_media_thumbnail_endpoint_rejects_root_and_symlink(app_modules: tuple) -> None:
@@ -879,7 +904,8 @@ def test_library_live_path_finds_child_model_cards_when_index_is_stale(app_modul
     assert len(rows) == 1
     assert rows[0]["model_title"] == "Hands XL"
     assert rows[0]["has_media"] is True
-    assert rows[0]["thumbnail_url"].endswith("civitai_example_134865393.jpg")
+    assert "civitai_example_134865393.jpg" in rows[0]["thumbnail_url"]
+    assert "&v=" in rows[0]["thumbnail_url"]
 
 
 def test_library_item_uses_scan_budgets_for_large_folders(
@@ -1722,17 +1748,22 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
         template.index("function renderLibrary()") : template.index("function libraryCountLabel(visibleCount)")
     ]
 
-    assert "THUMBNAIL_REQUEST_MAX_ACTIVE = 3" in template
+    assert "THUMBNAIL_READY_REQUEST_MAX_ACTIVE = 10" in template
+    assert "THUMBNAIL_COLD_REQUEST_MAX_ACTIVE = 3" in template
     assert "THUMBNAIL_REQUEST_TIMEOUT_MS = 60000" in template
     assert "function setupDeferredThumbnails" in template
+    assert "function thumbnailImageReady" in template
+    assert "thumbnailReadyQueue" in template
+    assert "thumbnailColdQueue" in template
     assert 'id="library-thumbnail-job-button"' in template
     assert "fetch('/api/media/thumbnail-jobs'" in template
-    assert "workers: THUMBNAIL_REQUEST_MAX_ACTIVE" in template
+    assert "workers: THUMBNAIL_COLD_REQUEST_MAX_ACTIVE" in template
     assert "media_thumbnail_backfill: 'Thumbnail'" in template
     assert ".library-thumbnail-job-button" in stylesheet
     assert "data-thumbnail-src" in render_model_info
     assert "data-thumbnail-src" in render_mobile_job_card
     assert "data-thumbnail-src" in render_library
+    assert "data-thumbnail-ready" in template
     assert "IntersectionObserver" in template
     assert "new IntersectionObserver" in template
     assert "window.setTimeout(" in template
@@ -2256,7 +2287,8 @@ def test_audio_archive_uses_folder_cover_for_card_and_media_items(app_modules: t
     payload = json.loads(response.body.decode("utf-8"))
     audio_item = next(item for item in payload["items"] if item["type"] == "audio")
 
-    assert row["thumbnail_url"].endswith("cover.jpg")
+    assert "cover.jpg" in row["thumbnail_url"]
+    assert "&v=" in row["thumbnail_url"]
     assert payload["cover_url"].endswith("cover.jpg")
     assert audio_item["thumbnail_url"].endswith("cover.jpg")
     assert audio_item["cover_url"].endswith("cover.jpg")

@@ -181,6 +181,7 @@ LIBRARY_SOURCE_GROUPS = {
 }
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
+MEDIA_THUMBNAIL_CACHE_CONTROL = "private, max-age=31536000, immutable"
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
 MEDIA_THUMBNAIL_BACKFILL_MAX_WORKERS = 16
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS = 5000
@@ -2322,7 +2323,9 @@ def api_media_thumbnail(
     thumbnail = cached_image_thumbnail_path(source, size=size)
     if not safe_cache_file(MEDIA_CACHE_DIR, thumbnail):
         raise HTTPException(status_code=404, detail="썸네일 파일을 찾지 못했습니다.")
-    return FileResponse(thumbnail, media_type="image/jpeg", filename=f"{source.stem}.jpg")
+    response = FileResponse(thumbnail, media_type="image/jpeg", filename=f"{source.stem}.jpg")
+    response.headers["Cache-Control"] = MEDIA_THUMBNAIL_CACHE_CONTROL
+    return response
 
 
 @app.post("/api/media/thumbnail-jobs")
@@ -2946,6 +2949,7 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
         job["thumbnail_url"] = card_thumbnail_url_for_path(Path(str(job.get("target_dir"))))
     else:
         job["thumbnail_url"] = card_thumbnail_url_for_url(str(job.get("thumbnail_url") or ""))
+    job["thumbnail_ready"] = thumbnail_ready_for_url(str(job.get("thumbnail_url") or ""))
     favorite_paths = favorites if favorites is not None else db.favorite_paths()
     job["favorite"] = bool(target_path and target_path in favorite_paths)
     job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
@@ -3419,6 +3423,7 @@ def normalize_library_item_payload(item: dict[str, Any], favorites: set[str] | N
         if target is not None:
             thumbnail_url = card_thumbnail_url_for_path(target)
     payload["thumbnail_url"] = thumbnail_url
+    payload["thumbnail_ready"] = thumbnail_ready_for_url(thumbnail_url)
     return payload
 
 
@@ -3884,6 +3889,7 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
         target_path=relative_path,
         has_media=first_media is not None,
     )
+    thumbnail_url = card_thumbnail_url_for_media(first_media) or card_thumbnail_url_for_path(path)
     return {
         "id": f"fs:{stable_path_id(relative_path)}",
         "status": "done",
@@ -3904,7 +3910,8 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
         "base_model": str(metadata.get("base_model") or ""),
         "file_format": library_item_format(path, metadata, first_media),
         "precision": library_item_precision(path, metadata, media_count),
-        "thumbnail_url": card_thumbnail_url_for_media(first_media) or card_thumbnail_url_for_path(path),
+        "thumbnail_url": thumbnail_url,
+        "thumbnail_ready": thumbnail_ready_for_url(thumbnail_url),
         "favorite": relative_path in favorites,
         "source_url": str(metadata.get("source_url") or source_url_from_metadata(metadata)),
         "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
@@ -4722,7 +4729,9 @@ def card_thumbnail_url_for_media(path: Path | None) -> str:
     except (OSError, ValueError):
         return ""
     if is_image_file(path):
-        return f"/api/media/thumbnail?path={quote(relative_path, safe='/')}"
+        version = media_thumbnail_url_version(path, MEDIA_THUMBNAIL_DEFAULT_SIZE)
+        version_query = f"&v={quote(version, safe='')}" if version else ""
+        return f"/api/media/thumbnail?path={quote(relative_path, safe='/')}{version_query}"
     if is_video_file(path) and video_poster_path_if_ready(path) is not None:
         return f"/api/media/poster?path={quote(relative_path, safe='/')}"
     return ""
@@ -4743,7 +4752,14 @@ def card_thumbnail_url_for_url(url: str) -> str:
         return ""
     parsed = urlparse(url)
     if parsed.path == "/api/media/thumbnail":
-        return url
+        request_path = thumbnail_request_path_from_url(url)
+        if not request_path:
+            return ""
+        try:
+            source = thumbnail_source_for_request(request_path)
+        except (HTTPException, OSError, ValueError):
+            return ""
+        return card_thumbnail_url_for_media(source)
     if parsed.path == "/api/media/poster":
         return url
     if parsed.path not in {"/api/fs/preview", "/api/media/file"}:
@@ -4757,6 +4773,24 @@ def card_thumbnail_url_for_url(url: str) -> str:
     except HTTPException:
         return ""
     return card_thumbnail_url_for_media(source)
+
+
+def thumbnail_ready_for_url(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(str(url))
+    if parsed.path == "/api/media/thumbnail":
+        request_path = thumbnail_request_path_from_url(url)
+        if not request_path:
+            return False
+        try:
+            source = thumbnail_source_for_request(request_path)
+            return thumbnail_cache_ready(source, thumbnail_request_size_from_url(url))
+        except (HTTPException, OSError, ValueError):
+            return False
+    if parsed.path in {"/api/media/poster", "/api/media/file", "/api/fs/preview"}:
+        return True
+    return parsed.scheme in {"http", "https"}
 
 
 def thumbnail_backfill_worker_count(value: Any | None = None) -> int:
@@ -4785,6 +4819,12 @@ def thumbnail_request_path_from_url(url: str) -> str:
     if not values:
         return ""
     return str(values[0] or "").strip().replace("\\", "/").lstrip("/")
+
+
+def thumbnail_request_size_from_url(url: str) -> int:
+    parsed = urlparse(str(url or ""))
+    values = parse_qs(parsed.query).get("size", [])
+    return thumbnail_size_value(values[0] if values else None)
 
 
 def thumbnail_cache_ready(source: Path, size: int) -> bool:
@@ -5158,6 +5198,13 @@ def thumbnail_size_value(size: int | None) -> int:
     except (TypeError, ValueError):
         value = MEDIA_THUMBNAIL_DEFAULT_SIZE
     return max(1, min(MEDIA_THUMBNAIL_MAX_SIZE, value))
+
+
+def media_thumbnail_url_version(source: Path, size: int) -> str:
+    try:
+        return media_thumbnail_cache_key(source, thumbnail_size_value(size))
+    except OSError:
+        return ""
 
 
 def media_thumbnail_cache_key(source: Path, size: int) -> str:

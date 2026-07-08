@@ -640,11 +640,17 @@ def test_comfyui_local_mount_check_api_reads_real_data_remote_folder(app_modules
         kind="local_mount",
         remote_path="pc-comfyui/ComfyUI/models",
         policy={
+            "category": "comfyui",
             "allowed_source_prefixes": ["stable-diffusion/checkpoints", "stable-diffusion/diffusion_models"],
             "include_patterns": [],
             "bwlimit": "",
             "transfers": 1,
             "checkers": 2,
+            "comfyui_mappings": {
+                "stable-diffusion/checkpoints": "checkpoints",
+                "stable-diffusion/diffusion_models": "diffusion_models",
+                "stable-diffusion/loras": "loras",
+            },
         },
     )
     client = TestClient(main.app)
@@ -664,6 +670,13 @@ def test_comfyui_local_mount_check_api_reads_real_data_remote_folder(app_modules
     )
     assert diffusion_suggestion["destination_subpath"] == "diffusion_models"
     assert diffusion_suggestion["available_destination_subpath"] == "unet"
+    mapping_checks = {item["source_prefix"]: item for item in payload["mapping_checks"]}
+    assert mapping_checks["stable-diffusion/checkpoints"]["status"] == "present"
+    assert mapping_checks["stable-diffusion/diffusion_models"]["status"] == "missing"
+    assert mapping_checks["stable-diffusion/loras"]["status"] == "present"
+    assert payload["mapping_summary"]["total"] == 3
+    assert payload["mapping_summary"]["present"] == 2
+    assert payload["mapping_summary"]["ok"] is False
     response_text = json.dumps(payload, ensure_ascii=False)
     assert str(main.DATA_REMOTE_ROOT) not in response_text
 
@@ -1123,8 +1136,12 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert "/api/transfer/targets/${encodeURIComponent(id)}/comfyui/check" in template
     assert "function renderTransferComfyuiCheckPanel" in template
     assert "function checkTransferComfyuiFolder" in template
+    assert "function comfyuiMappingCheckItems" in template
+    assert "function renderComfyuiMappingCheckList" in template
     assert "safeComfyuiDisplayText" in template
     assert "transferComfyuiFolderChecks" in template
+    assert "매핑 폴더" in template
+    assert "comfyui-check-mapping-health" in template
     payload_start = template.index("function transferJobPayload")
     payload_end = template.index("function renderTransferPreflight", payload_start)
     payload_block = template[payload_start:payload_end]

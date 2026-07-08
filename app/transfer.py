@@ -358,22 +358,38 @@ def check_comfyui_local_mount_target(
     base = resolve_local_mount_base(remote_path, data_remote_root=data_remote_root, require_exists=True)
     children = _direct_local_mount_child_dirs(base)
 
+    def with_mapping_checks(result: dict[str, Any]) -> dict[str, Any]:
+        mapping_checks = _comfyui_mapping_folder_checks(
+            target,
+            remote_path,
+            data_remote_root=data_remote_root,
+        )
+        return {
+            **result,
+            "mapping_checks": mapping_checks,
+            "mapping_summary": _comfyui_mapping_check_summary(mapping_checks),
+        }
+
     if base.name.lower() == "models":
-        return _comfyui_models_root_result(
-            result_kind="models_root",
-            target_base=remote_path,
-            models_subpath="",
-            models_path=base,
+        return with_mapping_checks(
+            _comfyui_models_root_result(
+                result_kind="models_root",
+                target_base=remote_path,
+                models_subpath="",
+                models_path=base,
+            )
         )
 
     single_folder = _comfyui_model_folder_match(base.name)
     if single_folder is not None:
         canonical, is_alias = single_folder
-        return _comfyui_single_folder_result(
-            target_base=remote_path,
-            canonical=canonical,
-            folder=base.name,
-            is_alias=is_alias,
+        return with_mapping_checks(
+            _comfyui_single_folder_result(
+                target_base=remote_path,
+                canonical=canonical,
+                folder=base.name,
+                is_alias=is_alias,
+            )
         )
 
     if (base / "models").is_symlink():
@@ -388,21 +404,25 @@ def check_comfyui_local_mount_target(
             data_remote_root=data_remote_root,
             require_exists=True,
         )
-        return _comfyui_models_root_result(
-            result_kind="comfyui_root",
-            target_base=remote_path,
-            models_subpath=models_subpath,
-            models_path=models_path,
+        return with_mapping_checks(
+            _comfyui_models_root_result(
+                result_kind="comfyui_root",
+                target_base=remote_path,
+                models_subpath=models_subpath,
+                models_path=models_path,
+            )
         )
 
     direct_found = _comfyui_found_model_folders(children, root_subpath="")
     if direct_found["present"]:
-        return _comfyui_models_root_result(
-            result_kind="models_root",
-            target_base=remote_path,
-            models_subpath="",
-            models_path=base,
-            found=direct_found,
+        return with_mapping_checks(
+            _comfyui_models_root_result(
+                result_kind="models_root",
+                target_base=remote_path,
+                models_subpath="",
+                models_path=base,
+                found=direct_found,
+            )
         )
 
     candidates, suggestion_base, suggestion_found = _comfyui_nested_model_root_candidates(
@@ -410,26 +430,28 @@ def check_comfyui_local_mount_target(
         children,
         data_remote_root=data_remote_root,
     )
-    return {
-        "ok": True,
-        "kind": "generic",
-        "target_kind": TARGET_KIND_LOCAL_MOUNT,
-        "target_base": remote_path,
-        "base_path": "",
-        "display_base": suggestion_base or remote_path,
-        "models_subpath": suggestion_base,
-        "present": [],
-        "found_folders": [],
-        "aliases": [],
-        "missing": [],
-        "single_folder": None,
-        "candidate_model_roots": candidates,
-        "suggested_mappings": _comfyui_destination_suggestions(
-            destination_base=suggestion_base,
-            found_by_canonical=suggestion_found,
-        ),
-        "warnings": [],
-    }
+    return with_mapping_checks(
+        {
+            "ok": True,
+            "kind": "generic",
+            "target_kind": TARGET_KIND_LOCAL_MOUNT,
+            "target_base": remote_path,
+            "base_path": "",
+            "display_base": suggestion_base or remote_path,
+            "models_subpath": suggestion_base,
+            "present": [],
+            "found_folders": [],
+            "aliases": [],
+            "missing": [],
+            "single_folder": None,
+            "candidate_model_roots": candidates,
+            "suggested_mappings": _comfyui_destination_suggestions(
+                destination_base=suggestion_base,
+                found_by_canonical=suggestion_found,
+            ),
+            "warnings": [],
+        }
+    )
 
 
 def local_mount_preflight(
@@ -893,6 +915,67 @@ def _comfyui_destination_suggestions(
                 suggestion["available_destination_subpath"] = found_subpath
         suggestions.append(suggestion)
     return suggestions
+
+
+def _comfyui_mapping_folder_checks(
+    target: Mapping[str, Any],
+    remote_path: str,
+    *,
+    data_remote_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    raw_policy = target.get("policy") if isinstance(target, Mapping) else None
+    raw_mappings = raw_policy.get("comfyui_mappings") if isinstance(raw_policy, Mapping) else None
+    mappings = _normalize_comfyui_mappings(raw_mappings)
+    checks: list[dict[str, Any]] = []
+
+    for source_prefix, destination_subpath in mappings.items():
+        entry: dict[str, Any] = {
+            "source_prefix": source_prefix,
+            "destination_subpath": destination_subpath,
+            "exists": False,
+            "is_dir": False,
+            "status": "missing",
+        }
+        try:
+            destination = resolve_local_mount_destination(
+                remote_path,
+                destination_subpath,
+                data_remote_root=data_remote_root,
+                require_exists=False,
+            )
+            if destination.exists():
+                entry["exists"] = True
+                if destination.is_dir():
+                    entry["is_dir"] = True
+                    entry["status"] = "present"
+                else:
+                    entry["status"] = "not_directory"
+                    entry["message"] = "Destination path exists but is not a folder"
+        except ValueError:
+            entry["status"] = "invalid"
+            entry["message"] = "Destination folder path is invalid"
+        except OSError:
+            entry["status"] = "unavailable"
+            entry["message"] = "Destination folder status could not be read"
+        checks.append(entry)
+    return checks
+
+
+def _comfyui_mapping_check_summary(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {
+        "total": len(checks),
+        "present": 0,
+        "missing": 0,
+        "not_directory": 0,
+        "invalid": 0,
+        "unavailable": 0,
+    }
+    for item in checks:
+        status = str(item.get("status") or "missing")
+        if status in counts:
+            counts[status] += 1
+    counts["ok"] = counts["total"] == counts["present"]
+    return counts
 
 
 def _comfyui_nested_model_root_candidates(

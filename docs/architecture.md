@@ -220,8 +220,9 @@ Poster generation:
 Card thumbnail generation:
 
 - library/job cards use `/api/media/thumbnail?path=...` for image thumbnails instead of loading full-size originals
-- the frontend delays card thumbnail requests until cards are in or near the viewport and runs at most 3 thumbnail requests at a time, so first visits or existing file scans do not fan out 100 image generations at once
+- the frontend delays card thumbnail requests until cards are in or near the viewport, uses API `thumbnail_ready` to run up to 10 cache-ready requests at a time, and keeps cold/generating thumbnail requests capped at 3 so first visits or existing file scans do not fan out 100 image generations at once
 - thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`
+- thumbnail URLs include a file-version query token and cache-hit responses use long-lived private immutable `Cache-Control`
 - thumbnail cache misses use ffmpeg behind the same media transcode semaphore that protects video work
 - the library `썸네일 생성` action creates one `media_thumbnail_backfill` internal job for the selected folder, scans card representative images only, skips existing cache files, and defaults to 3 worker threads
 - ordinary image thumbnail requests do not create one internal job row per image; the endpoint either serves a cache hit or generates the file during the request
@@ -233,7 +234,7 @@ Transfer copy:
 - the settings `전송 대상` pane starts with category tabs, then shows the selected category's registered targets and registration form; newly saved targets include optional `policy.category` metadata for UI grouping
 - ComfyUI settings targets can store optional `policy.comfyui_mappings` from fixed HugCivi `stable-diffusion/<route>` prefixes to target destination subfolders; transfer preflight/jobs apply those mappings only when the request does not already provide a `destination_subpath`
 - for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
-- for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder and mapping hints without exposing `/data_remote` absolute paths
+- for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder/mapping hints plus saved mapping destination health without exposing `/data_remote` absolute paths
 - for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token; disabled targets are rejected and returned Receiver paths are revalidated as destination-relative paths
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`

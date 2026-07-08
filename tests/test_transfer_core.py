@@ -70,6 +70,55 @@ def test_comfyui_local_mount_check_detects_models_root_and_suggestions(
     assert "/data_remote" not in serialized
 
 
+def test_comfyui_local_mount_check_reports_configured_mapping_folders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_remote_root = tmp_path / "data_remote"
+    models_root = data_remote_root / "pc-comfyui" / "ComfyUI" / "models"
+    (models_root / "checkpoints").mkdir(parents=True)
+    (models_root / "vae").write_bytes(b"not a folder")
+    monkeypatch.setenv("DATA_REMOTE_DIR", str(data_remote_root))
+
+    result = check_comfyui_local_mount_target(
+        {
+            "kind": "local_mount",
+            "remote_path": "pc-comfyui/ComfyUI/models",
+            "policy": {
+                "comfyui_mappings": {
+                    "stable-diffusion/checkpoints": "checkpoints",
+                    "stable-diffusion/loras": "loras",
+                    "stable-diffusion/vae": "vae",
+                },
+            },
+        }
+    )
+
+    checks = {item["source_prefix"]: item for item in result["mapping_checks"]}
+    assert checks["stable-diffusion/checkpoints"] == {
+        "source_prefix": "stable-diffusion/checkpoints",
+        "destination_subpath": "checkpoints",
+        "exists": True,
+        "is_dir": True,
+        "status": "present",
+    }
+    assert checks["stable-diffusion/loras"]["status"] == "missing"
+    assert checks["stable-diffusion/loras"]["exists"] is False
+    assert checks["stable-diffusion/vae"]["status"] == "not_directory"
+    assert result["mapping_summary"] == {
+        "total": 3,
+        "present": 1,
+        "missing": 1,
+        "not_directory": 1,
+        "invalid": 0,
+        "unavailable": 0,
+        "ok": False,
+    }
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert str(data_remote_root) not in serialized
+    assert "/data_remote" not in serialized
+
+
 def test_comfyui_local_mount_check_detects_alias_folders(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

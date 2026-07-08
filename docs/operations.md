@@ -128,7 +128,7 @@ PC ComfyUI LoRA        -> kind=local_mount, remote_path=pc-comfyui/loras
 Studio NAS Models      -> kind=local_mount, remote_path=studio-nas/models
 ```
 
-For a ComfyUI install mounted at its models root, you can instead register one `ComfyUI` category target such as `remote_path=pc-comfyui/ComfyUI/models` or `remote_path=pc-comfyui/comfyui-models`. The settings form fills editable mappings from fixed HugCivi sources like `stable-diffusion/checkpoints` and `stable-diffusion/loras` to destination subfolders like `checkpoints` and `loras`; those mappings become the default transfer destination when the transfer modal has not selected another folder.
+For a ComfyUI install mounted at its models root, you can instead register one `ComfyUI` category target such as `remote_path=pc-comfyui/ComfyUI/models` or `remote_path=pc-comfyui/comfyui-models`. The settings form fills editable mappings from fixed HugCivi sources like `stable-diffusion/checkpoints` and `stable-diffusion/loras` to destination subfolders like `checkpoints` and `loras`; those mappings become the default transfer destination when the transfer modal has not selected another folder. The ComfyUI `폴더 체크` button also reports whether each saved mapping destination exists as a directory, so missing receiving folders can be fixed before transfer.
 
 `/data_remote` is not a second library root. It is destination-only for copy jobs, must stay separate from `/data`, and should be mounted as narrowly as practical. HugCivi refuses the `/data_remote` root as a target, rejects symlink escapes, checks writable/offline state during preflight, writes files through temporary names before rename, and skips existing destination files by default.
 
@@ -280,10 +280,10 @@ Media:
 - Audio files are served directly in the media viewer.
 - Unplayable videos create `media_transcode` jobs on demand.
 - Missing video posters create `media_poster` jobs on demand.
-- Library/job card image thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`.
+- Library/job card image thumbnails are generated lazily as small JPEG files under `/config/media-cache/thumbnails`; cached thumbnail responses use long-lived private immutable browser caching with file-versioned URLs.
 - The library `썸네일 생성` button queues a `media_thumbnail_backfill` internal job for the selected folder. It scans card representatives only, skips thumbnails already cached, and defaults to 3 worker threads.
 - Media cache files live under `/config/media-cache`.
-- First visit or first load of existing files may spend CPU/I/O creating uncached thumbnails, but the browser queues requests for cards in or near the viewport and runs at most 3 thumbnail requests at a time; it should not send 100 thumbnail generations at once.
+- First visit or first load of existing files may spend CPU/I/O creating uncached thumbnails, but the browser queues requests for cards in or near the viewport. API payloads mark `thumbnail_ready`; the browser runs up to 10 ready-thumbnail requests at a time and keeps cold/generating thumbnail requests capped at 3, so it should not send 100 thumbnail generations at once.
 
 Useful media/cache settings:
 
