@@ -258,7 +258,7 @@ Indexer behavior:
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` can reset and scan a larger batch
 - `/api/library?mode=live` can force filesystem scan behavior
-- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
+- `/api/library?mode=live&path=...` scopes a live scan to the selected folder; the browser requests this when entering a library folder so new child cards appear before the global index catches up. Completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
 - `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
@@ -272,6 +272,7 @@ Filesystem operations from the app update related path state:
 - rename/move update job target prefixes, favorites, notes, and library index prefixes
 - delete clears affected favorites, notes, target prefixes, and library index rows
 - clearing job history resets stale library index rows so filesystem-backed cards can be restored from sidecars
+- app-driven folder create/rename/move/delete, manual reindex, and job-history clear also invalidate the selected-folder live page cache
 - external filesystem edits made outside HugCivi are eventually reflected by the indexer or live fallback; the sidebar folder-tree refresh action rereads `/data` directly without relying on cached DB rows
 
 Civitai model cards can be restored from `_civitai_metadata.json` even after the original job row is gone. If `_civitai_generation_metadata.json` exists, media viewer metadata uses its selected example image and generation payload; otherwise it falls back to the model metadata sidecar and reconstructs the model-details panel from stored model/version fields.

@@ -164,6 +164,8 @@ LIBRARY_PAGE_SIZE = 50
 LIBRARY_PAGE_MAX_SIZE = 100
 LIVE_LIBRARY_PAGE_SCAN_MIN_ITEMS = LIBRARY_PAGE_SIZE * 3
 LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS = 20_000
+LIVE_LIBRARY_PAGE_CACHE_DEFAULT_TTL_SECONDS = 60
+LIVE_LIBRARY_PAGE_CACHE_MAX_ENTRIES = 16
 MEDIA_THUMBNAIL_DEFAULT_SIZE = 360
 MEDIA_THUMBNAIL_MAX_SIZE = 720
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
@@ -187,6 +189,8 @@ DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK = threading.Lock()
 LIBRARY_INDEXER_THREAD: threading.Thread | None = None
 LIBRARY_INDEXER_STOP = threading.Event()
 LIBRARY_INDEXER_LOCK = threading.Lock()
+LIVE_LIBRARY_PAGE_CACHE: dict[str, dict[str, Any]] = {}
+LIVE_LIBRARY_PAGE_CACHE_LOCK = threading.Lock()
 STORAGE_USAGE_STATE_KEY = "storage.data_usage"
 STORAGE_USAGE_THREAD: threading.Thread | None = None
 STORAGE_USAGE_LOCK = threading.Lock()
@@ -2021,6 +2025,7 @@ def api_clear_jobs(_: str = Depends(require_auth)) -> JSONResponse:
     deleted = db.clear_job_history()
     if deleted:
         db.clear_library_index()
+        clear_live_library_page_cache()
     vacuumed = False
     if deleted and bool_env("SQLITE_VACUUM_AFTER_CLEAR", default=False):
         db.vacuum_database()
@@ -2135,6 +2140,7 @@ async def api_create_folder(request: Request, _: str = Depends(require_auth)) ->
     if target.exists():
         raise HTTPException(status_code=409, detail="같은 이름의 폴더가 이미 있습니다.")
     target.mkdir()
+    clear_live_library_page_cache()
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
@@ -2164,6 +2170,7 @@ def api_library(
 @app.post("/api/library/reindex")
 def api_library_reindex(_: str = Depends(require_auth)) -> JSONResponse:
     result = scan_library_index_batch(max_paths=library_reindex_batch_size(), reset=True)
+    clear_live_library_page_cache()
     return JSONResponse({"ok": True, **result, "items": library_items()})
 
 
@@ -2528,6 +2535,7 @@ async def api_rename_path(request: Request, _: str = Depends(require_auth)) -> J
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
     db.update_library_item_path_prefix(old_relative, new_relative)
+    clear_live_library_page_cache()
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
@@ -2557,6 +2565,7 @@ async def api_move_path(request: Request, _: str = Depends(require_auth)) -> JSO
     db.update_favorite_path_prefix(old_relative, new_relative)
     db.update_note_path_prefix(old_relative, new_relative)
     db.update_library_item_path_prefix(old_relative, new_relative)
+    clear_live_library_page_cache()
     return JSONResponse({"ok": True, "path": relative_data_path(target), "folders": initial_folder_tree()})
 
 
@@ -2578,6 +2587,7 @@ async def api_delete_path(request: Request, _: str = Depends(require_auth)) -> J
     db.clear_favorite_path_prefix(relative_path)
     db.clear_note_path_prefix(relative_path)
     db.clear_library_item_prefix(relative_path)
+    clear_live_library_page_cache()
     return JSONResponse({"ok": True, "folders": initial_folder_tree()})
 
 
@@ -3028,11 +3038,8 @@ def live_library_items_page(
     safe_offset = max(0, int(offset))
     page_number = max(1, (safe_offset // safe_limit) + 1)
     if root_path is not None:
-        live_items, complete = live_library_items_with_completion(
-            max_items=0,
-            root_path=root_path,
-            max_paths=LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS,
-        )
+        live_items, complete = cached_selected_folder_live_items(root_path)
+        live_items = apply_library_favorites(live_items)
         items = sort_library_items(live_items, sort)
         total_count = len(items) if complete else None
         total_pages = max(1, (total_count + safe_limit - 1) // safe_limit) if total_count is not None else None
@@ -3048,6 +3055,93 @@ def live_library_items_page(
     items = sort_library_items(live_library_items(max_items=scan_limit, root_path=root_path), sort)
     page_items = items[safe_offset : safe_offset + safe_limit]
     return page_items, page_number, None, None, len(items) > safe_offset + safe_limit
+
+
+def cached_selected_folder_live_items(root_path: Path) -> tuple[list[dict[str, Any]], bool]:
+    signature = live_library_page_cache_signature(root_path)
+    if signature is None:
+        return live_library_items_with_completion(
+            max_items=0,
+            root_path=root_path,
+            max_paths=LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS,
+        )
+
+    ttl_seconds = live_library_page_cache_ttl_seconds()
+    cache_key = lexical_absolute(root_path)
+    now = time.monotonic()
+    if ttl_seconds > 0:
+        with LIVE_LIBRARY_PAGE_CACHE_LOCK:
+            entry = LIVE_LIBRARY_PAGE_CACHE.get(cache_key)
+            if (
+                entry is not None
+                and entry.get("signature") == signature
+                and int(entry.get("max_paths") or 0) == LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS
+                and float(entry.get("expires_at") or 0) > now
+            ):
+                items = [dict(item) for item in list(entry.get("items") or []) if isinstance(item, dict)]
+                return items, bool(entry.get("complete"))
+
+    items, complete = live_library_items_with_completion(
+        max_items=0,
+        root_path=root_path,
+        max_paths=LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS,
+    )
+    if ttl_seconds > 0:
+        stored_at = time.monotonic()
+        with LIVE_LIBRARY_PAGE_CACHE_LOCK:
+            LIVE_LIBRARY_PAGE_CACHE[cache_key] = {
+                "signature": signature,
+                "max_paths": LIVE_LIBRARY_PAGE_COUNT_MAX_PATHS,
+                "items": [dict(item) for item in items],
+                "complete": complete,
+                "expires_at": stored_at + ttl_seconds,
+            }
+            prune_live_library_page_cache_locked(now=stored_at)
+    return items, complete
+
+
+def live_library_page_cache_signature(root_path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = root_path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+
+
+def live_library_page_cache_ttl_seconds() -> int:
+    return nonnegative_int_env("LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS", LIVE_LIBRARY_PAGE_CACHE_DEFAULT_TTL_SECONDS)
+
+
+def prune_live_library_page_cache_locked(*, now: float) -> None:
+    expired = [
+        key
+        for key, entry in LIVE_LIBRARY_PAGE_CACHE.items()
+        if float(entry.get("expires_at") or 0) <= now
+    ]
+    for key in expired:
+        LIVE_LIBRARY_PAGE_CACHE.pop(key, None)
+    while len(LIVE_LIBRARY_PAGE_CACHE) > LIVE_LIBRARY_PAGE_CACHE_MAX_ENTRIES:
+        oldest_key = min(
+            LIVE_LIBRARY_PAGE_CACHE,
+            key=lambda key: float(LIVE_LIBRARY_PAGE_CACHE[key].get("expires_at") or 0),
+        )
+        LIVE_LIBRARY_PAGE_CACHE.pop(oldest_key, None)
+
+
+def clear_live_library_page_cache() -> None:
+    with LIVE_LIBRARY_PAGE_CACHE_LOCK:
+        LIVE_LIBRARY_PAGE_CACHE.clear()
+
+
+def apply_library_favorites(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    favorites = db.favorite_paths()
+    decorated: list[dict[str, Any]] = []
+    for item in items:
+        payload = dict(item)
+        target_path = str(payload.get("target_path") or "").strip("/")
+        payload["favorite"] = bool(target_path and target_path in favorites)
+        decorated.append(payload)
+    return decorated
 
 
 def sort_library_items(items: list[dict[str, Any]], sort: str) -> list[dict[str, Any]]:

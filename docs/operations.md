@@ -319,6 +319,7 @@ LIBRARY_INDEXER_START_DELAY_SECONDS=5
 LIBRARY_INDEXER_INTERVAL_SECONDS=300
 LIBRARY_INDEX_BATCH_SIZE=300
 LIBRARY_REINDEX_BATCH_SIZE=5000
+LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS=60
 ```
 
 Operational notes:
@@ -326,10 +327,11 @@ Operational notes:
 - First indexing pass may take time on large archives.
 - The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>`.
 - `/api/library?mode=live` can force live filesystem scanning.
-- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale. Completed selected-folder scans show known page totals; very large or incomplete scans keep previous/current/next fallback navigation.
+- `/api/library?mode=live&path=<relative-data-path>` live-scans only a selected folder. The UI uses this when a sidebar folder is selected, so newly restored or newly written cards can appear even if the global index is stale. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
 - `/api/library/reindex` resets and scans a large batch.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.
+- App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.
 - App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.
 - NAS-side manual file changes are picked up by later indexer passes or live fallback. The sidebar `저장 폴더` refresh button immediately reloads the folder tree from the current `/data` filesystem view when an operator deletes or creates folders outside HugCivi.

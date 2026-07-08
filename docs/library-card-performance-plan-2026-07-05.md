@@ -121,7 +121,7 @@ If preserving exact current sort semantics becomes too complex, prefer an additi
 
 For `mode=live`, avoid scanning the full tree just to compute exact totals.
 
-Status note, 2026-07-08: this remains true for incomplete or unscoped live scans, but selected-folder live pagination now reports exact `total_count`/`total_pages` when the folder scan completes within the internal path budget. If the scan cannot complete within that budget, the API still returns unknown totals and keeps the fallback behavior below.
+Status note, 2026-07-08: this remains true for incomplete or unscoped live scans, but selected-folder live pagination now reports exact `total_count`/`total_pages` when the folder scan completes within the internal path budget. Completed selected-folder scans are reused through a short in-memory page cache so page/sort navigation does not repeat the full scan. If the scan cannot complete within that budget, the API still returns unknown totals and keeps the fallback behavior below.
 
 - Scan until `offset + limit + 1` matching items are found.
 - Return `items` sliced to `limit`.
@@ -286,7 +286,7 @@ Also consider normalizing old DB index payloads at response time so stale `thumb
 | --- | --- |
 | Existing tests or clients expect `/api/library` to return an array. | Preserve array response unless `limit` or `page` is present. |
 | Server-side pagination can change sort semantics. | Add `sort` parameter and document/index-supported ordering. Reset page on sort changes. |
-| Live folder scans can still be expensive. | Scan only enough to fill the requested page plus one item for `has_next`. |
+| Live folder scans can still be expensive. | For selected folders, reuse completed scans through the short page cache; for incomplete/unscoped scans, scan only enough to fill the requested page plus one item for `has_next`. |
 | Favorite sorting may move a card off the current page. | After favorite toggle, re-fetch the current page and clamp if needed. |
 | Thumbnail cache competes with video transcode cache quota. | Document shared `MEDIA_CACHE_MAX_BYTES`; consider separate quota only if needed later. |
 | First visit to a page still generates up to 50 thumbnails. | Use lazy `<img loading="lazy" decoding="async">`, cache hits afterward, and bounded generation concurrency. |

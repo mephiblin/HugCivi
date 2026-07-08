@@ -1167,6 +1167,55 @@ def test_selected_folder_live_library_five_page_boundaries_do_not_backfill_cards
     assert str(out_of_range["items"][0]["target_path"]).endswith("card-200")
 
 
+def test_selected_folder_live_library_reuses_completed_scan_for_page_navigation(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "live-cache-fixtures"
+    for index in range(101):
+        target = root / f"card-{index:03d}"
+        target.mkdir(parents=True)
+        (target / "preview.jpg").write_bytes(b"image")
+
+    main.clear_live_library_page_cache()
+    original = main.live_library_items_with_completion
+    calls: list[Path | None] = []
+
+    def counting_live_library_items_with_completion(*args, **kwargs):
+        calls.append(kwargs.get("root_path"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main, "live_library_items_with_completion", counting_live_library_items_with_completion)
+
+    first = json.loads(
+        main.api_library(mode="live", path="live-cache-fixtures", limit=50, page=1, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+    second = json.loads(
+        main.api_library(mode="live", path="live-cache-fixtures", limit=50, page=2, sort="az", _="_").body.decode(
+            "utf-8"
+        )
+    )
+    third_newest = json.loads(
+        main.api_library(
+            mode="live",
+            path="live-cache-fixtures",
+            limit=50,
+            page=3,
+            sort="date_desc",
+            _="_",
+        ).body.decode("utf-8")
+    )
+
+    assert len(calls) == 1
+    assert calls[0] == root
+    assert first["total_count"] == 101
+    assert second["total_pages"] == 3
+    assert len(third_newest["items"]) == 1
+
+
 def test_selected_folder_live_library_keeps_unknown_totals_when_scan_is_incomplete(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,

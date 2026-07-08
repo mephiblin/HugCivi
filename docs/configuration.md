@@ -209,12 +209,13 @@ Current implementation status:
 | `LIBRARY_INDEXER_INTERVAL_SECONDS` | `300` | env | Background index interval. |
 | `LIBRARY_INDEX_BATCH_SIZE` | `300` | env | Normal indexer batch size. |
 | `LIBRARY_REINDEX_BATCH_SIZE` | `5000` | env | Manual reindex batch size. |
+| `LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS` | `60` | env | Short in-memory cache TTL for completed selected-folder live page scans. Page/sort changes reuse the scanned card list until the folder signature changes or the TTL expires. Set `0` to disable. |
 | `STORAGE_USAGE_SCAN_BATCH_SIZE` | `1000` | env | Storage usage scan batch size. |
 | `STORAGE_USAGE_SCAN_SLEEP_SECONDS` | `0.02` when unset | env | Sleep between storage scan batches. |
 | `JOB_LOG_MAX_CHARS` | `200000` | env | Stored job log trim limit. |
 | `SQLITE_VACUUM_AFTER_CLEAR` | `0` | env | If truthy, `POST /api/jobs/clear` runs `VACUUM` after deleting inactive job history. Keep disabled during normal NAS use. |
 
-`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. The browser requests 50-card pages with `limit=50&page=<n>` and no separate page-size setting. Completed selected-folder scans return known `total_count` and `total_pages`, so ordinary folders show a full page list; scans that hit the internal path budget keep totals unknown and use previous/current/next navigation. `POST /api/media/thumbnail-jobs` queues an internal job for the selected folder's missing card-representative thumbnails; it uses `MEDIA_THUMBNAIL_BACKFILL_WORKERS` unless an API caller supplies a clamped `workers` value. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
+`GET /api/library?mode=live&path=<relative-data-path>` performs a selected-folder live scan. The browser requests 50-card pages with `limit=50&page=<n>` and no separate page-size setting. Completed selected-folder scans return known `total_count` and `total_pages`, so ordinary folders show a full page list; scans that hit the internal path budget keep totals unknown and use previous/current/next navigation. The completed selected-folder item list is reused for page/sort navigation through `LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS`; app-driven folder create/rename/move/delete, library reindex, and job-history clear operations invalidate that cache immediately. `POST /api/media/thumbnail-jobs` queues an internal job for the selected folder's missing card-representative thumbnails; it uses `MEDIA_THUMBNAIL_BACKFILL_WORKERS` unless an API caller supplies a clamped `workers` value. `POST /api/jobs/clear` also clears the library index when it deletes inactive rows, so sidecar-backed cards can be restored from disk; `SQLITE_VACUUM_AFTER_CLEAR` still only controls whether a `VACUUM` follows the delete.
 
 ## Compose Default Differences
 
