@@ -1,6 +1,6 @@
 # HugCivi Configuration Reference
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 This document lists the configuration knobs a developer or operator is likely to meet. Values can come from environment variables, Docker/Portainer stack settings, or the web UI settings table depending on the key.
 
@@ -119,7 +119,7 @@ Transfer targets are stored in SQLite and can use `local_mount`, `receiver`, or 
 - `receiver` targets send files to the PC-side HugCivi Receiver HTTP API. They store the Receiver URL, optional token, base path, and copy policy. The token is used only for outbound HTTP headers and is not returned in target list payloads or job payloads.
 - `rclone` targets refer to rclone remotes by name. rclone credentials and host details live in `RCLONE_CONFIG`.
 
-The settings transfer pane starts with category tabs: `종합`, `ComfyUI`, `Hugging Face`, `Civitai`, `Hitomi`, `Movie`, and `ASMR`. Selecting a category filters the registered-target list and changes the registration form's default allowed source prefixes. New targets store the selected category as optional copy-policy metadata so the settings UI can keep them in the intended category without changing transfer behavior.
+The settings transfer pane starts with category tabs: `종합`, `ComfyUI`, `Hugging Face`, `Civitai`, `Hitomi`, `Movie`, and `ASMR`. Selecting a category filters the registered-target list and changes the registration form's default allowed source prefixes. New targets store the selected category as optional copy-policy metadata so the settings UI can keep them in the intended category without changing transfer behavior. The registration path field shows a focus helper for the selected target type; for `local_mount`, Portainer bind targets such as `/data_remote/comfyui-models` are shown as the HugCivi input value `comfyui-models`, and the frontend strips that known `/data_remote/` prefix before saving.
 
 In the `ComfyUI` category, the settings form includes editable `stable-diffusion/<route>` to destination-subfolder mappings. When the target base path looks like a ComfyUI models root, such as `comfyui-models` or `ComfyUI/models`, the UI fills default mappings like `stable-diffusion/checkpoints -> checkpoints`, `stable-diffusion/loras -> loras`, and `stable-diffusion/upscalers -> upscale_models`. If that untouched default preset is later changed to a single destination folder path, the UI clears the preset mappings so files do not land under duplicated subfolders. Saving stores non-empty mappings in optional copy-policy metadata as `comfyui_mappings`. During normal transfer, if the browser sends no `destination_subpath`, HugCivi applies the first matching mapping to the source path; an explicitly selected destination still takes priority.
 

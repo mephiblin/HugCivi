@@ -1080,6 +1080,12 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'class="transfer-settings-panel transfer-registration-panel"' in template
     assert 'class="transfer-advanced-targets"' in template
     assert 'id="transfer-setting-form-title"' in template
+    assert 'id="transfer-setting-path-help"' in template
+    assert 'Portainer container path' in template
+    assert 'HugCivi 입력값' in template
+    assert 'function localMountRelativeInput' in template
+    assert 'function transferSettingPathPayload' in template
+    assert "text.startsWith('/data_remote/')" in template
     assert 'id="transfer-comfyui-mapping"' in template
     assert 'data-transfer-comfyui-map' in template
     assert '연결 폴더 저장' in template

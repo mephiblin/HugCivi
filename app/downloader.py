@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -41,7 +42,7 @@ from .defaults import (
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
-from .workflows import WorkflowParseError, save_workflow_bundle, workflow_max_bytes
+from .workflows import WorkflowParseError, extract_workflow_bundle, save_workflow_bundle, workflow_json_to_storage_text, workflow_max_bytes
 from .ytdlp_sites import is_ytdlp_preferred_host
 
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
@@ -165,6 +166,7 @@ CIVITAI_MODEL_FILE_EXTENSIONS = {
     ".pth",
     ".safetensors",
 }
+CIVITAI_WORKFLOW_ARCHIVE_MAX_ENTRIES = 100
 FOLDER_THUMBNAIL_MAX_FILES = 5000
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -1696,6 +1698,121 @@ def civitai_required_component_files(
 
 def civitai_expected_filename(file: dict[str, Any], fallback: str) -> str:
     return sanitize_segment(text_value(file.get("name")), fallback)
+
+
+def civitai_archive_info_is_workflow(archive_info: dict[str, Any]) -> bool:
+    values = [
+        archive_info.get("model_category"),
+        archive_info.get("model_type"),
+        archive_info.get("route_type"),
+    ]
+    return any("workflow" in text_value(value).lower() or text_value(value).lower() == "workflows" for value in values)
+
+
+def civitai_workflow_archive_original_name(member_name: str, fallback: str) -> str:
+    name = sanitize_segment(Path(member_name).name, fallback)
+    if name in {"workflow.json", "_workflow_metadata.json", "_archive_metadata.json", "_civitai_metadata.json"}:
+        name = sanitize_segment(f"source_{name}", fallback)
+    return name
+
+
+def civitai_workflow_archive_candidate_key(info: zipfile.ZipInfo) -> tuple[int, int, str]:
+    name = Path(info.filename).name.lower()
+    suffix = Path(name).suffix
+    workflow_hint = 0 if "workflow" in name or "comfyui" in name else 1
+    suffix_rank = 0 if suffix == ".png" else 1
+    return (workflow_hint, suffix_rank, name)
+
+
+def extract_civitai_workflow_archive(
+    job_id: int,
+    archive_path: Path,
+    target: Path,
+    raw_input: str,
+) -> dict[str, Any] | None:
+    if archive_path.suffix.lower() != ".zip":
+        return None
+
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = [
+                info
+                for info in archive.infolist()
+                if not info.is_dir() and Path(info.filename).suffix.lower() in {".json", ".png"}
+            ]
+            infos.sort(key=civitai_workflow_archive_candidate_key)
+            if len(infos) > CIVITAI_WORKFLOW_ARCHIVE_MAX_ENTRIES:
+                db.append_log(
+                    job_id,
+                    f"Civitai workflow archive: inspecting first {CIVITAI_WORKFLOW_ARCHIVE_MAX_ENTRIES} JSON/PNG entries",
+                )
+                infos = infos[:CIVITAI_WORKFLOW_ARCHIVE_MAX_ENTRIES]
+
+            max_bytes = workflow_max_bytes()
+            for info in infos:
+                if info.file_size > max_bytes:
+                    db.append_log(
+                        job_id,
+                        f"Civitai workflow archive: skipped oversized entry {info.filename} ({human_bytes(info.file_size)})",
+                    )
+                    continue
+                with archive.open(info) as member:
+                    data = member.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    db.append_log(job_id, f"Civitai workflow archive: skipped oversized entry {info.filename}")
+                    continue
+                try:
+                    bundle = extract_workflow_bundle(data, Path(info.filename).name)
+                except WorkflowParseError:
+                    continue
+
+                original_name = civitai_workflow_archive_original_name(info.filename, "source_workflow.json")
+                original_path = target / original_name
+                workflow_path = target / "workflow.json"
+                original_path.write_bytes(data)
+                workflow_path.write_text(workflow_json_to_storage_text(bundle["workflow"]), encoding="utf-8")
+
+                metadata = {
+                    **metadata_stamp(),
+                    "source": "civitai",
+                    "kind": "civitai_workflow_archive",
+                    "raw_input": raw_input,
+                    "archive_file": archive_path.name,
+                    "archive_entry": info.filename,
+                    "original_filename": Path(info.filename).name,
+                    "original_file": original_path.name,
+                    "workflow_file": workflow_path.name,
+                    "source_key": bundle["source_key"],
+                    "source_format": bundle["source_format"],
+                    "metadata_keys": bundle["metadata_keys"],
+                    "node_count": bundle["node_count"],
+                    "link_count": bundle["link_count"],
+                    "models": bundle["models"],
+                }
+                write_metadata(target, "_workflow_metadata.json", metadata)
+                thumbnail_url = thumbnail_url_for_path(original_path) if original_path.suffix.lower() == ".png" else ""
+                db.append_log(
+                    job_id,
+                    f"Civitai workflow archive: extracted {info.filename} as {workflow_path.name}",
+                )
+                return {
+                    "status": "extracted",
+                    "archive_file": archive_path.name,
+                    "archive_entry": info.filename,
+                    "original_file": original_path.name,
+                    "workflow_file": workflow_path.name,
+                    "source_format": bundle["source_format"],
+                    "node_count": bundle["node_count"],
+                    "link_count": bundle["link_count"],
+                    "models": bundle["models"],
+                    "thumbnail_url": thumbnail_url,
+                }
+    except (OSError, zipfile.BadZipFile) as exc:
+        db.append_log(job_id, f"Civitai workflow archive: cannot inspect {archive_path.name}: {exc}")
+        return {"status": "unavailable", "archive_file": archive_path.name, "error": str(exc)}
+
+    db.append_log(job_id, f"Civitai workflow archive: no viewable workflow JSON/PNG found in {archive_path.name}")
+    return {"status": "not_found", "archive_file": archive_path.name}
 
 
 def civitai_file_size_bytes(file: dict[str, Any]) -> int:
@@ -3795,6 +3912,15 @@ def download_civitai(job_id: int, parsed: ParsedDownload) -> None:
             progress_bytes=downloaded_bytes,
             total_bytes=total_planned_bytes or downloaded_bytes,
         )
+
+    workflow_extraction = None
+    if saved_paths and civitai_archive_info_is_workflow(archive_info):
+        workflow_extraction = extract_civitai_workflow_archive(job_id, saved_paths[0], target, parsed.raw_input)
+        if workflow_extraction:
+            metadata_sidecar["workflow_extraction"] = workflow_extraction
+            if workflow_extraction.get("thumbnail_url") and not archive_info.get("thumbnail_url"):
+                archive_info["thumbnail_url"] = workflow_extraction.get("thumbnail_url")
+                update_job_archive_info(job_id, target, archive_info, metadata)
 
     metadata_sidecar["component_downloads"] = component_downloads
     write_metadata(target, "_civitai_metadata.json", metadata_sidecar)

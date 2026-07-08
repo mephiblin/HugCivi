@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-06
+Last updated: 2026-07-08
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -94,9 +94,11 @@ The `전송` context-menu action copies an existing `/data` file or folder to a 
 
 Recommended internal-LAN PC/NAS transfer is a `연결 폴더 (/data_remote)` target. Mount PC SMB shares, Synology remote folders, or other host-managed folders under a host directory, bind that directory to `/data_remote`, then register one or more `local_mount` targets with a `/data_remote`-relative base path. HugCivi browses only the registered target base through `/api/transfer/targets/{target_id}/local-mount/tree`, sends only `target_id`, `/data` `source_path`, and `destination_subpath`, and never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
 
+In Settings -> `전송/연결 폴더`, focusing the path input shows the Portainer mapping shape. If the Portainer container path is `/data_remote/comfyui-models`, the saved HugCivi local-mount path is `comfyui-models`; the frontend also strips that known prefix when pasted.
+
 For Civitai image-page archives, the library card action row and context menu have `사용 리소스 전송`. This checks the image archive's Resources used metadata, finds locally present model-version archives through jobs/sidecars, resolves each present resource to its primary model file, and queues separate `transfer_copy` jobs through `/api/transfer/civitai-resources/jobs`. With a ComfyUI category target that stores `policy.comfyui_mappings`, checkpoint/LoRA/VAE-style files are placed under the configured ComfyUI model subfolders by their HugCivi `stable-diffusion/...` source path.
 
-For a one-shot archive clone, open Settings -> `전송 대상` -> `종합` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
+For a one-shot archive clone, open Settings -> `전송/연결 폴더` -> `종합` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
 
 Local mount compose shape:
 
@@ -204,6 +206,8 @@ Keep `TRANSFER_MAX_CONCURRENT=1` on NAS hardware until the destination disk beha
 Civitai model/version downloads are ordinary external download jobs in the `civitai` provider bucket, so global/per-provider queue limits, cooldowns, retries, and the stall watchdog apply.
 
 Model archive outputs include the model files plus `_civitai_metadata.json`. When Civitai returns generation/example image data, HugCivi also writes `_civitai_generation_metadata.json` and local preview files named `civitai_example_<imageId>.*`. These sidecars carry model/version/file details, generation prompts, tensor summary data when available, preview local paths, and `component_downloads`, so cards and viewer metadata can recover from disk without job history.
+
+For Civitai `Workflows` model pages, HugCivi treats `Archive`/`Other` ZIP files as ComfyUI workflow archives instead of generic archives. The ZIP stays in the Civitai archive folder under `/data/civitai/workflows/...`; if a valid JSON or PNG workflow entry is found inside the ZIP, HugCivi also writes `workflow.json` and `_workflow_metadata.json` in that folder so the normal workflow viewer can open it.
 
 For normal model/version URLs, HugCivi downloads the primary model file plus additional Civitai files whose metadata marks them as required. These component files are downloaded in the same job and same archive folder; the job progress/filename may show `N files`. Explicit file selectors or raw Civitai download URLs keep the narrower requested-file behavior.
 
@@ -336,6 +340,7 @@ Operational notes:
 - App-driven rename/move/delete updates the index and path-linked state.
 - App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.
 - NAS-side manual file changes are picked up by later indexer passes or live fallback. The sidebar `저장 폴더` refresh button immediately reloads the folder tree from the current `/data` filesystem view when an operator deletes or creates folders outside HugCivi.
+- The sidebar folder search uses bounded `/api/folders/search` server-side scanning, scoped to the selected folder when one is active. Results can include folders that were not expanded in the sidebar yet; choosing one lazy-loads only the needed ancestors/pages. Hidden folders, `.part` branches, symlink folders, and Hitomi archive page folders are skipped.
 
 ## Storage Readout
 

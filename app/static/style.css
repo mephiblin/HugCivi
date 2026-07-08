@@ -655,6 +655,31 @@ a:hover {
   white-space: nowrap;
 }
 
+.folder-search-result-text {
+  display: grid;
+  gap: 1px;
+}
+
+.folder-search-result-text strong,
+.folder-search-result-text small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-search-result-text strong {
+  color: #111827;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.folder-search-result-text small {
+  color: #64748b;
+  font-size: 11px;
+  line-height: 15px;
+}
+
 .folder-search-empty {
   display: flex;
   min-height: 38px;
@@ -1210,6 +1235,61 @@ a:hover {
 .transfer-comfyui-map-row input {
   width: 100%;
   min-width: 0;
+}
+
+.transfer-path-field input {
+  width: 100%;
+}
+
+.transfer-path-help {
+  display: none;
+  gap: 8px;
+  border: 1px solid #dbe4f0;
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: #f8fbff;
+  color: #334155;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.transfer-path-field:focus-within .transfer-path-help {
+  display: grid;
+}
+
+.transfer-path-help > strong {
+  color: #172033;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.transfer-path-help-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.transfer-path-help-grid div {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.45fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.transfer-path-help-grid span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.transfer-path-help-grid strong {
+  min-width: 0;
+  color: #1f2937;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.transfer-path-help small {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .transfer-target-groups {
@@ -5195,6 +5275,11 @@ a:hover {
   .transfer-comfyui-map-row {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  .transfer-path-help-grid div {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 
   .comfyui-check-head {

@@ -134,6 +134,10 @@ FOLDER_TREE_MAX_CHILDREN_PER_FOLDER = 1000
 FOLDER_TREE_INITIAL_MAX_DEPTH = 1
 FOLDER_CHILDREN_DEFAULT_LIMIT = 200
 FOLDER_CHILDREN_MAX_LIMIT = 500
+FOLDER_SEARCH_DEFAULT_LIMIT = 50
+FOLDER_SEARCH_MAX_LIMIT = 100
+FOLDER_SEARCH_MAX_VISITED = 20_000
+FOLDER_SEARCH_MAX_SECONDS = 1.5
 HITOMI_ROUTE_ROOT = "hitomi"
 HITOMI_LISTING_CONTAINER = "listings"
 HITOMI_ARCHIVE_MARKER_FILENAMES = ("_hitomi_metadata.json",)
@@ -2141,6 +2145,16 @@ def api_folder_children(
     return JSONResponse(folder_children_payload(path=path, limit=limit, cursor=cursor))
 
 
+@app.get("/api/folders/search")
+def api_folder_search(
+    q: str = "",
+    scope: str = "",
+    limit: int = FOLDER_SEARCH_DEFAULT_LIMIT,
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    return JSONResponse(folder_search_payload(query=q, scope=scope, limit=limit))
+
+
 @app.post("/api/folders")
 async def api_create_folder(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
     payload = await request.json()
@@ -2954,6 +2968,19 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["favorite"] = bool(target_path and target_path in favorite_paths)
     job["source_url"] = source_url_for_job(job, parsed) or existing_source_url
     job["model_title"] = display_model_title_for_job(job)
+    target_dir = str(job.get("target_dir") or "").strip()
+    target_path_obj = Path(target_dir) if target_dir else None
+    job["has_workflow"] = bool(
+        target_path_obj
+        and workflow_hint_for_values(
+            source=job.get("source"),
+            category=job.get("model_category"),
+            model_type=job.get("model_type"),
+            file_format=job.get("file_format"),
+            path=target_path_obj,
+        )
+        and workflow_view_available(target_path_obj)
+    )
     decorate_job_media_flags(job)
     return job
 
@@ -3833,6 +3860,34 @@ def is_workflow_file(path: Path) -> bool:
     return path.suffix.lower() in {".json", ".png"} and "workflow" in path.name.lower()
 
 
+def workflow_view_available(path: Path) -> bool:
+    try:
+        if path.is_file():
+            return path.suffix.lower() == ".json"
+        if not path.is_dir():
+            return False
+        preferred = path / "workflow.json"
+        if preferred.is_file() and not preferred.is_symlink():
+            return True
+        return any(item.is_file() and not item.is_symlink() and not item.name.startswith("_") for item in path.glob("*.json"))
+    except OSError:
+        return False
+
+
+def workflow_hint_for_values(
+    *,
+    source: Any = "",
+    category: Any = "",
+    model_type: Any = "",
+    file_format: Any = "",
+    path: Path | None = None,
+) -> bool:
+    if path is not None and is_workflow_file(path):
+        return True
+    values = [source, category, model_type, file_format]
+    return any("workflow" in str(value or "").lower() or "comfyui" in str(value or "").lower() for value in values)
+
+
 def is_media_file(path: Path) -> bool:
     return is_image_file(path) or is_video_file(path) or is_audio_file(path) or is_document_file(path)
 
@@ -3920,6 +3975,14 @@ def library_item_for_path(path: Path, favorites: set[str]) -> dict[str, Any]:
         "has_media": first_media is not None,
         "media_count": media_count,
         "media_type": media_type,
+        "has_workflow": workflow_hint_for_values(
+            source=source,
+            category=category,
+            model_type=metadata.get("model_type"),
+            file_format=metadata.get("file_format"),
+            path=path,
+        )
+        and workflow_view_available(path),
     }
 
 
@@ -5590,6 +5653,112 @@ def folder_children_payload(*, path: str, limit: int, cursor: str | None = None)
         "limit": safe_limit,
         "next_cursor": page[-1].name if has_more and page else None,
         "has_more": has_more,
+    }
+
+
+def folder_search_payload(*, query: str, scope: str = "", limit: int = FOLDER_SEARCH_DEFAULT_LIMIT) -> dict[str, Any]:
+    raw_query = str(query or "").strip()
+    scope_path = existing_data_path(scope)
+    if not scope_path.is_dir():
+        raise HTTPException(status_code=400, detail="검색 범위는 폴더여야 합니다.")
+    ensure_real_directory_destination(scope_path)
+    if relative_data_path(scope_path) and should_skip_index_path(scope_path):
+        raise HTTPException(status_code=400, detail="검색할 수 없는 폴더입니다.")
+
+    safe_limit = folder_search_limit(limit)
+    relative_scope = relative_data_path(scope_path)
+    if not raw_query:
+        return {
+            "ok": True,
+            "query": "",
+            "scope": relative_scope,
+            "items": [],
+            "limit": safe_limit,
+            "visited": 0,
+            "truncated": False,
+        }
+
+    terms = folder_search_terms(raw_query)
+    if not terms:
+        raise HTTPException(status_code=400, detail="검색어를 입력하세요.")
+
+    deadline = time.monotonic() + FOLDER_SEARCH_MAX_SECONDS
+    visited = 0
+    truncated = False
+    results: list[dict[str, Any]] = []
+    queue_paths: list[Path] = [scope_path]
+    queue_depths: list[int] = [folder_search_depth(scope_path)]
+    index = 0
+    root_lexical = lexical_absolute(DATA_ROOT)
+
+    while index < len(queue_paths):
+        if len(results) >= safe_limit:
+            truncated = True
+            break
+        if visited >= FOLDER_SEARCH_MAX_VISITED or time.monotonic() >= deadline:
+            truncated = True
+            break
+
+        current = queue_paths[index]
+        current_depth = queue_depths[index]
+        index += 1
+        visited += 1
+
+        try:
+            current_relative = relative_data_path(current)
+        except (OSError, ValueError):
+            continue
+
+        if lexical_absolute(current) != root_lexical and folder_search_match(current, current_relative, terms):
+            results.append(folder_search_item(current, depth=current_depth))
+            if len(results) >= safe_limit:
+                truncated = True
+                break
+
+        if is_hitomi_archive_leaf_folder(current):
+            continue
+
+        for child in direct_child_directories(current):
+            if should_skip_index_path(child):
+                continue
+            queue_paths.append(child)
+            queue_depths.append(current_depth + 1)
+
+    return {
+        "ok": True,
+        "query": raw_query,
+        "scope": relative_scope,
+        "items": results,
+        "limit": safe_limit,
+        "visited": visited,
+        "truncated": truncated,
+    }
+
+
+def folder_search_limit(limit: int) -> int:
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit은 1 이상이어야 합니다.")
+    return min(FOLDER_SEARCH_MAX_LIMIT, limit)
+
+
+def folder_search_terms(query: str) -> list[str]:
+    return [term for term in re.split(r"\s+", query.casefold().replace("\\", "/").strip()) if term]
+
+
+def folder_search_match(path: Path, relative_path: str, terms: list[str]) -> bool:
+    haystack = f"{path.name} {relative_path}".casefold()
+    return all(term in haystack for term in terms)
+
+
+def folder_search_depth(path: Path) -> int:
+    relative = relative_data_path(path)
+    return len(Path(relative).parts) if relative else 0
+
+
+def folder_search_item(path: Path, *, depth: int) -> dict[str, Any]:
+    return {
+        **folder_child_item(path),
+        "depth": depth,
     }
 
 

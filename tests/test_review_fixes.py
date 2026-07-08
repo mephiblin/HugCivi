@@ -1126,6 +1126,43 @@ def test_library_source_group_classification(
     assert item["source_group"] == expected
 
 
+def test_civitai_workflow_archive_requires_extracted_workflow_for_viewer_flag(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "civitai" / "workflows" / "qwen" / "flow"
+    target.mkdir(parents=True)
+    (target / "workflow.zip").write_bytes(b"zip")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "archive_info": {
+                    "model_title": "Qwen Flow",
+                    "model_category": "ComfyUI Workflow",
+                    "model_type": "Workflows",
+                    "file_format": "ZIP",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cold = main.library_item_for_path(target, set())
+    (target / "workflow.json").write_text('{"nodes":[],"links":[]}', encoding="utf-8")
+    ready = main.library_item_for_path(target, set())
+    generic = data_root / "generic" / "json-config"
+    generic.mkdir(parents=True)
+    (generic / "_generic_metadata.json").write_text(json.dumps({"source": "generic"}), encoding="utf-8")
+    (generic / "config.json").write_text("{}", encoding="utf-8")
+    generic_item = main.library_item_for_path(generic, set())
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert cold["model_category"] == "ComfyUI Workflow"
+    assert cold["has_workflow"] is False
+    assert ready["has_workflow"] is True
+    assert generic_item["has_workflow"] is False
+    assert "job.has_workflow === false" in template
+
+
 def test_library_api_selected_folder_uses_index_before_live_scan(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -1705,7 +1742,11 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "function isFolderRowInSearchScope(item, scopePath = folderSearchScopePath())" in template
     assert "return normalized ? `/data/${normalized} 내부` : '/data 전체';" in template
     assert "path === normalizedScope || path.startsWith(`${normalizedScope}/`)" in template
-    assert "collectFolderRows().filter(item => isFolderRowInSearchScope(item, scopePath)).filter(item => (" in template
+    assert "const FOLDER_SEARCH_ENDPOINT = '/api/folders/search';" in template
+    assert "async function fetchFolderSearchResults(rawQuery, scopePath)" in template
+    assert "function localFolderSearchResults(rawQuery, scopePath)" in template
+    assert "renderFolderSearchResults([], scopePath, {loading: true});" in template
+    assert "folder-search-result-text" in template
     assert template.count("if (folderSearchInput?.value.trim()) updateFolderSearch();") == 2
     assert "const rows = collectFolderRows();" in template
     assert ".folder-search-form" in stylesheet
@@ -1863,6 +1904,98 @@ def test_api_folder_children_returns_direct_children_with_pagination(app_modules
     assert second_payload["next_cursor"] == "model-005"
     assert second_payload["has_more"] is True
     assert bad_cursor_response.status_code == 400
+
+
+def test_api_folder_search_finds_unloaded_nested_folders_and_respects_scope(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    checkpoints = data_root / "stable-diffusion" / "checkpoints"
+    loras = data_root / "stable-diffusion" / "loras"
+    (checkpoints / "illustrious-xl").mkdir(parents=True)
+    (checkpoints / "pony-xl").mkdir()
+    (loras / "character-pack").mkdir(parents=True)
+
+    client = TestClient(main.app)
+    response = client.get(
+        "/api/folders/search",
+        params={"q": "illustrious", "limit": 10},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    path_response = client.get(
+        "/api/folders/search",
+        params={"q": "stable checkpoints", "limit": 10},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    scoped_response = client.get(
+        "/api/folders/search",
+        params={"q": "illustrious", "scope": "stable-diffusion/loras", "limit": 10},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    limited_response = client.get(
+        "/api/folders/search",
+        params={"q": "xl", "limit": 1},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scope"] == ""
+    assert payload["query"] == "illustrious"
+    assert [item["path"] for item in payload["items"]] == ["stable-diffusion/checkpoints/illustrious-xl"]
+    assert payload["items"][0]["depth"] == 3
+    assert payload["items"][0]["children_loaded"] is True
+
+    assert path_response.status_code == 200
+    assert "stable-diffusion/checkpoints/illustrious-xl" in {
+        item["path"] for item in path_response.json()["items"]
+    }
+
+    assert scoped_response.status_code == 200
+    assert scoped_response.json()["scope"] == "stable-diffusion/loras"
+    assert scoped_response.json()["items"] == []
+
+    assert limited_response.status_code == 200
+    assert len(limited_response.json()["items"]) == 1
+    assert limited_response.json()["truncated"] is True
+
+
+def test_api_folder_search_skips_hidden_part_symlink_and_hitomi_leaf(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, data_root, config_root = app_modules
+    (data_root / ".hidden" / "needle-hidden").mkdir(parents=True)
+    (data_root / "visible.part" / "needle-part").mkdir(parents=True)
+    (data_root / "normal" / "needle-visible").mkdir(parents=True)
+    (data_root / "link").symlink_to(config_root, target_is_directory=True)
+    archive = data_root / "hitomi" / "123-gallery"
+    (archive / "needle-page-folder").mkdir(parents=True)
+    (archive / "_hitomi_metadata.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(main.app)
+    response = client.get(
+        "/api/folders/search",
+        params={"q": "needle", "limit": 20},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    symlink_scope_response = client.get(
+        "/api/folders/search",
+        params={"q": "anything", "scope": "link"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    hidden_scope_response = client.get(
+        "/api/folders/search",
+        params={"q": "needle", "scope": ".hidden"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    part_scope_response = client.get(
+        "/api/folders/search",
+        params={"q": "needle", "scope": "visible.part"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert response.status_code == 200
+    paths = {item["path"] for item in response.json()["items"]}
+    assert paths == {"normal/needle-visible"}
+    assert symlink_scope_response.status_code == 400
+    assert hidden_scope_response.status_code == 400
+    assert part_scope_response.status_code == 400
 
 
 def test_api_folder_children_treats_hitomi_archives_as_leaf_without_child_scan(

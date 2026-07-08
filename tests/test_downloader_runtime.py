@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -650,6 +651,107 @@ class DownloaderRuntimeTests(unittest.TestCase):
             ],
         )
         self.assertEqual(generation_payload["component_downloads"][1]["type"], "VAE")
+
+    def test_civitai_workflow_archive_download_extracts_viewable_workflow(self) -> None:
+        parsed = ParsedDownload(
+            source="civitai",
+            raw_input="https://civitai.red/models/1890385/qwen-image-edit-multi-gen",
+            civitai_model_id="1890385",
+        )
+        version_metadata = {
+            "id": 2553903,
+            "name": "2511 v1",
+            "baseModel": "Qwen",
+            "model": {"id": 1890385, "name": "Qwen Image Edit Multi Gen", "type": "Workflows"},
+            "files": [
+                {
+                    "id": 2442321,
+                    "name": "qwenImageEditMulti_2511V1.zip",
+                    "type": "Archive",
+                    "primary": True,
+                    "sizeKB": 1,
+                    "metadata": {"format": "Other"},
+                    "downloadUrl": "https://civitai.com/api/download/models/2553903",
+                }
+            ],
+        }
+        model_page_metadata = {
+            "id": 1890385,
+            "name": "Qwen Image Edit Multi Gen",
+            "type": "Workflows",
+            "description": "<p>Workflow bundle</p>",
+            "modelVersions": [version_metadata],
+        }
+        images_response = {"items": []}
+        workflow_payload = {
+            "last_node_id": 1,
+            "nodes": [
+                {
+                    "id": 1,
+                    "type": "CheckpointLoaderSimple",
+                    "widgets_values": ["qwen_image_edit.safetensors"],
+                }
+            ],
+            "links": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+            downloaded_urls: list[str] = []
+
+            def fake_stream_download(
+                _job_id: int,
+                _session: object,
+                url: str,
+                target_dir: Path,
+                filename_override: str | None = None,
+                **_kwargs: object,
+            ) -> Path:
+                downloaded_urls.append(url)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                saved = target_dir / (filename_override or "workflow.zip")
+                with zipfile.ZipFile(saved, mode="w") as archive:
+                    archive.writestr("qwenImageEditMulti/workflow.json", json.dumps(workflow_payload))
+                return saved
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "fetch_json", side_effect=[model_page_metadata, images_response]),
+                mock.patch.object(downloader, "fetch_civitai_rendered_model_page_metadata", return_value=None),
+                mock.patch.object(downloader, "attach_civitai_tensor_metadata_summary", return_value=None),
+                mock.patch.object(downloader, "stream_download", side_effect=fake_stream_download),
+            ):
+                downloader.download_civitai(99, parsed)
+
+            target = root / "civitai" / "workflows" / "qwen" / "qwen-image-edit-multi-gen" / "version_2553903"
+            model_payload = json.loads((target / "_civitai_metadata.json").read_text(encoding="utf-8"))
+            workflow_sidecar = json.loads((target / "_workflow_metadata.json").read_text(encoding="utf-8"))
+            extracted_workflow = json.loads((target / "workflow.json").read_text(encoding="utf-8"))
+            target_dir = str(target)
+            zip_exists = (target / "qwenImageEditMulti_2511V1.zip").exists()
+            source_workflow_exists = (target / "source_workflow.json").exists()
+
+        self.assertEqual(downloaded_urls, ["https://civitai.com/api/download/models/2553903"])
+        self.assertTrue(zip_exists)
+        self.assertTrue(source_workflow_exists)
+        self.assertEqual(extracted_workflow["nodes"][0]["type"], "CheckpointLoaderSimple")
+        self.assertEqual(fake_db.job["target_dir"], target_dir)
+        self.assertEqual(fake_db.job["filename"], "qwenImageEditMulti_2511V1.zip")
+        self.assertEqual(fake_db.job["model_category"], "ComfyUI Workflow")
+        self.assertEqual(fake_db.job["model_type"], "Workflows")
+        self.assertEqual(fake_db.job["file_format"], "ZIP")
+        self.assertEqual(model_payload["archive_info"]["model_category"], "ComfyUI Workflow")
+        self.assertEqual(model_payload["archive_info"]["model_type"], "Workflows")
+        self.assertEqual(model_payload["archive_info"]["file_format"], "ZIP")
+        self.assertEqual(model_payload["workflow_extraction"]["status"], "extracted")
+        self.assertEqual(model_payload["workflow_extraction"]["workflow_file"], "workflow.json")
+        self.assertEqual(model_payload["component_downloads"][0]["type"], "Archive")
+        self.assertEqual(workflow_sidecar["kind"], "civitai_workflow_archive")
+        self.assertEqual(workflow_sidecar["source"], "civitai")
+        self.assertEqual(workflow_sidecar["node_count"], 1)
+        self.assertEqual(workflow_sidecar["models"], ["qwen_image_edit.safetensors"])
 
     def test_civitai_model_generation_metadata_failure_does_not_block_model_file(self) -> None:
         parsed = ParsedDownload(

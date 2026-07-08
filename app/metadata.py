@@ -25,6 +25,8 @@ AUDIO_PIPELINES = {"automatic-speech-recognition", "text-to-speech", "audio-clas
 
 QUANT_RE = re.compile(r"\b(?:q[2-8](?:_[a-z0-9]+)*|int[248]|fp(?:8|16|32)|bf16|nf4|gguf)\b", re.IGNORECASE)
 CIVITAI_MODEL_FILE_TYPES = {"model", "negative", "diffusion model", "unet"}
+CIVITAI_PACKAGE_FILE_TYPES = {"archive"}
+CIVITAI_WORKFLOW_TYPES = {"workflow", "workflows", "comfyuiworkflow", "comfyuiworkflows"}
 
 
 def slug(value: str | None, default: str = "unknown") -> str:
@@ -106,10 +108,7 @@ def classify_civitai(
     file_metadata = raw_file_metadata if isinstance(raw_file_metadata, dict) else {}
     parent_type = str(model.get("type") or metadata.get("type") or "")
     selected_file_type = str(primary_file.get("type") or "")
-    if selected_file_type and normalized_text(selected_file_type) != "model":
-        model_type = selected_file_type
-    else:
-        model_type = parent_type or selected_file_type or "Model"
+    model_type = civitai_model_type(parent_type, selected_file_type)
     base_model = str(metadata.get("baseModel") or "unknown")
     raw_images = metadata.get("images")
     images = raw_images if isinstance(raw_images, list) else []
@@ -126,6 +125,10 @@ def classify_civitai(
         "diffusionmodel": "diffusion_models",
         "unet": "diffusion_models",
         "poses": "poses",
+        "workflow": "workflows",
+        "workflows": "workflows",
+        "comfyuiworkflow": "workflows",
+        "comfyuiworkflows": "workflows",
         "upscaler": "upscalers",
         "motionmodule": "motion-modules",
     }.get(model_type.replace(" ", "").lower(), slug(model_type, "models"))
@@ -145,7 +148,7 @@ def classify_civitai(
         "model_category": display_civitai_category(model_type),
         "model_type": model_type,
         "base_model": base_model,
-        "file_format": file_metadata.get("format") or infer_format([str(primary_file.get("name") or "")]),
+        "file_format": civitai_file_format(primary_file, file_metadata),
         "precision": file_metadata.get("fp") or file_metadata.get("size") or infer_precision([str(primary_file.get("name") or "")], metadata),
         "thumbnail_url": thumbnail,
         "route_type": route_type,
@@ -157,6 +160,25 @@ def classify_civitai(
 
 def pick_primary_file(files: list[Any]) -> dict[str, Any]:
     return pick_civitai_file(files)
+
+
+def civitai_model_type(parent_type: str, selected_file_type: str) -> str:
+    selected_normalized = normalized_text(selected_file_type)
+    if not selected_normalized:
+        return parent_type or "Model"
+    if selected_normalized in CIVITAI_MODEL_FILE_TYPES:
+        return parent_type or selected_file_type or "Model"
+    if selected_normalized in CIVITAI_PACKAGE_FILE_TYPES and parent_type:
+        return parent_type
+    return selected_file_type
+
+
+def civitai_file_format(primary_file: dict[str, Any], file_metadata: dict[str, Any]) -> str | None:
+    filename_format = infer_format([str(primary_file.get("name") or "")])
+    metadata_format = file_metadata.get("format")
+    if isinstance(metadata_format, str) and metadata_format.strip().lower() == "other" and filename_format:
+        return filename_format
+    return metadata_format or filename_format
 
 
 def pick_civitai_file(files: list[Any], selector: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -233,6 +255,8 @@ def display_civitai_category(model_type: str) -> str:
         return "LoRA"
     if normalized in {"textualinversion", "embedding"}:
         return "Embedding"
+    if normalized in CIVITAI_WORKFLOW_TYPES:
+        return "ComfyUI Workflow"
     return model_type
 
 
@@ -263,6 +287,8 @@ def infer_format(filenames: list[str]) -> str | None:
             formats.append("ONNX")
         elif lower.endswith(".ckpt"):
             formats.append("Checkpoint")
+        elif lower.endswith(".zip"):
+            formats.append("ZIP")
     return formats[0] if formats else None
 
 

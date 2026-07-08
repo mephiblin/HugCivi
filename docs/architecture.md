@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -181,7 +181,7 @@ Provider keys are intentionally coarse for major services and host-based for gen
 
 Hugging Face snapshot downloads share the same queue controls: `QUEUE_PER_PROVIDER_LIMIT` limits concurrent Hugging Face jobs, and snapshot internal workers stay fixed at 1 so the provider limit does not multiply inside each job. `DOWNLOAD_STALL_TIMEOUT_SECONDS` controls both the HugCivi watchdog and the Hugging Face Hub response wait.
 
-Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
+Civitai model archives are external download jobs. The handler resolves version metadata, merges API/rendered model-page details, records model body/version/file details, fetches tensor summary data when available, saves model-version example images before gallery images, and writes `_civitai_metadata.json` plus optional `_civitai_generation_metadata.json`. When no exact file selector or download URL is supplied, required Civitai component files are downloaded with the primary model file and recorded in `component_downloads`. Civitai `Workflows` model types whose primary file is an `Archive`/`Other` ZIP are classified under `/data/civitai/workflows/...`; the original ZIP is retained, and a verified JSON/PNG workflow entry is copied out as `workflow.json` plus `_workflow_metadata.json` so the workflow viewer can open it when possible. Refresh jobs target the existing folder and keep matching local files while updating sidecars, previews, and card metadata.
 
 Civitai image page archives first use the public image API. If that endpoint returns an empty `items` list for a still-renderable image page, the downloader falls back to the rendered page's `__NEXT_DATA__` and JSON-LD metadata, preserving the original media URL, generation prompt, and model-version resources before writing `_civitai_image_metadata.json` and queueing resource jobs. The primary asset may be an image or a rendered-page video such as `.webm`.
 
@@ -231,7 +231,7 @@ Card thumbnail generation:
 Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
-- the settings `전송 대상` pane starts with category tabs, then shows the selected category's registered targets and registration form; newly saved targets include optional `policy.category` metadata for UI grouping
+- the settings `전송/연결 폴더` pane starts with category tabs, then shows the selected category's registered targets and registration form; newly saved targets include optional `policy.category` metadata for UI grouping
 - ComfyUI settings targets can store optional `policy.comfyui_mappings` from fixed HugCivi `stable-diffusion/<route>` prefixes to target destination subfolders; transfer preflight/jobs apply those mappings only when the request does not already provide a `destination_subpath`
 - for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
 - for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder/mapping hints plus saved mapping destination health without exposing `/data_remote` absolute paths
@@ -281,11 +281,11 @@ Civitai model cards can be restored from `_civitai_metadata.json` even after the
 
 ## Folder Tree Navigation
 
-Folder navigation is intentionally split between a bounded compatibility tree and lazy expansion. `/api/folders` remains the initial sidebar payload and uses `initial_folder_tree()` with `FOLDER_TREE_INITIAL_MAX_DEPTH=1`, so it only preloads direct root children and marks expandable rows with `has_children`/`children_loaded`. `/api/folders/children?path=...&limit=200&cursor=...` loads direct child folder rows for an expanded folder on demand, with `FOLDER_CHILDREN_MAX_LIMIT=500` as the per-request cap.
+Folder navigation is intentionally split between a bounded compatibility tree, lazy expansion, and bounded search. `/api/folders` remains the initial sidebar payload and uses `initial_folder_tree()` with `FOLDER_TREE_INITIAL_MAX_DEPTH=1`, so it only preloads direct root children and marks expandable rows with `has_children`/`children_loaded`. `/api/folders/children?path=...&limit=200&cursor=...` loads direct child folder rows for an expanded folder on demand, with `FOLDER_CHILDREN_MAX_LIMIT=500` as the per-request cap. `/api/folders/search?q=...&scope=...&limit=50` performs a bounded filesystem folder search under `/data` or the selected folder scope, caps results and visited folders, and returns `/data`-relative results.
 
 Hitomi gallery downloads are archive leaves for Tree purposes. Direct children such as `/data/hitomi/<gallery>` and listing archive folders under `/data/hitomi/listings/<listing>` are reported as non-expandable without scanning their page files; a `_hitomi_metadata.json` sidecar also marks custom-target Hitomi archives as leaves.
 
-The sidebar search box and move destination picker operate over the tree the browser has loaded so far: the initial `/api/folders` payload plus any lazy expansions the user opened. This keeps the current UI responsive without promising a full archive search. If real archives need discovery outside the loaded tree, add the server-side folder search and optional folder index described in [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md).
+The sidebar search box uses `/api/folders/search` first, so it can find matching folders that are not yet loaded in the sidebar tree. Selecting a result lazy-loads the required ancestors and sibling pages before scrolling the folder into view. The move destination picker still uses the lazy tree selection flow so destination changes stay explicit. If real archives need faster search than bounded filesystem scanning can provide, the optional folder index described in [Folder Tree Scaling Design 2026-07-06](folder-tree-scaling-design-2026-07-06.md) is the next step.
 
 ## API Groups
 
@@ -296,7 +296,7 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, aggregate `/api/subscriptions/items`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
+| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `GET /api/folders/search`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
 | Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/targets/{target_id}/comfyui/check`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/civitai-resources/preflight`, `/api/transfer/civitai-resources/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |

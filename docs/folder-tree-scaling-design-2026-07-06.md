@@ -1,6 +1,6 @@
 # Folder Tree Scaling Design 2026-07-06
 
-Status: partially implemented. `/api/folders` remains a bounded root-direct compatibility tree, and `/api/folders/children` loads direct child folder rows on demand with `limit`/`cursor` pagination. The current search and move destination UI operate over the loaded tree plus lazy expansions. Server-side folder search and an optional folder index remain follow-up work.
+Status: partially implemented. `/api/folders` remains a bounded root-direct compatibility tree, `/api/folders/children` loads direct child folder rows on demand with `limit`/`cursor` pagination, and `/api/folders/search` now provides bounded server-side filesystem search for folders outside the loaded tree. The move destination UI still uses the lazy tree picker. An optional folder index remains follow-up work.
 
 ## Background
 
@@ -36,7 +36,7 @@ For an archive, the UI must scale by loading, paging, and searching folders on d
 
 - The sidebar tree is a navigation map, not the complete catalog.
 - The library grid is the main catalog view and should remain paged, sortable, and index-backed.
-- Folder search can remain client-side while it is explicitly scoped to the loaded tree plus lazy expansions. It must become server-side when users need to find folders that have not been loaded.
+- Folder search should use bounded server-side search when users need to find folders that have not been loaded, while still avoiding a full-tree DOM render.
 - Folder mutation safety remains unchanged: all paths stay `/data` relative and must pass existing path/symlink checks.
 - API changes should be additive so current `/api/folders` consumers keep working.
 - Large folder operations should show loading state and never block the page while a whole tree is scanned.
@@ -68,9 +68,7 @@ stable-diffusion
 
 ### Folder Search
 
-Current folder search filters the loaded tree: the initial `/api/folders` nodes plus any child rows fetched through lazy expansion. Results select and expand paths that are already loaded.
-
-Future server-side search should find folders outside the loaded tree. Results should jump the user to the matching folder and expand only the relevant ancestors.
+Current folder search calls bounded server-side search through `/api/folders/search`, scoped to the selected folder when one is active. Results can include folders that were not loaded in the sidebar tree. Choosing a result jumps the user to the matching folder and lazy-loads only the relevant ancestors and sibling pages.
 
 Example:
 
@@ -83,7 +81,7 @@ stable-diffusion/loras/illustrious-character
 
 ### Move Destination Picker
 
-The move picker should reuse the loaded lazy tree, but keep destination selection state separate from the main sidebar's active download target. Current destination search/selection is limited to loaded tree nodes plus lazy expansions; a later server-side search can extend it without changing the move safety checks.
+The move picker reuses the loaded lazy tree, but keeps destination selection state separate from the main sidebar's active download target. Move destination selection remains limited to loaded tree nodes plus lazy expansions; a later server-side picker search can extend it without changing the move safety checks.
 
 ## Implemented API Baseline
 
@@ -130,9 +128,9 @@ Response rules:
 - `cursor` is the last child folder name from the previous page. Invalid cursors return a bounded 400 error.
 - `has_more` and `next_cursor` drive "load more" behavior.
 
-## Remaining Proposed APIs
+## Implemented Search API
 
-Add server-side search when users need to find folders outside the loaded tree:
+Server-side search finds folders outside the loaded tree:
 
 ```text
 GET /api/folders/search?q=<query>&scope=<relative-path>&limit=50
@@ -203,20 +201,20 @@ Implemented baseline:
 1. Keep current `/api/folders` as the bounded compatibility root tree.
 2. Add `GET /api/folders/children` with path safety, direct-child rows, `limit`, `cursor`, `has_more`, and `next_cursor`.
 3. Update sidebar expansion to request children for expanded folders.
-4. Keep folder search and move destination picking scoped to the loaded tree plus lazy expansions.
+4. Add `GET /api/folders/search` as bounded filesystem search when loaded-tree search is not enough.
+5. Wire sidebar search to server search and reveal selected results through lazy ancestor/page loading.
 
 Remaining scale work:
 
-1. Add `GET /api/folders/search` as bounded filesystem search when loaded-tree search is not enough.
-2. Wire sidebar search and move destination picker to server search.
-3. Add optional SQLite folder index if real archives make filesystem search too slow.
-4. Revisit `FOLDER_TREE_MAX_ENTRIES` and `FOLDER_TREE_MAX_CHILDREN_PER_FOLDER`; keep them as compatibility guardrails, not scale targets.
+1. Add optional SQLite folder index if real archives make filesystem search too slow.
+2. Consider server-side search for the move destination picker if needed.
+3. Revisit `FOLDER_TREE_MAX_ENTRIES` and `FOLDER_TREE_MAX_CHILDREN_PER_FOLDER`; keep them as compatibility guardrails, not scale targets.
 
 ## Non-Goals
 
 - Do not make `/api/folders` return the full archive tree.
 - Do not rely on larger `max_children_per_folder` values as the primary scaling strategy.
-- Do not expose absolute filesystem paths in lazy child responses or future folder search.
+- Do not expose absolute filesystem paths in lazy child responses or folder search.
 - Do not merge move destination selection with the active download target state.
 
 ## Verification Plan
@@ -233,11 +231,10 @@ Frontend tests:
 
 - expanding a folder fetches its children without reloading the whole page.
 - "load more" appends children without losing expanded state.
-- folder search includes lazy-expanded folders and stays scoped to loaded nodes.
+- folder search calls server search, stays scoped to the selected folder, and reveals selected results.
 - move destination picker can lazy-expand and select a folder without changing the main active folder until confirmed.
-- future server search result selection expands ancestors and opens the library path.
 
-Future server-search tests:
+Server-search tests:
 
 - `/api/folders/search` finds folders outside the eager tree budget.
 - search respects limit and truncated state.
@@ -250,4 +247,4 @@ Manual checks:
 
 ## Current Decision
 
-The current implemented direction is to keep `/api/folders` bounded and use lazy folder loading for expansion. That is the right first archive-scale step because it avoids turning the full folder hierarchy into one DOM tree. The next scale step is server-side folder search, and the stronger long-term option is a folder index.
+The current implemented direction is to keep `/api/folders` bounded, use lazy folder loading for expansion, and use bounded server-side folder search for discovery outside the loaded tree. That avoids turning the full folder hierarchy into one DOM tree while still making ordinary explorer-style search useful. The stronger long-term option is a folder index if filesystem scans become too slow on real archives.

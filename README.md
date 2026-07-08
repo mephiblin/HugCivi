@@ -45,6 +45,7 @@ HugCivi는 단일 FastAPI 컨테이너로 동작합니다.
 
 - Hugging Face 모델, 데이터셋, 스페이스 다운로드
 - Civitai 모델 페이지 URL, modelVersionId, API 다운로드 URL 다운로드와 대표 예시 이미지/generation metadata 보존
+- Civitai `Workflows` 타입 ZIP/Archive 다운로드와 뷰어용 워크플로우 JSON 보조 추출
 - Hitomi 갤러리 URL 또는 gallery ID 다운로드
 - Hitomi artist, language, search, index listing URL discovery와 선택 queue confirm UI
 - ASMR.one work URL 파일 다운로드
@@ -304,12 +305,13 @@ hf download hf://datasets/bigcode/the-stack@v1.1
 
 ```text
 https://civitai.com/models/123456/model-name?modelVersionId=456789
+https://civitai.red/models/1890385/qwen-image-edit-multi-gen
 https://civitai.com/api/download/models/456789
 https://civitai.com/images/135240496
 456789
 ```
 
-숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai 모델 다운로드는 모델 폴더에 대표 예시 이미지 1장과 prompt, negative prompt, seed, steps 같은 generation metadata sidecar를 저장합니다. 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보도 함께 보존합니다. 대표 예시 이미지는 라이브러리 카드 썸네일로 쓰이며, 카드의 미디어 뷰어에서 모델 본문과 generation metadata를 확인할 수 있습니다. 기존 Civitai 모델 카드는 우클릭 메뉴의 `갱신`으로 모델 파일은 유지하면서 누락된 sidecar, 대표 예시 이미지, 변경된 모델 페이지 metadata를 다시 받아올 수 있습니다. Civitai image URL은 이미지 또는 렌더링 페이지 webm 영상을 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
+숫자만 입력하면 Civitai model version ID로 처리합니다. Civitai 모델 다운로드는 모델 폴더에 대표 예시 이미지 1장과 prompt, negative prompt, seed, steps 같은 generation metadata sidecar를 저장합니다. 모델 페이지 본문, 버전 노트, 트리거 단어, 태그, 파일 정보도 함께 보존합니다. 대표 예시 이미지는 라이브러리 카드 썸네일로 쓰이며, 카드의 미디어 뷰어에서 모델 본문과 generation metadata를 확인할 수 있습니다. Civitai `Workflows` 타입은 ZIP/Archive 원본을 `/data/civitai/workflows/...`에 보존하고, ZIP 안의 검증 가능한 ComfyUI JSON/PNG가 있으면 같은 폴더에 `workflow.json`과 `_workflow_metadata.json`을 만들어 워크플로우 뷰어에서도 열 수 있게 합니다. 기존 Civitai 모델 카드는 우클릭 메뉴의 `갱신`으로 모델 파일은 유지하면서 누락된 sidecar, 대표 예시 이미지, 변경된 모델 페이지 metadata를 다시 받아올 수 있습니다. Civitai image URL은 이미지 또는 렌더링 페이지 webm 영상을 저장하고, 가능한 경우 연결된 model resource를 child job으로 대기열에 추가합니다.
 
 ### Hitomi
 
@@ -404,7 +406,7 @@ Docker/Portainer 배포에서는 Browser Cookies보다 Cookies File 방식이 �
 
 ### ComfyUI 워크플로우
 
-ComfyUI 워크플로우 JSON 또는 워크플로우가 내장된 PNG를 저장할 수 있습니다.
+ComfyUI 워크플로우 JSON 또는 워크플로우가 내장된 PNG를 저장할 수 있습니다. Civitai `Type: Workflows` 모델 페이지는 Civitai 다운로드로 처리하며, ZIP 원본과 뷰어용 `workflow.json`은 `/data/civitai/workflows/...`에 저장됩니다.
 
 ```text
 workflow https://example.com/workflow.json
@@ -476,7 +478,7 @@ Upscaler: stable-diffusion/upscalers
 - 이동
 - 삭제
 
-왼쪽 폴더 트리 아래 검색창으로 현재 표시된 폴더를 빠르게 찾을 수 있습니다. 선택된 폴더가 있으면 그 폴더와 하위 폴더 안에서만 검색하고, `/data` 루트를 선택했거나 선택 폴더가 없으면 전체 트리에서 검색합니다. 폴더 트리에서 `새 폴더`를 누르면 부모 위치를 확인한 뒤 폴더 이름만 입력합니다. `이동`은 경로를 직접 입력하지 않고 폴더 트리 팝업에서 대상 폴더를 고른 뒤 확인합니다.
+왼쪽 폴더 트리 아래 검색창으로 `/data` 안의 폴더를 검색할 수 있습니다. 선택된 폴더가 있으면 그 폴더와 하위 폴더 안에서만 검색하고, `/data` 루트를 선택했거나 선택 폴더가 없으면 전체 `/data`에서 검색합니다. 검색 결과를 누르면 필요한 상위 폴더만 펼쳐 해당 폴더로 이동합니다. 폴더 트리에서 `새 폴더`를 누르면 부모 위치를 확인한 뒤 폴더 이름만 입력합니다. `이동`은 경로를 직접 입력하지 않고 폴더 트리 팝업에서 대상 폴더를 고른 뒤 확인합니다.
 
 폴더 다운로드는 ZIP 파일로 준비됩니다. 모델 카드가 가리키는 저장 폴더에 파일이 여러 개 있으면 하나의 ZIP으로 내려받습니다.
 
@@ -497,6 +499,8 @@ HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상�
 
 권장 내부망 구성은 `연결 폴더 (/data_remote)` 대상입니다. 운영자가 PC SMB share, 다른 Synology remote folder, 외장/공유 폴더를 host에 마운트하고 Docker에 `/data_remote`로 연결하면, HugCivi 우클릭 `전송` 모달에서 해당 target 아래 폴더 tree를 탐색해 저장 위치를 고를 수 있습니다. Receiver 대상은 PC 쪽 수신 상태 UI와 token 보호가 필요할 때 쓰고, rclone 대상은 외부망이나 범용 원격지 전송을 위해 `/config/rclone/rclone.conf`의 remote 이름을 등록하는 방식으로 사용합니다.
 
+설정의 `전송/연결 폴더` 탭에서 경로 입력칸을 클릭하면 Portainer bind target과 HugCivi 입력값의 대응 예시가 표시됩니다. 예를 들어 Portainer에서 어떤 host 폴더를 `/data_remote/comfyui-models`에 바인딩했다면 HugCivi에는 `comfyui-models`를 입력합니다.
+
 사용 흐름:
 
 1. 라이브러리 카드나 폴더를 우클릭합니다.
@@ -505,7 +509,7 @@ HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상�
 4. 연결 폴더 또는 Receiver 대상이면 마운트된 폴더 tree에서 목적지 폴더를 선택합니다.
 5. 사전 확인 결과를 보고 `전송 큐에 추가`를 누릅니다.
 
-설정의 `전송 대상` 탭에는 `/data 전체 복제` 작업도 있습니다. 등록된 `연결 폴더 (/data_remote)` 대상과 선택 하위 폴더를 고르면 `/data` 루트의 내용물을 대상 아래로 복사하는 전용 `transfer_copy` 작업을 만듭니다. 이 경로는 `/data` 전체 다운로드나 파일관리 루트 조작을 열지 않으며, 기존 대상 파일은 기본적으로 건너뜁니다.
+설정의 `전송/연결 폴더` 탭에는 `/data 전체 복제` 작업도 있습니다. 등록된 `연결 폴더 (/data_remote)` 대상과 선택 하위 폴더를 고르면 `/data` 루트의 내용물을 대상 아래로 복사하는 전용 `transfer_copy` 작업을 만듭니다. 이 경로는 `/data` 전체 다운로드나 파일관리 루트 조작을 열지 않으며, 기존 대상 파일은 기본적으로 건너뜁니다.
 
 전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. 연결 폴더, Receiver, rclone 운영값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
 
@@ -737,7 +741,7 @@ python -m pytest -q -p no:cacheprovider
 - 선택 폴더 live pagination의 카드 반복과 페이지/정렬 전환 중 이전 카드 잔상을 줄이고, 긴 일본어/한자 카드 제목을 overlay 안에서 2줄로 제한했습니다.
 - 선택 폴더 live scan의 기본 안정 window를 작은 폴더 기준 3페이지분으로 낮춰, 100개 안팎 카드 폴더가 1000개 후보를 스캔하며 느려지는 문제를 완화했습니다.
 - 저장 폴더 tree는 root direct child만 담는 `/api/folders` 초기 tree와 `/api/folders/children`의 펼친 폴더 direct child lazy loading으로 나누어 초기 로드 비용을 줄였습니다.
-- 폴더 검색과 이동 대상 선택은 현재 로드된 tree와 lazy 확장분을 대상으로 동작하며, archive-scale 전체 검색은 server-side folder search와 optional folder index로 확장하는 방향을 남겼습니다.
+- 폴더 검색은 `/api/folders/search`의 bounded server-side search로 현재 열지 않은 하위 폴더도 찾고, 결과 선택 시 필요한 상위 폴더만 lazy loading으로 펼칩니다. 이동 대상 선택은 lazy tree picker를 유지합니다.
 - 배포 이미지는 로컬 빌드/푸시 흐름에서 `ghcr.io/mephiblin/hugcivi:sha-<commit>`와 `ghcr.io/mephiblin/hugcivi:latest` 태그로 갱신합니다.
 
 ### 2026-07-05

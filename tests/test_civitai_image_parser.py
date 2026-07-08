@@ -42,6 +42,19 @@ def test_civitai_model_url_regression() -> None:
     assert parsed.civitai_image_url is None
 
 
+def test_civitai_red_workflow_model_url_parses_as_civitai_model_job() -> None:
+    url = "https://civitai.red/models/1890385/qwen-image-edit-multi-gen"
+
+    parsed = parse_input(url)
+
+    assert parsed.source == "civitai"
+    assert parsed.raw_input == url
+    assert parsed.civitai_model_id == "1890385"
+    assert parsed.civitai_version_id is None
+    assert parsed.civitai_image_id is None
+    assert parsed.civitai_image_url is None
+
+
 def test_civitai_model_version_api_url_regression() -> None:
     url = "https://civitai.com/api/v1/model-versions/67890?fileId=abc"
 
