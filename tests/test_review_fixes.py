@@ -1075,6 +1075,11 @@ def test_library_index_schema_stores_source_group_fields(app_modules: tuple) -> 
         "idx_library_items_source_path_sort",
         "idx_library_items_category_sort",
         "idx_library_items_category_path_sort",
+        "idx_library_items_mtime_desc",
+        "idx_library_items_source_mtime_desc",
+        "idx_library_items_category_mtime_desc",
+        "idx_library_items_source_category_sort",
+        "idx_library_items_source_category_mtime_desc",
     }.issubset(indexes)
     assert row is not None
     assert row["source"] == "civitai"
@@ -1082,6 +1087,34 @@ def test_library_index_schema_stores_source_group_fields(app_modules: tuple) -> 
     assert row["model_category"] == "LoRA"
     assert row["parent_path"] == "stable-diffusion/loras"
     assert row["sort_title"] == "schema card"
+
+
+def test_library_index_global_sort_uses_stored_order_columns(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "sort-plan"
+    for name in ("bravo", "alpha"):
+        target = root / name
+        target.mkdir(parents=True)
+        (target / "model.safetensors").write_text("model", encoding="utf-8")
+        (target / "_civitai_metadata.json").write_text(
+            json.dumps({"source": "civitai", "archive_info": {"model_title": name.title(), "model_category": "LoRA"}}),
+            encoding="utf-8",
+        )
+
+    main.scan_library_index_batch(max_paths=100, reset=True)
+
+    order_sql = db.library_index_order("az")
+    assert "lower(" not in order_sql.lower()
+    assert "case when sort_title" not in order_sql.lower()
+    with db.connect() as conn:
+        plan = [
+            str(row["detail"])
+            for row in conn.execute(
+                f"EXPLAIN QUERY PLAN SELECT payload_json FROM library_items WHERE stale = 0 {order_sql} LIMIT 10"
+            ).fetchall()
+        ]
+
+    assert not any("USE TEMP B-TREE" in detail.upper() for detail in plan)
 
 
 @pytest.mark.parametrize(
@@ -1287,6 +1320,42 @@ def test_library_reindex_scope_filters_source_without_clearing_unrelated_rows(ap
     assert "mixed/gallery-card" in titles
 
 
+def test_library_reindex_dedupes_active_scope(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "dedupe"
+    card = root / "card"
+    card.mkdir(parents=True)
+    (card / "model.safetensors").write_text("model", encoding="utf-8")
+    (card / "_civitai_metadata.json").write_text(
+        json.dumps({"source": "civitai", "archive_info": {"model_title": "Dedupe", "model_category": "LoRA"}}),
+        encoding="utf-8",
+    )
+
+    first = json.loads(main.api_library_reindex(path="dedupe", source_group="civitai", _="_").body.decode("utf-8"))
+    second = json.loads(main.api_library_reindex(path="dedupe", source_group="civitai", _="_").body.decode("utf-8"))
+
+    jobs = [
+        job
+        for job in db.list_internal_jobs_to_resume()
+        if job["job_kind"] == main.INTERNAL_JOB_LIBRARY_REINDEX
+    ]
+    assert first["job_id"] == second["job_id"]
+    assert first["deduped"] is False
+    assert second["deduped"] is True
+    assert len(jobs) == 1
+
+    other_scope = json.loads(
+        main.api_library_reindex(path="dedupe", source_group="gallerydl", _="_").body.decode("utf-8")
+    )
+    assert other_scope["job_id"] != first["job_id"]
+    assert other_scope["deduped"] is False
+
+    db.update_job(int(first["job_id"]), status="done")
+    after_done = json.loads(main.api_library_reindex(path="dedupe", source_group="civitai", _="_").body.decode("utf-8"))
+    assert after_done["job_id"] != first["job_id"]
+    assert after_done["deduped"] is False
+
+
 def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _utils, db, _downloader, main, data_root, _config_root = app_modules
     root = data_root / "batched"
@@ -1316,6 +1385,39 @@ def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypa
     scope_key = main.library_index_scope_key(path_prefix="batched", source_group="civitai")
     assert db.get_library_scan_state(f"{scope_key}.complete", "0") == "1"
     assert db.get_library_scan_state(f"{scope_key}.cursor", "not-empty") == ""
+
+
+def test_library_scan_batch_uses_bulk_upsert(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "bulk"
+    for index in range(3):
+        card = root / f"card-{index}"
+        card.mkdir(parents=True)
+        (card / "model.safetensors").write_text("model", encoding="utf-8")
+        (card / "_civitai_metadata.json").write_text(
+            json.dumps(
+                {
+                    "source": "civitai",
+                    "archive_info": {"model_title": f"Bulk {index}", "model_category": "LoRA"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    calls: list[int] = []
+    original = db.upsert_library_items
+
+    def counting_upsert(items: list[dict]) -> int:
+        calls.append(len(items))
+        return original(items)
+
+    monkeypatch.setattr(db, "upsert_library_items", counting_upsert)
+
+    result = main.scan_library_index_batch(max_paths=100, reset=True)
+
+    assert result["indexed"] == 3
+    assert calls == [3]
+    assert db.count_library_index_items(path_prefix="bulk", source_group="civitai") == 3
 
 
 def test_library_api_keeps_legacy_array_and_returns_paged_wrapper(app_modules: tuple) -> None:
@@ -1799,6 +1901,12 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "params.set('source_group', requestedSourceGroup);" in template
     assert "let libraryRequestController" in template
     assert "new AbortController()" in template
+    assert "const LIBRARY_REINDEX_POLL_INTERVAL_MS" in template
+    assert "const trackedLibraryReindexJobs = new Map();" in template
+    assert "function trackLibraryReindexJob(jobId, scope)" in template
+    assert "async function pollTrackedLibraryReindexJobs()" in template
+    assert "fetch(`/api/jobs/${encodeURIComponent(jobId)}`)" in template
+    assert "trackLibraryReindexJob(data.job_id || data.job?.id, reindexScope);" in template
     assert "async function refreshLibraryIndexScope(event)" in template
     assert "fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex'" in template
     assert "function libraryReindexCompletedForActiveScope(previousJobs, nextJobs)" in template

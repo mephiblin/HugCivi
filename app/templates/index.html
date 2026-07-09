@@ -1109,6 +1109,7 @@
     const THUMBNAIL_COLD_REQUEST_MAX_ACTIVE = 3;
     const THUMBNAIL_OBSERVER_MARGIN = '640px 0px';
     const THUMBNAIL_REQUEST_TIMEOUT_MS = 60000;
+    const LIBRARY_REINDEX_POLL_INTERVAL_MS = 2500;
     const targetInput = document.getElementById('target_subdir');
     const selectedFolder = document.getElementById('selected-folder');
     const homeView = document.getElementById('home-view');
@@ -1437,6 +1438,9 @@
     let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
     let libraryRequestId = 0;
     let libraryRequestController = null;
+    let libraryReindexPollTimer = null;
+    let libraryReindexPollActive = false;
+    const trackedLibraryReindexJobs = new Map();
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let storageUsagePollTimer = null;
     let activeLibraryPath = null;
@@ -5844,6 +5848,105 @@
       });
     }
 
+    function normalizeLibraryReindexScope(scope) {
+      const value = scope && typeof scope === 'object' ? scope : {};
+      return {
+        path: normalizePath(value.path || ''),
+        source_group: normalizeLibrarySourceGroup(value.source_group || ''),
+        category: String(value.category || '').trim(),
+      };
+    }
+
+    function libraryReindexScopeMatchesActive(scope) {
+      const normalized = normalizeLibraryReindexScope(scope);
+      const activePath = normalizePath(activeLibraryPath || '');
+      const activeSource = normalizeLibrarySourceGroup(activeLibrarySourceGroup || '');
+      const activeCategory = String(currentLibraryPage?.category || '').trim();
+      if (
+        normalized.path
+        && activePath
+        && !pathMatchesFolder(activePath, normalized.path)
+        && !pathMatchesFolder(normalized.path, activePath)
+      ) {
+        return false;
+      }
+      if (normalized.source_group && activeSource && normalized.source_group !== activeSource) return false;
+      if (normalized.category && activeCategory && normalized.category !== activeCategory) return false;
+      return true;
+    }
+
+    function isTerminalLibraryReindexStatus(status) {
+      return ['done', 'failed', 'canceled'].includes(String(status || '').toLowerCase());
+    }
+
+    function trackLibraryReindexJob(jobId, scope) {
+      const id = String(jobId || '').trim();
+      if (!id) return false;
+      trackedLibraryReindexJobs.set(id, {
+        scope: normalizeLibraryReindexScope(scope),
+      });
+      startLibraryReindexPolling();
+      return true;
+    }
+
+    function startLibraryReindexPolling() {
+      if (libraryReindexPollTimer === null) {
+        libraryReindexPollTimer = window.setInterval(
+          pollTrackedLibraryReindexJobs,
+          LIBRARY_REINDEX_POLL_INTERVAL_MS
+        );
+      }
+      pollTrackedLibraryReindexJobs();
+    }
+
+    function stopLibraryReindexPolling() {
+      if (libraryReindexPollTimer === null) return;
+      window.clearInterval(libraryReindexPollTimer);
+      libraryReindexPollTimer = null;
+    }
+
+    async function pollTrackedLibraryReindexJobs() {
+      if (libraryReindexPollActive) return;
+      if (!trackedLibraryReindexJobs.size) {
+        stopLibraryReindexPolling();
+        return;
+      }
+      libraryReindexPollActive = true;
+      let refreshActiveLibrary = false;
+      let libraryPageAfterRefresh = currentLibraryPage.page || 1;
+      try {
+        for (const [jobId, tracked] of Array.from(trackedLibraryReindexJobs.entries())) {
+          const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+          if (response.status === 404) {
+            trackedLibraryReindexJobs.delete(jobId);
+            continue;
+          }
+          if (!response.ok) continue;
+          const job = await readJsonResponse(response);
+          const jobScope = job?.library_reindex_scope && typeof job.library_reindex_scope === 'object'
+            ? job.library_reindex_scope
+            : tracked.scope;
+          tracked.scope = normalizeLibraryReindexScope(jobScope);
+          if (!isTerminalLibraryReindexStatus(job?.status)) continue;
+          trackedLibraryReindexJobs.delete(jobId);
+          if (libraryReindexScopeMatchesActive(tracked.scope)) {
+            refreshActiveLibrary = true;
+            libraryPageAfterRefresh = currentLibraryPage.page || 1;
+          }
+        }
+        if (refreshActiveLibrary) {
+          await refreshLibraryForActivePath({page: libraryPageAfterRefresh});
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        libraryReindexPollActive = false;
+        if (!trackedLibraryReindexJobs.size) {
+          stopLibraryReindexPolling();
+        }
+      }
+    }
+
     async function refreshLibraryItems(options = {}) {
       let controller = null;
       try {
@@ -5984,8 +6087,13 @@
           window.alert(data.detail || '라이브러리 갱신을 완료하지 못했습니다.');
           return;
         }
+        const reindexScope = data.scope || data.job?.library_reindex_scope || {
+          path,
+          source_group: sourceGroup,
+        };
         await refreshJobs({page: 1});
         await refreshLibraryForActivePath({page: 1, loading: true});
+        trackLibraryReindexJob(data.job_id || data.job?.id, reindexScope);
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       } finally {

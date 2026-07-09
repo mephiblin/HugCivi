@@ -2224,7 +2224,7 @@ def api_library_reindex(
         "category": category.strip(),
     }
     input_text = "library-reindex:" + json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    job_id = db.create_internal_job(
+    job_id, created = db.create_or_reuse_active_internal_job(
         INTERNAL_JOB_LIBRARY_REINDEX,
         input_text=input_text,
         payload=scope,
@@ -2237,15 +2237,20 @@ def api_library_reindex(
         source_group=scope["source_group"],
         category=scope["category"],
     )
-    db.set_library_scan_state(f"{scope_key}.queued", "1")
-    internal_jobs.enqueue_job(job_id)
+    job = db.get_job(job_id) or {}
+    if created or str(job.get("status") or "") == "queued":
+        db.set_library_scan_state(f"{scope_key}.queued", "1")
+        internal_jobs.enqueue_job(job_id)
+    elif str(job.get("status") or "") == "running":
+        db.set_library_scan_state(f"{scope_key}.running", "1")
     return JSONResponse(
         {
             "ok": True,
             "queued": True,
             "job_id": job_id,
+            "deduped": not created,
             "scope": scope,
-            "job": decorate_job(db.get_job(job_id) or {}),
+            "job": decorate_job(job),
         }
     )
 
@@ -3711,6 +3716,7 @@ def scan_library_index_batch(
     last_path = cursor
     reached_end = True
     favorites = db.favorite_paths()
+    index_records: list[dict[str, Any]] = []
 
     for path in iter_library_scan_paths(cursor=cursor, root_path=root_path):
         if LIBRARY_INDEXER_STOP.is_set():
@@ -3719,16 +3725,21 @@ def scan_library_index_batch(
         relative = relative_data_path(path)
         processed += 1
         last_path = relative
-        if index_library_path(
+        record = library_index_record_for_path(
             path,
             favorites,
             source_group=normalized_source_group,
             category=normalized_category,
-        ):
+        )
+        if record is not None:
             indexed += 1
+            index_records.append(record)
         if processed >= max_paths:
             reached_end = False
             break
+
+    if index_records:
+        db.upsert_library_items(index_records)
 
     if not scoped:
         db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
@@ -3788,15 +3799,29 @@ def index_library_path(
     source_group: str = "",
     category: str = "",
 ) -> bool:
+    record = library_index_record_for_path(path, favorites, source_group=source_group, category=category)
+    if record is None:
+        return False
+    db.upsert_library_items([record])
+    return True
+
+
+def library_index_record_for_path(
+    path: Path,
+    favorites: set[str],
+    *,
+    source_group: str = "",
+    category: str = "",
+) -> dict[str, Any] | None:
     try:
         if path.is_dir():
             if not should_index_directory(path):
-                return False
+                return None
         elif path.is_file():
             if not is_library_file(path) or has_indexed_library_ancestor(path):
-                return False
+                return None
         else:
-            return False
+            return None
         item = library_item_for_path(path, favorites)
         stat = path.stat()
     except (OSError, ValueError):
@@ -3804,26 +3829,25 @@ def index_library_path(
             db.mark_library_item_stale(relative_data_path(path))
         except Exception:
             pass
-        return False
+        return None
     if not library_item_matches_filters(item, source_group=source_group, category=category):
-        return False
+        return None
     fields = library_index_fields_for_item(item, path)
-    db.upsert_library_item(
-        str(item.get("target_path") or relative_data_path(path)),
-        kind=str(item.get("kind") or ("folder" if path.is_dir() else "file")),
-        name=str(item.get("filename") or path.name),
-        target_dir=str(path),
-        source=fields["source"],
-        source_group=fields["source_group"],
-        model_category=fields["model_category"],
-        parent_path=fields["parent_path"],
-        sort_title=fields["sort_title"],
-        payload=item,
-        size_bytes=int(item.get("progress_bytes") or 0),
-        mtime_ns=stat.st_mtime_ns,
-        ctime_ns=stat.st_ctime_ns,
-    )
-    return True
+    return {
+        "path": str(item.get("target_path") or relative_data_path(path)),
+        "kind": str(item.get("kind") or ("folder" if path.is_dir() else "file")),
+        "name": str(item.get("filename") or path.name),
+        "target_dir": str(path),
+        "source": fields["source"],
+        "source_group": fields["source_group"],
+        "model_category": fields["model_category"],
+        "parent_path": fields["parent_path"],
+        "sort_title": fields["sort_title"],
+        "payload": item,
+        "size_bytes": int(item.get("progress_bytes") or 0),
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+    }
 
 
 def has_indexed_library_ancestor(path: Path) -> bool:

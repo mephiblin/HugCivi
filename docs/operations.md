@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -334,7 +334,7 @@ Operational notes:
 - Normal selected-folder library pages query the SQLite index only and return quickly with `needs_refresh`/`refreshing` status when indexed rows are missing. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
 - `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
-- `/api/library/reindex` queues a `library_reindex` internal job. Optional `path`, `source_group`, and `category` query parameters refresh only that selected folder/provider/category scope; watch the job list for completion.
+- `/api/library/reindex` queues a `library_reindex` internal job or reuses an already queued/running job for the same selected folder/provider/category scope. Optional `path`, `source_group`, and `category` query parameters refresh only that scope; the browser tracks the returned `job_id` directly and refreshes the DB page after completion.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next normal library load stays DB-only; use explicit live mode, wait for background indexing, or trigger `/api/library/reindex` so sidecar-backed Civitai and media cards reappear from `/data` without job rows.
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.

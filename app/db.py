@@ -314,6 +314,36 @@ def ensure_library_item_indexes(conn: sqlite3.Connection) -> None:
         ON library_items(stale, mtime_ns, path)
         """
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_mtime_desc
+        ON library_items(stale, mtime_ns DESC, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_mtime_desc
+        ON library_items(stale, source_group, mtime_ns DESC, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_category_mtime_desc
+        ON library_items(stale, model_category, mtime_ns DESC, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_category_sort
+        ON library_items(stale, source_group, model_category, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_category_mtime_desc
+        ON library_items(stale, source_group, model_category, mtime_ns DESC, path)
+        """
+    )
 
 
 def backfill_library_item_search_columns(conn: sqlite3.Connection) -> None:
@@ -572,17 +602,60 @@ def create_internal_job(
     artifact_url: str | None = None,
     artifact_expires_at: str | None = None,
 ) -> int:
+    job_id, _created = create_or_reuse_active_internal_job(
+        job_kind,
+        input_text=input_text,
+        payload=payload,
+        source=source,
+        target_dir=target_dir,
+        filename=filename,
+        total_bytes=total_bytes,
+        metadata=metadata,
+        artifact_path=artifact_path,
+        artifact_url=artifact_url,
+        artifact_expires_at=artifact_expires_at,
+        reuse_active=False,
+    )
+    return job_id
+
+
+def create_or_reuse_active_internal_job(
+    job_kind: str,
+    *,
+    input_text: str,
+    payload: dict[str, Any] | None = None,
+    source: str = "internal",
+    target_dir: str | Path | None = None,
+    filename: str | None = None,
+    total_bytes: int | None = None,
+    metadata: dict[str, Any] | None = None,
+    artifact_path: str | Path | None = None,
+    artifact_url: str | None = None,
+    artifact_expires_at: str | None = None,
+    reuse_active: bool = True,
+    active_statuses: tuple[str, ...] = ("queued", "running"),
+) -> tuple[int, bool]:
     kind = normalized_job_kind(job_kind)
     if kind == JOB_KIND_DOWNLOAD:
         raise ValueError("create_internal_job cannot create download jobs")
     job_source = normalized_job_source(source)
     now = utc_now()
+    clean_payload = payload or {}
     parsed_payload = {
         "job_kind": kind,
         "raw_input": redact_sensitive_text(input_text),
-        "payload": payload or {},
+        "payload": clean_payload,
     }
     with _DB_LOCK, connect() as conn:
+        if reuse_active:
+            existing = find_internal_job_by_payload_in_conn(
+                conn,
+                job_kind=kind,
+                payload=clean_payload,
+                statuses=active_statuses,
+            )
+            if existing is not None:
+                return int(existing["id"]), False
         cur = conn.execute(
             """
             INSERT INTO jobs
@@ -613,7 +686,34 @@ def create_internal_job(
         conn.commit()
         if cur.lastrowid is None:
             raise RuntimeError("Failed to create internal job")
-        return int(cur.lastrowid)
+        return int(cur.lastrowid), True
+
+
+def find_internal_job_by_payload_in_conn(
+    conn: sqlite3.Connection,
+    *,
+    job_kind: str,
+    payload: dict[str, Any],
+    statuses: tuple[str, ...] = ("queued", "running"),
+) -> dict[str, Any] | None:
+    status_values = tuple(str(status) for status in statuses if str(status).strip())
+    if not status_values:
+        return None
+    placeholders = ", ".join("?" for _ in status_values)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM jobs
+        WHERE COALESCE(job_kind, ?) = ?
+          AND status IN ({placeholders})
+        ORDER BY id ASC
+        """,
+        (JOB_KIND_DOWNLOAD, normalized_job_kind(job_kind), *status_values),
+    ).fetchall()
+    for row in rows:
+        job = dict(row)
+        if parse_internal_job_payload(job) == payload:
+            return redact_job_row(job)
+    return None
 
 
 def create_transfer_target(
@@ -1703,6 +1803,79 @@ def clear_note_path_prefix(target_path: str) -> None:
         conn.commit()
 
 
+LIBRARY_ITEM_UPSERT_SQL = """
+    INSERT INTO library_items (
+        path, kind, name, target_dir, source, source_group,
+        model_category, parent_path, sort_title, payload_json, size_bytes,
+        mtime_ns, ctime_ns, stale, updated_at, scanned_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    ON CONFLICT(path) DO UPDATE SET
+        kind = excluded.kind,
+        name = excluded.name,
+        target_dir = excluded.target_dir,
+        source = excluded.source,
+        source_group = excluded.source_group,
+        model_category = excluded.model_category,
+        parent_path = excluded.parent_path,
+        sort_title = excluded.sort_title,
+        payload_json = excluded.payload_json,
+        size_bytes = excluded.size_bytes,
+        mtime_ns = excluded.mtime_ns,
+        ctime_ns = excluded.ctime_ns,
+        stale = 0,
+        updated_at = excluded.updated_at,
+        scanned_at = excluded.scanned_at
+"""
+
+
+def library_item_upsert_values(
+    path: str,
+    *,
+    kind: str,
+    name: str,
+    target_dir: str,
+    source: str = "",
+    source_group: str = "",
+    model_category: str = "",
+    parent_path: str = "",
+    sort_title: str = "",
+    payload: dict[str, Any],
+    size_bytes: int,
+    mtime_ns: int,
+    ctime_ns: int,
+    now: str,
+) -> tuple[Any, ...]:
+    normalized = str(path or "").strip("/")
+    if not normalized:
+        raise ValueError("library item path is required")
+    payload_dict = payload if isinstance(payload, dict) else {}
+    item_name = str(name or "")
+    fields = library_index_fields_from_payload(normalized, name=item_name, payload=payload_dict)
+    indexed_source = str(source or "").strip() or fields["source"]
+    indexed_source_group = str(source_group or "").strip() or fields["source_group"]
+    indexed_model_category = str(model_category or "").strip() or fields["model_category"]
+    indexed_parent_path = str(parent_path or "").strip("/") or fields["parent_path"]
+    indexed_sort_title = str(sort_title or "").strip() or fields["sort_title"]
+    return (
+        normalized,
+        str(kind or ""),
+        item_name,
+        str(target_dir or ""),
+        indexed_source,
+        indexed_source_group,
+        indexed_model_category,
+        indexed_parent_path,
+        indexed_sort_title,
+        json.dumps(payload_dict, ensure_ascii=False),
+        int(size_bytes or 0),
+        int(mtime_ns or 0),
+        int(ctime_ns or 0),
+        now,
+        now,
+    )
+
+
 def upsert_library_item(
     path: str,
     *,
@@ -1719,59 +1892,55 @@ def upsert_library_item(
     mtime_ns: int,
     ctime_ns: int,
 ) -> None:
-    normalized = path.strip("/")
-    fields = library_index_fields_from_payload(normalized, name=name, payload=payload)
-    indexed_source = source.strip() or fields["source"]
-    indexed_source_group = source_group.strip() or fields["source_group"]
-    indexed_model_category = model_category.strip() or fields["model_category"]
-    indexed_parent_path = parent_path.strip("/") or fields["parent_path"]
-    indexed_sort_title = sort_title.strip() or fields["sort_title"]
     now = utc_now()
+    values = library_item_upsert_values(
+        path,
+        kind=kind,
+        name=name,
+        target_dir=target_dir,
+        source=source,
+        source_group=source_group,
+        model_category=model_category,
+        parent_path=parent_path,
+        sort_title=sort_title,
+        payload=payload,
+        size_bytes=size_bytes,
+        mtime_ns=mtime_ns,
+        ctime_ns=ctime_ns,
+        now=now,
+    )
     with _DB_LOCK, connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO library_items (
-                path, kind, name, target_dir, source, source_group,
-                model_category, parent_path, sort_title, payload_json, size_bytes,
-                mtime_ns, ctime_ns, stale, updated_at, scanned_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-                kind = excluded.kind,
-                name = excluded.name,
-                target_dir = excluded.target_dir,
-                source = excluded.source,
-                source_group = excluded.source_group,
-                model_category = excluded.model_category,
-                parent_path = excluded.parent_path,
-                sort_title = excluded.sort_title,
-                payload_json = excluded.payload_json,
-                size_bytes = excluded.size_bytes,
-                mtime_ns = excluded.mtime_ns,
-                ctime_ns = excluded.ctime_ns,
-                stale = 0,
-                updated_at = excluded.updated_at,
-                scanned_at = excluded.scanned_at
-            """,
-            (
-                normalized,
-                kind,
-                name,
-                target_dir,
-                indexed_source,
-                indexed_source_group,
-                indexed_model_category,
-                indexed_parent_path,
-                indexed_sort_title,
-                json.dumps(payload, ensure_ascii=False),
-                size_bytes,
-                mtime_ns,
-                ctime_ns,
-                now,
-                now,
-            ),
-        )
+        conn.execute(LIBRARY_ITEM_UPSERT_SQL, values)
         conn.commit()
+
+
+def upsert_library_items(items: list[dict[str, Any]]) -> int:
+    if not items:
+        return 0
+    now = utc_now()
+    values = [
+        library_item_upsert_values(
+            str(item.get("path") or ""),
+            kind=str(item.get("kind") or ""),
+            name=str(item.get("name") or ""),
+            target_dir=str(item.get("target_dir") or ""),
+            source=str(item.get("source") or ""),
+            source_group=str(item.get("source_group") or ""),
+            model_category=str(item.get("model_category") or ""),
+            parent_path=str(item.get("parent_path") or ""),
+            sort_title=str(item.get("sort_title") or ""),
+            payload=item.get("payload") if isinstance(item.get("payload"), dict) else {},
+            size_bytes=int(item.get("size_bytes") or 0),
+            mtime_ns=int(item.get("mtime_ns") or 0),
+            ctime_ns=int(item.get("ctime_ns") or 0),
+            now=now,
+        )
+        for item in items
+    ]
+    with _DB_LOCK, connect() as conn:
+        conn.executemany(LIBRARY_ITEM_UPSERT_SQL, values)
+        conn.commit()
+    return len(values)
 
 
 def list_library_index_items(
@@ -1823,8 +1992,9 @@ def library_index_where(path_prefix: str, *, source_group: str = "", category: s
     if not prefix:
         pass
     else:
-        clauses.append("(path = ? OR path LIKE ? ESCAPE '\\')")
-        params.extend((prefix, escape_like(prefix.rstrip("/") + "/") + "%"))
+        child_lower, child_upper = library_path_child_bounds(prefix)
+        clauses.append("(path = ? OR (path >= ? AND path < ?))")
+        params.extend((prefix, child_lower, child_upper))
     if source:
         clauses.append("source_group = ?")
         params.append(source)
@@ -1834,21 +2004,27 @@ def library_index_where(path_prefix: str, *, source_group: str = "", category: s
     return "WHERE " + " AND ".join(clauses), tuple(params)
 
 
+def library_path_child_bounds(path_prefix: str) -> tuple[str, str]:
+    prefix = path_prefix.strip("/")
+    child_lower = prefix.rstrip("/") + "/"
+    child_upper = prefix.rstrip("/") + "0"
+    return child_lower, child_upper
+
+
 def library_index_order(sort: str) -> str:
     value = str(sort or "az").strip().lower()
-    title = "CASE WHEN sort_title = '' THEN lower(name) ELSE sort_title END"
     if value == "za":
-        return f"ORDER BY {title} DESC, lower(path) DESC"
+        return "ORDER BY sort_title DESC, path DESC"
     if value in {"date", "date_desc", "newest"}:
-        return "ORDER BY mtime_ns DESC, lower(path) ASC"
+        return "ORDER BY mtime_ns DESC, path ASC"
     if value in {"date_asc", "oldest"}:
-        return "ORDER BY mtime_ns ASC, lower(path) ASC"
+        return "ORDER BY mtime_ns ASC, path ASC"
     if value == "favorite":
         return (
             "ORDER BY CASE WHEN path IN (SELECT path FROM favorites) THEN 0 ELSE 1 END, "
-            f"{title} ASC, lower(path) ASC"
+            "sort_title ASC, path ASC"
         )
-    return f"ORDER BY {title} ASC, lower(path) ASC"
+    return "ORDER BY sort_title ASC, path ASC"
 
 
 def mark_library_item_stale(path: str) -> None:

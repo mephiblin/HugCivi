@@ -1,6 +1,6 @@
 # HugCivi Architecture
 
-Last updated: 2026-07-08
+Last updated: 2026-07-09
 
 HugCivi is a single-container personal archive service. The design assumes a Synology NAS or similar Docker host where large archived content lives on a durable filesystem mount and the application keeps only catalog, job, setting, and UI state in SQLite.
 
@@ -258,13 +258,13 @@ Indexer behavior:
 - startup launches a background library indexer after `LIBRARY_INDEXER_START_DELAY_SECONDS`
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
-- `/api/library/reindex` queues a `library_reindex` internal job; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, and `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch
+- `/api/library/reindex` queues or reuses an active `library_reindex` internal job for the same normalized scope; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch, and each batch writes indexed rows through one bulk SQLite upsert transaction
 - `/api/library?mode=live` can force filesystem scan behavior
 - selected-folder `mode=index` pages query SQLite only, including `source_group`/`category` filters, so indexed folders can return exact totals without a filesystem scan and unindexed scopes return fast `needs_refresh`/`refreshing` status instead of waiting on a live scan
 - `/api/library?mode=live&path=...` explicitly scopes a live scan to the selected folder; completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
-- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias. Optional `source_group` values are `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
-- the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed
+- `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias. Optional `source_group` values are `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`. Sort SQL uses stored `sort_title`, `path`, and `mtime_ns` columns so SQLite indexes can avoid expression sorting for common pages.
+- the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed; manually queued reindex jobs are tracked by `job_id` through `/api/jobs/{id}` so completion is not dependent on the currently visible jobs page/filter
 
 The index row stores the same kind of payload the UI already expects in `payload_json`, plus lightweight searchable columns (`source`, `source_group`, `model_category`, `parent_path`, and `sort_title`) for source/category/path navigation. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
 
