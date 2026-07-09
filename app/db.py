@@ -292,8 +292,20 @@ def ensure_library_item_indexes(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE INDEX IF NOT EXISTS idx_library_items_source_path_sort
+        ON library_items(stale, source_group, path, sort_title)
+        """
+    )
+    conn.execute(
+        """
         CREATE INDEX IF NOT EXISTS idx_library_items_category_sort
         ON library_items(stale, model_category, sort_title, path)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_items_category_path_sort
+        ON library_items(stale, model_category, path, sort_title)
         """
     )
     conn.execute(

@@ -1436,6 +1436,7 @@
     let activeLibrarySourceGroup = normalizeLibrarySourceGroup(initialLibraryPage?.source_group || '');
     let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
     let libraryRequestId = 0;
+    let libraryRequestController = null;
     let currentStorage = initialStorage && typeof initialStorage === 'object' ? initialStorage : null;
     let storageUsagePollTimer = null;
     let activeLibraryPath = null;
@@ -5759,6 +5760,8 @@
         const refreshFoldersAfterRender = jobsCompletedWithTarget(currentJobs, nextJobs);
         const refreshActiveLibraryAfterRender = libraryFolder !== null
           && jobsCompletedWithTarget(currentJobs, nextJobs, libraryFolder);
+        const refreshLibraryAfterReindex = libraryFolder !== null
+          && libraryReindexCompletedForActiveScope(currentJobs, nextJobs);
         const nextPage = normalizeJobsPage(data, nextJobs.length);
         const availableSources = new Set(nextPage.source_counts.map(item => item.source));
         if (requestedSource && !availableSources.has(requestedSource) && !options.retriedWithoutSource) {
@@ -5771,8 +5774,8 @@
         currentJobsPage = nextPage;
         renderJobs(currentJobs);
         if (libraryFolder !== null && libraryFolder === normalizePath(activeLibraryPath || '')) {
-          if (refreshActiveLibraryAfterRender) {
-            await refreshLibraryForActivePath();
+          if (refreshActiveLibraryAfterRender || refreshLibraryAfterReindex) {
+            await refreshLibraryForActivePath({page: refreshLibraryAfterReindex ? 1 : currentLibraryPage.page});
           } else if (librarySignatureBefore !== libraryJobSignature(currentJobs, libraryFolder)) {
             renderLibrary();
           }
@@ -5819,9 +5822,37 @@
       });
     }
 
+    function libraryReindexCompletedForActiveScope(previousJobs, nextJobs) {
+      const previousById = new Map(
+        (Array.isArray(previousJobs) ? previousJobs : []).map(job => [String(job.id), job])
+      );
+      const activePath = normalizePath(activeLibraryPath || '');
+      const activeSource = normalizeLibrarySourceGroup(activeLibrarySourceGroup || '');
+      return (Array.isArray(nextJobs) ? nextJobs : []).some(job => {
+        if (String(job?.job_kind || '') !== 'library_reindex') return false;
+        if (String(job?.status || '') !== 'done') return false;
+        const previous = previousById.get(String(job.id));
+        if (!previous || String(previous.status || '') === 'done') return false;
+        const scope = job.library_reindex_scope && typeof job.library_reindex_scope === 'object'
+          ? job.library_reindex_scope
+          : {};
+        const scopePath = normalizePath(scope.path || '');
+        const scopeSource = normalizeLibrarySourceGroup(scope.source_group || '');
+        if (scopePath && scopePath !== activePath) return false;
+        if (scopeSource && scopeSource !== activeSource) return false;
+        return true;
+      });
+    }
+
     async function refreshLibraryItems(options = {}) {
+      let controller = null;
       try {
         const requestId = ++libraryRequestId;
+        if (libraryRequestController) {
+          libraryRequestController.abort();
+        }
+        controller = new AbortController();
+        libraryRequestController = controller;
         const params = new URLSearchParams();
         if (options.mode) params.set('mode', options.mode);
         if (Object.prototype.hasOwnProperty.call(options, 'path')) params.set('path', normalizePath(options.path || ''));
@@ -5836,7 +5867,9 @@
         params.set('sort', sort);
         if (requestedSourceGroup) params.set('source_group', requestedSourceGroup);
         const query = params.toString();
-        const response = await fetch(query ? `/api/library?${query}` : '/api/library');
+        const response = await fetch(query ? `/api/library?${query}` : '/api/library', {
+          signal: controller.signal,
+        });
         if (!response.ok) return;
         const data = await response.json();
         if (requestId !== libraryRequestId) return;
@@ -5867,7 +5900,12 @@
         }
         if (activeLibraryPath !== null) renderLibrary();
       } catch (err) {
+        if (err?.name === 'AbortError') return;
         console.error(err);
+      } finally {
+        if (libraryRequestController === controller) {
+          libraryRequestController = null;
+        }
       }
     }
 
@@ -5919,11 +5957,12 @@
     function setLibraryRefreshButtonState(state = 'idle') {
       if (!libraryRefreshButton) return;
       const busy = state === 'loading';
-      libraryRefreshButton.disabled = busy;
-      libraryRefreshButton.textContent = busy ? '갱신중' : '갱신';
+      const refreshing = Boolean(currentLibraryPage?.index_status?.refreshing);
+      libraryRefreshButton.disabled = busy || refreshing;
+      libraryRefreshButton.textContent = busy ? '예약중' : (refreshing ? '갱신중' : '갱신');
       libraryRefreshButton.title = activeLibrarySourceGroup
-        ? '현재 폴더와 소스 필터 다시 색인'
-        : '현재 폴더 다시 색인';
+        ? '현재 폴더와 소스 필터 다시 색인 작업 예약'
+        : '현재 폴더 다시 색인 작업 예약';
     }
 
     async function refreshLibraryIndexScope(event) {
@@ -5945,6 +5984,7 @@
           window.alert(data.detail || '라이브러리 갱신을 완료하지 못했습니다.');
           return;
         }
+        await refreshJobs({page: 1});
         await refreshLibraryForActivePath({page: 1, loading: true});
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
@@ -6103,7 +6143,7 @@
           window.alert('지울 완료 기록이 없습니다.');
         }
         await refreshJobs({page: currentJobsPage.page});
-        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
+        await refreshLibraryForActivePath();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
@@ -6349,7 +6389,7 @@
         }
         await readJsonResponse(response);
         await refreshJobs({page: currentJobsPage.page});
-        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
+        await refreshLibraryForActivePath();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }
@@ -6402,7 +6442,7 @@
       setLibraryRefreshButtonState();
       setLibraryThumbnailJobButtonState();
       if (!matches.length) {
-        libraryGrid.innerHTML = '<div class="library-empty">이 폴더에 표시할 모델 카드가 없습니다.</div>';
+        libraryGrid.innerHTML = `<div class="library-empty">${escapeHtml(libraryEmptyMessage())}</div>`;
         renderLibraryPagination();
         return;
       }
@@ -6451,6 +6491,13 @@
       }).join('');
       renderLibraryPagination();
       setupDeferredThumbnails(libraryGrid);
+    }
+
+    function libraryEmptyMessage() {
+      const status = currentLibraryPage?.index_status || {};
+      if (status.refreshing || status.indexing) return '라이브러리 색인 갱신 중입니다.';
+      if (status.needs_refresh) return '아직 색인된 카드가 없습니다.';
+      return '이 폴더에 표시할 모델 카드가 없습니다.';
     }
 
     function libraryCountLabel(visibleCount) {
@@ -6842,7 +6889,7 @@
         }
         await readJsonResponse(response);
         await refreshJobs({page: 1});
-        await refreshLibraryForActivePath({mode: activeLibraryPath === null ? 'index' : 'live'});
+        await refreshLibraryForActivePath();
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       }

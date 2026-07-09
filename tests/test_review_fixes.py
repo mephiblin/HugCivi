@@ -845,7 +845,7 @@ def test_clear_history_resets_stale_library_index_so_existing_model_cards_surviv
 
     rows = [
         row
-        for row in main.library_items()
+        for row in main.library_items(mode="live")
         if row.get("target_path") == "stable-diffusion/loras/zimagebase/hands/version_3012596"
     ]
     assert payload["deleted"] == 1
@@ -985,9 +985,15 @@ def test_library_items_restore_filesystem_card_after_job_row_deleted(app_modules
     db.delete_job(job_id)
     assert main.decorate_jobs(db.list_jobs()) == []
 
-    rows = [
+    assert [
         row
         for row in main.library_items()
+        if row.get("target_path") == "stable-diffusion/loras/sdxl/disk-card/version_1"
+    ] == []
+
+    rows = [
+        row
+        for row in main.library_items(mode="live")
         if row.get("target_path") == "stable-diffusion/loras/sdxl/disk-card/version_1"
     ]
 
@@ -1066,7 +1072,9 @@ def test_library_index_schema_stores_source_group_fields(app_modules: tuple) -> 
         "idx_library_items_global_sort",
         "idx_library_items_source_sort",
         "idx_library_items_source_parent_sort",
+        "idx_library_items_source_path_sort",
         "idx_library_items_category_sort",
+        "idx_library_items_category_path_sort",
     }.issubset(indexes)
     assert row is not None
     assert row["source"] == "civitai"
@@ -1208,6 +1216,31 @@ def test_library_api_selected_folder_uses_index_before_live_scan(
     assert [item["source_group"] for item in payload["items"]] == ["civitai", "civitai"]
 
 
+def test_library_api_index_mode_does_not_live_scan_unindexed_scope(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, _db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "unindexed" / "disk-card"
+    target.mkdir(parents=True)
+    (target / "preview.jpg").write_bytes(b"image")
+
+    def fail_live_scan(*_args, **_kwargs):
+        raise AssertionError("index mode should not use live scan for unindexed folders")
+
+    monkeypatch.setattr(main, "live_library_items_with_completion", fail_live_scan)
+
+    payload = json.loads(
+        main.api_library(path="unindexed", limit=50, page=1, sort="az", _="_").body.decode("utf-8")
+    )
+
+    assert payload["mode"] == "index"
+    assert payload["items"] == []
+    assert payload["total_count"] == 0
+    assert payload["index_status"]["needs_refresh"] is True
+    assert payload["index_status"]["fallback"] is False
+
+
 def test_library_reindex_scope_filters_source_without_clearing_unrelated_rows(app_modules: tuple) -> None:
     _utils, db, _downloader, main, data_root, _config_root = app_modules
     civitai = data_root / "mixed" / "civitai-card"
@@ -1232,9 +1265,17 @@ def test_library_reindex_scope_filters_source_without_clearing_unrelated_rows(ap
         encoding="utf-8",
     )
 
-    result = json.loads(
-        main.api_library_reindex(path="mixed", source_group="civitai", _="_").body.decode("utf-8")
-    )
+    result = json.loads(main.api_library_reindex(path="mixed", source_group="civitai", _="_").body.decode("utf-8"))
+    job_id = int(result["job_id"])
+    job = db.get_job(job_id)
+    assert result["queued"] is True
+    assert job is not None
+    assert job["job_kind"] == main.INTERNAL_JOB_LIBRARY_REINDEX
+    decorated = main.decorate_job(job)
+    assert decorated["library_reindex_scope"] == {"path": "mixed", "source_group": "civitai", "category": ""}
+
+    main.run_library_reindex_job(job_id, job)
+    db.update_job(job_id, status="done")
     rows = db.list_library_index_items(path_prefix="mixed", sort="az")
     titles = {str(item["target_path"]): str(item["model_title"]) for item in rows}
 
@@ -1244,6 +1285,37 @@ def test_library_reindex_scope_filters_source_without_clearing_unrelated_rows(ap
     assert db.count_library_index_items(path_prefix="mixed", source_group="gallerydl") == 1
     assert titles["mixed/civitai-card"] == "Civitai Updated"
     assert "mixed/gallery-card" in titles
+
+
+def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "batched"
+    for index in range(4):
+        target = root / f"card-{index:03d}"
+        target.mkdir(parents=True)
+        (target / "model.safetensors").write_text("model", encoding="utf-8")
+        (target / "_civitai_metadata.json").write_text(
+            json.dumps(
+                {
+                    "source": "civitai",
+                    "archive_info": {"model_title": f"Card {index:03d}", "model_category": "LoRA"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("LIBRARY_REINDEX_BATCH_SIZE", "2")
+    result = json.loads(main.api_library_reindex(path="batched", source_group="civitai", _="_").body.decode("utf-8"))
+    job_id = int(result["job_id"])
+    job = db.get_job(job_id)
+    assert job is not None
+
+    main.run_library_reindex_job(job_id, job)
+
+    assert db.count_library_index_items(path_prefix="batched", source_group="civitai") == 4
+    scope_key = main.library_index_scope_key(path_prefix="batched", source_group="civitai")
+    assert db.get_library_scan_state(f"{scope_key}.complete", "0") == "1"
+    assert db.get_library_scan_state(f"{scope_key}.cursor", "not-empty") == ""
 
 
 def test_library_api_keeps_legacy_array_and_returns_paged_wrapper(app_modules: tuple) -> None:
@@ -1725,8 +1797,12 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "let activeLibrarySourceGroup" in template
     assert "function normalizeLibrarySourceGroup(value)" in template
     assert "params.set('source_group', requestedSourceGroup);" in template
+    assert "let libraryRequestController" in template
+    assert "new AbortController()" in template
     assert "async function refreshLibraryIndexScope(event)" in template
     assert "fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex'" in template
+    assert "function libraryReindexCompletedForActiveScope(previousJobs, nextJobs)" in template
+    assert "아직 색인된 카드가 없습니다." in template
     assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
     assert "function allKnownLibraryPages(totalPages)" in template
     assert "? allKnownLibraryPages(totalPages)\n        : visibleUnknownTotalLibraryPages(page, hasNext);" in template
@@ -2273,6 +2349,7 @@ def test_library_items_index_generic_sidecar_folder(app_modules: tuple) -> None:
         encoding="utf-8",
     )
 
+    main.scan_library_index_batch(max_paths=100, reset=True)
     rows = [row for row in main.library_items() if row.get("target_path") == "generic"]
 
     assert len(rows) == 1
@@ -2296,7 +2373,11 @@ def test_library_items_skip_empty_archive_metadata_folder(app_modules: tuple) ->
         encoding="utf-8",
     )
 
-    rows = [row for row in main.library_items() if row.get("target_path") == "gallery-dl/xhamster3.com/failed"]
+    rows = [
+        row
+        for row in main.library_items(mode="live")
+        if row.get("target_path") == "gallery-dl/xhamster3.com/failed"
+    ]
 
     assert rows == []
 
@@ -2327,6 +2408,7 @@ def test_library_items_use_ytdlp_info_title_for_single_video_archive(app_modules
         encoding="utf-8",
     )
 
+    main.scan_library_index_batch(max_paths=100, reset=True)
     rows = [row for row in main.library_items() if row.get("target_path") == "gallery-dl/youtube.com/video-abc123"]
 
     assert len(rows) == 1

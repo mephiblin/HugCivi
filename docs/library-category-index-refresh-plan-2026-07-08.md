@@ -1,6 +1,6 @@
 # Library Category Index Refresh Plan 2026-07-08
 
-Status: partially implemented on 2026-07-08. SQLite `library_items` now has source/category/search columns, selected-folder pages are DB-first in normal index mode, `source_group` filters are wired through the API/UI, and scoped synchronous `/api/library/reindex` supports `path`, `source_group`, and `category`. Internal `library_reindex` jobs, direct parent-only navigation, and provider-specific subcategory UI remain future work.
+Status: partially implemented. SQLite `library_items` now has source/category/search columns, selected-folder pages are DB-only in normal index mode with fast `needs_refresh`/`refreshing` status instead of automatic live fallback, `source_group` filters are wired through the API/UI, and scoped `/api/library/reindex` queues `library_reindex` internal jobs with `path`, `source_group`, and `category`. Direct parent-only navigation and provider-specific subcategory UI remain future work.
 
 ## Purpose
 
@@ -40,7 +40,7 @@ Current request behavior:
 - selected folders use `/api/library?mode=live&path=...`
 - completed selected-folder live scans are cached briefly in memory
 - very large or incomplete live scans keep unknown totals
-- manual `/api/library/reindex` resets and scans a larger global batch synchronously
+- manual `/api/library/reindex` queues a scoped `library_reindex` internal job
 
 The remaining bottleneck is that selected folders and source/category groupings are not yet first-class DB queries.
 
@@ -49,7 +49,7 @@ The remaining bottleneck is that selected folders and source/category groupings 
 - Make selected-folder page navigation use SQLite first when the folder's indexed rows are usable.
 - Add source/category-aware DB columns and indexes so pages can filter by `civitai`, `gallerydl`, `yt-dlp`, `hitomi`, `asmrone`, `generic`, and related display categories.
 - Add manual refresh for a selected folder or source/category without forcing a full `/data` rescan.
-- Keep live scanning as a correctness fallback for newly restored files, incomplete indexes, and operator-side NAS edits.
+- Keep explicit live scanning as a correctness fallback for newly restored files, incomplete indexes, and operator-side NAS edits.
 - Keep exact `total_count` and `total_pages` for DB-backed pages.
 - Keep memory caching small and short-lived; SQLite should do the durable acceleration.
 
@@ -314,8 +314,8 @@ Changing folder, source group, category, or sort should reset the library page t
 
 - Add scoped path/source iterators that can skip unrelated provider roots when safe.
 - Add refresh state keys in `library_scan_state`.
-- Add a `library_reindex` internal job if scoped refresh cannot reliably finish within a normal request.
-- Extend `/api/library/reindex` with optional `path`, `source_group`, and `category`.
+- Keep `library_reindex` internal jobs as the scoped refresh mechanism.
+- Keep `/api/library/reindex` optional `path`, `source_group`, and `category` parameters.
 - Clear selected-folder live page cache after refresh completion.
 
 ### Phase 3: API Uses DB First For Selected Folders
@@ -356,7 +356,7 @@ Backend tests:
 - Civitai, ASMR.one, gallery-dl, yt-dlp, generic, Hitomi, and plain media fixtures classify into expected `source_group`
 - DB list/count helpers filter by path, source group, category, and combined path + source group
 - selected-folder index mode does not call live scan when DB rows are usable
-- selected-folder fallback still calls live scan when DB rows are missing and index state is incomplete
+- selected-folder index mode returns `needs_refresh` instead of live-scanning when DB rows are missing and index state is incomplete
 - manual scoped refresh updates rows and clears stale/deleted rows within scope
 - app rename/move/delete keeps new columns and prefixes consistent
 - favorite sorting still uses current favorites, not stale payload state
@@ -399,16 +399,15 @@ python3 -m pytest -q -p no:cacheprovider
 
 | Risk | Mitigation |
 | --- | --- |
-| DB rows become stale after DSM-side edits. | Keep manual refresh and background indexer; live fallback remains available. |
+| DB rows become stale after DSM-side edits. | Keep manual refresh and background indexer; explicit live mode remains available. |
 | Category classification differs between providers. | Centralize normalization and cover provider fixtures in tests. |
 | JSON payload and extracted columns drift. | Fill columns from the same normalized item payload at upsert time. |
 | Scoped refresh deletes unrelated rows. | Scope stale marking by normalized path/source filters and test mixed-provider folders. |
-| Large refresh blocks API requests. | Use an internal `library_reindex` job for long-running scopes. |
+| Large refresh blocks API requests. | Implemented: `/api/library/reindex` queues an internal `library_reindex` job for scoped refresh work. |
 | Source naming becomes inconsistent (`gallerydl` vs `gallery-dl`). | Store stable API values in `source_group`, keep labels in frontend only. |
 
 ## Open Decisions
 
 - Whether library source filters should be shown as a horizontal segmented control or a compact menu on mobile.
 - Whether category filters should expose provider-specific subcategories immediately or wait until the source-group index is proven stable.
-- Whether scoped refresh should start as synchronous for small scopes and later promote to an internal job, or always use an internal job for one consistent model.
 - Whether `parent_path` should represent direct-child views only while prefix queries remain separate, or whether the UI should expose both direct and recursive selected-folder modes.

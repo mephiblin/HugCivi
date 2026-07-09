@@ -156,6 +156,7 @@ Internal jobs:
   - `media_transcode`
   - `media_poster`
   - `media_thumbnail_backfill`
+  - `library_reindex`
   - `transfer_copy`
 
 Transfer jobs use the internal scheduler because they operate on files already under `/data`. Their visible source is `transfer`, while their `parsed_json` payload keeps the selected target ID, source path, and request snapshot.
@@ -257,9 +258,9 @@ Indexer behavior:
 - startup launches a background library indexer after `LIBRARY_INDEXER_START_DELAY_SECONDS`
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
-- `/api/library/reindex` can reset and scan a larger batch; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category
+- `/api/library/reindex` queues a `library_reindex` internal job; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, and `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch
 - `/api/library?mode=live` can force filesystem scan behavior
-- selected-folder `mode=index` pages query SQLite first, including `source_group`/`category` filters, so indexed folders can return exact totals without a filesystem scan
+- selected-folder `mode=index` pages query SQLite only, including `source_group`/`category` filters, so indexed folders can return exact totals without a filesystem scan and unindexed scopes return fast `needs_refresh`/`refreshing` status instead of waiting on a live scan
 - `/api/library?mode=live&path=...` explicitly scopes a live scan to the selected folder; completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
 - `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias. Optional `source_group` values are `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.

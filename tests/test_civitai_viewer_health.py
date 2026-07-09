@@ -97,6 +97,7 @@ def test_media_list_includes_civitai_image_generation_metadata(app_modules: tupl
     assert payload["metadata"]["generation_data"]["resources"][0]["model_version_id"] == "456"
     assert payload["items"][0]["name"] == "image_135.jpg"
 
+    main.scan_library_index_batch(max_paths=100, reset=True)
     rows = [row for row in main.library_items() if row.get("target_path") == "civitai/images/creator/image_135"]
     assert len(rows) == 1
     assert rows[0]["source"] == "civitai"

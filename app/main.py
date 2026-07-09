@@ -101,6 +101,7 @@ def register_internal_job_handlers() -> None:
     internal_jobs.register_handler(INTERNAL_JOB_MEDIA_POSTER, run_media_poster_job)
     internal_jobs.register_handler(INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL, run_media_thumbnail_backfill_job)
     internal_jobs.register_handler(INTERNAL_JOB_TRANSFER_COPY, run_transfer_copy_job)
+    internal_jobs.register_handler(INTERNAL_JOB_LIBRARY_REINDEX, run_library_reindex_job)
 
 
 @asynccontextmanager
@@ -161,6 +162,7 @@ INTERNAL_JOB_MEDIA_TRANSCODE = "media_transcode"
 INTERNAL_JOB_MEDIA_POSTER = "media_poster"
 INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL = "media_thumbnail_backfill"
 INTERNAL_JOB_TRANSFER_COPY = "transfer_copy"
+INTERNAL_JOB_LIBRARY_REINDEX = "library_reindex"
 TARGET_KIND_LOCAL_MOUNT = transfer.TARGET_KIND_LOCAL_MOUNT
 TRANSFER_COPY_SEMAPHORE = threading.BoundedSemaphore(transfer.transfer_max_concurrent())
 JOB_LIST_PAGE_SIZE = 50
@@ -207,6 +209,7 @@ DOWNLOAD_ARCHIVE_SEMAPHORE_LOCK = threading.Lock()
 LIBRARY_INDEXER_THREAD: threading.Thread | None = None
 LIBRARY_INDEXER_STOP = threading.Event()
 LIBRARY_INDEXER_LOCK = threading.Lock()
+LIBRARY_SCAN_LOCK = threading.Lock()
 LIVE_LIBRARY_PAGE_CACHE: dict[str, dict[str, Any]] = {}
 LIVE_LIBRARY_PAGE_CACHE_LOCK = threading.Lock()
 STORAGE_USAGE_STATE_KEY = "storage.data_usage"
@@ -2215,24 +2218,34 @@ def api_library_reindex(
 ) -> JSONResponse:
     root = existing_data_path(path) if path else None
     normalized_source_group = normalize_library_source_group(source_group)
-    result = scan_library_index_batch(
-        max_paths=library_reindex_batch_size(),
-        reset=True,
-        root_path=root,
-        source_group=normalized_source_group,
-        category=category,
+    scope = {
+        "path": relative_data_path(root) if root is not None else "",
+        "source_group": normalized_source_group,
+        "category": category.strip(),
+    }
+    input_text = "library-reindex:" + json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    job_id = db.create_internal_job(
+        INTERNAL_JOB_LIBRARY_REINDEX,
+        input_text=input_text,
+        payload=scope,
+        target_dir=str(root or DATA_ROOT),
+        filename="library reindex",
+        metadata={"library_reindex": {"scope": scope, "queued": True}},
     )
-    clear_live_library_page_cache()
+    scope_key = library_index_scope_key(
+        path_prefix=scope["path"],
+        source_group=scope["source_group"],
+        category=scope["category"],
+    )
+    db.set_library_scan_state(f"{scope_key}.queued", "1")
+    internal_jobs.enqueue_job(job_id)
     return JSONResponse(
         {
             "ok": True,
-            **result,
-            "scope": {
-                "path": relative_data_path(root) if root is not None else "",
-                "source_group": normalized_source_group,
-                "category": category.strip(),
-            },
-            "items": library_items(root_path=root, source_group=normalized_source_group, category=category),
+            "queued": True,
+            "job_id": job_id,
+            "scope": scope,
+            "job": decorate_job(db.get_job(job_id) or {}),
         }
     )
 
@@ -2938,6 +2951,7 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     if total:
         percent = min(100, round(progress * 100 / total, 1))
     parsed = parse_job_for_display(job)
+    internal_payload = db.parse_internal_job_payload(job) if db.is_internal_job(job) else {}
     target_path = display_target_path(job)
     existing_source_url = str(job.get("source_url") or "")
     job = dict(job)
@@ -2952,9 +2966,15 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["job_kind"] = db.normalized_job_kind(job.get("job_kind"))
     if job["job_kind"] != db.JOB_KIND_DOWNLOAD and str(job.get("source") or "") == "internal":
         job["source"] = job["job_kind"]
-    if job["job_kind"] == INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL:
+    if job["job_kind"] in {INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL, INTERNAL_JOB_LIBRARY_REINDEX}:
         job["progress_human"] = f"{int(progress)}개"
-        job["total_human"] = f"{int(total or 0)}개"
+        job["total_human"] = f"{int(total or 0)}개" if total is not None else ""
+    if job["job_kind"] == INTERNAL_JOB_LIBRARY_REINDEX:
+        job["library_reindex_scope"] = {
+            "path": str(internal_payload.get("path") or "").strip("/"),
+            "source_group": normalize_library_source_group(internal_payload.get("source_group")),
+            "category": str(internal_payload.get("category") or "").strip(),
+        }
     if (
         not job.get("thumbnail_url")
         and job.get("target_dir")
@@ -3045,6 +3065,20 @@ def library_index_scope_complete(*, path_prefix: str = "", source_group: str = "
         )
     key = library_index_scope_key(path_prefix=path_prefix, source_group=source_group, category=category)
     return db.get_library_scan_state(f"{key}.complete", "0") == "1"
+
+
+def library_index_scope_refreshing(*, path_prefix: str = "", source_group: str = "", category: str = "") -> bool:
+    key = library_index_scope_key(path_prefix=path_prefix, source_group=source_group, category=category)
+    if not path_prefix.strip("/") and not normalize_library_source_group(source_group) and not category.strip():
+        return (
+            db.get_library_scan_state("library.indexing", "0") == "1"
+            or db.get_library_scan_state(f"{key}.queued", "0") == "1"
+            or db.get_library_scan_state(f"{key}.running", "0") == "1"
+        )
+    return (
+        db.get_library_scan_state(f"{key}.queued", "0") == "1"
+        or db.get_library_scan_state(f"{key}.running", "0") == "1"
+    )
 
 
 def library_items_page_payload(
@@ -3142,6 +3176,31 @@ def library_items_page_payload(
                 "index_status": {"usable": False, "fallback": False, "indexing": True},
                 "paged": True,
             }
+        return {
+            "ok": True,
+            "items": [],
+            "page": 1,
+            "limit": page_limit,
+            "total_count": 0,
+            "total_pages": 1,
+            "has_next": False,
+            "mode": "index",
+            "path": path_prefix,
+            "sort": normalized_sort,
+            "source_group": normalized_source_group,
+            "category": normalized_category,
+            "index_status": {
+                "usable": False,
+                "fallback": False,
+                "needs_refresh": True,
+                "refreshing": library_index_scope_refreshing(
+                    path_prefix=path_prefix,
+                    source_group=normalized_source_group,
+                    category=normalized_category,
+                ),
+            },
+            "paged": True,
+        }
 
     items, page_number, total_count, total_pages, has_next = live_library_items_page(
         limit=page_limit,
@@ -3500,8 +3559,7 @@ def library_items(
         if indexed_items:
             favorites = db.favorite_paths()
             return [normalize_library_item_payload(item, favorites) for item in indexed_items]
-        if db.get_library_scan_state("library.indexing", "0") == "1":
-            return []
+        return []
 
     return filter_library_items(
         live_library_items(max_items=max_items, root_path=root_path),
@@ -3593,8 +3651,9 @@ def library_indexer_loop() -> None:
         return
     while not LIBRARY_INDEXER_STOP.is_set():
         try:
-            scan_library_index_batch(max_paths=library_index_batch_size())
-            db.prune_missing_library_items(limit=library_index_batch_size())
+            with LIBRARY_SCAN_LOCK:
+                scan_library_index_batch(max_paths=library_index_batch_size())
+                db.prune_missing_library_items(limit=library_index_batch_size())
         except Exception as exc:  # noqa: BLE001 - background indexer must keep running
             print(f"library indexer failed: {exc}", flush=True)
         interval = nonnegative_int_env("LIBRARY_INDEXER_INTERVAL_SECONDS", 300)
@@ -3631,8 +3690,22 @@ def scan_library_index_batch(
         else:
             db.clear_library_index()
     scoped = bool(root_path is not None or normalized_source_group or normalized_category)
+    scope_key = (
+        library_index_scope_key(
+            path_prefix=scope_path,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+        if scoped
+        else ""
+    )
     db.set_library_scan_state("library.indexing", "1")
-    cursor = "" if reset or scoped else db.get_library_scan_state("library.cursor", "")
+    if reset:
+        cursor = ""
+    elif scoped:
+        cursor = db.get_library_scan_state(f"{scope_key}.cursor", "")
+    else:
+        cursor = db.get_library_scan_state("library.cursor", "")
     processed = 0
     indexed = 0
     last_path = cursor
@@ -3660,11 +3733,6 @@ def scan_library_index_batch(
     if not scoped:
         db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
     else:
-        scope_key = library_index_scope_key(
-            path_prefix=scope_path,
-            source_group=normalized_source_group,
-            category=normalized_category,
-        )
         db.set_library_scan_state(f"{scope_key}.complete", "1" if reached_end else "0")
         db.set_library_scan_state(f"{scope_key}.cursor", "" if reached_end else last_path)
         db.set_library_scan_state(f"{scope_key}.processed", str(processed))
@@ -5152,6 +5220,109 @@ def run_media_thumbnail_backfill_job(job_id: int, job: dict[str, Any]) -> None:
         "thumbnail backfill done "
         f"generated={results['generated']} skipped={results['skipped']} failed={results['failed']}",
     )
+
+
+def run_library_reindex_job(job_id: int, job: dict[str, Any]) -> None:
+    payload = db.parse_internal_job_payload(job)
+    raw_path = str(payload.get("path") or "").strip()
+    root = existing_data_path(raw_path) if raw_path else None
+    normalized_path = relative_data_path(root) if root is not None else ""
+    normalized_source_group = normalize_library_source_group(payload.get("source_group"))
+    normalized_category = str(payload.get("category") or "").strip()
+    scope_key = library_index_scope_key(
+        path_prefix=normalized_path,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
+    scope = {
+        "path": normalized_path,
+        "source_group": normalized_source_group,
+        "category": normalized_category,
+    }
+    db.set_library_scan_state(f"{scope_key}.running", "1")
+    db.set_library_scan_state(f"{scope_key}.queued", "0")
+    db.set_library_scan_state(f"{scope_key}.started_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    clear_live_library_page_cache()
+    processed_total = 0
+    indexed_total = 0
+    complete = False
+    cursor = ""
+    first_batch = True
+    batch_size = library_reindex_batch_size()
+    db.update_job(
+        job_id,
+        progress_bytes=0,
+        total_bytes=None,
+        metadata_json=json.dumps(
+            {"library_reindex": {"scope": scope, "processed": 0, "indexed": 0, "complete": False}},
+            ensure_ascii=False,
+        ),
+    )
+    db.append_log(job_id, f"library reindex started scope={json.dumps(scope, ensure_ascii=False, sort_keys=True)}")
+    try:
+        while True:
+            internal_jobs.check_job_control(job_id)
+            with LIBRARY_SCAN_LOCK:
+                result = scan_library_index_batch(
+                    max_paths=batch_size,
+                    reset=first_batch,
+                    root_path=root,
+                    source_group=normalized_source_group,
+                    category=normalized_category,
+                )
+            first_batch = False
+            processed_total += int(result.get("processed") or 0)
+            indexed_total += int(result.get("indexed") or 0)
+            cursor = str(result.get("cursor") or "")
+            complete = bool(result.get("complete"))
+            db.update_job(
+                job_id,
+                progress_bytes=processed_total,
+                total_bytes=None,
+                metadata_json=json.dumps(
+                    {
+                        "library_reindex": {
+                            "scope": scope,
+                            "processed": processed_total,
+                            "indexed": indexed_total,
+                            "cursor": cursor,
+                            "complete": complete,
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.append_log(
+                job_id,
+                "library reindex batch "
+                f"processed={result.get('processed')} indexed={result.get('indexed')} complete={complete}",
+            )
+            if complete or int(result.get("processed") or 0) <= 0:
+                break
+    finally:
+        db.set_library_scan_state(f"{scope_key}.queued", "0")
+        db.set_library_scan_state(f"{scope_key}.running", "0")
+        db.set_library_scan_state(f"{scope_key}.finished_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        clear_live_library_page_cache()
+    if not complete and cursor:
+        raise RuntimeError(f"library reindex stopped before completion at {cursor}")
+    db.update_job(
+        job_id,
+        progress_bytes=processed_total,
+        total_bytes=processed_total,
+        metadata_json=json.dumps(
+            {
+                "library_reindex": {
+                    "scope": scope,
+                    "processed": processed_total,
+                    "indexed": indexed_total,
+                    "complete": complete,
+                }
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.append_log(job_id, f"library reindex done processed={processed_total} indexed={indexed_total}")
 
 
 def transcode_video_for_browser(source: Path, *, job_id: int | None = None) -> Path:

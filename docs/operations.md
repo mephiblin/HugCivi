@@ -331,11 +331,11 @@ Operational notes:
 - First indexing pass may take time on large archives.
 - The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>` plus optional source filters.
 - `/api/library?mode=live` can force live filesystem scanning.
-- Normal selected-folder library pages query the SQLite index first and use live scanning only as fallback. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
+- Normal selected-folder library pages query the SQLite index only and return quickly with `needs_refresh`/`refreshing` status when indexed rows are missing. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
 - `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
-- `/api/library/reindex` resets and scans a large batch. Optional `path`, `source_group`, and `category` query parameters refresh only that selected folder/provider/category scope.
-- `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next library load may do a live scan or wait for reindexing; sidecar-backed Civitai and media cards can reappear from `/data` without job rows.
+- `/api/library/reindex` queues a `library_reindex` internal job. Optional `path`, `source_group`, and `category` query parameters refresh only that selected folder/provider/category scope; watch the job list for completion.
+- `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next normal library load stays DB-only; use explicit live mode, wait for background indexing, or trigger `/api/library/reindex` so sidecar-backed Civitai and media cards reappear from `/data` without job rows.
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.
 - App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.
@@ -435,7 +435,7 @@ Library looks incomplete:
 
 - wait for indexer batches
 - call `/api/library?mode=live`
-- trigger `/api/library/reindex`
+- trigger `/api/library/reindex` and watch the queued `library_reindex` job
 - check whether files were moved outside the app
 
 Old container after upgrade:
