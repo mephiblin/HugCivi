@@ -63,7 +63,7 @@ When you do not know where to start, use [Feature and Code Map](feature-code-map
 Fast checks:
 
 ```bash
-python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py
+python3 -m py_compile app/main.py app/db.py app/defaults.py app/downloader.py app/internal_jobs.py
 node --check chrome-extension/shared.js
 node --check chrome-extension/background.js
 node --check chrome-extension/popup.js

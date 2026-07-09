@@ -52,7 +52,7 @@ HugCivi is different. It is not primarily a media identity server. It is a sourc
 
 Jellyfin exposes scheduled and manual tasks such as library scan, chapter image extraction, keyframe extraction, database optimization, and cache cleanup. Plex similarly runs periodic scans, preview thumbnail generation, chapter thumbnail generation, and other analysis during configured maintenance periods.
 
-HugCivi already has the correct internal shape with `library_reindex`, `media_thumbnail_backfill`, poster/transcode jobs, and download jobs separated by `job_kind`. The missing product layer is scheduling and policy around these jobs.
+HugCivi already has the correct internal shape with `library_reindex`, `media_thumbnail_backfill`, poster/transcode jobs, and download jobs separated by `job_kind`. A baseline scheduling/policy layer now exists for heavy internal jobs; richer future work is mostly about per-source tuning and adding actual watcher/trickplay workers behind the disabled-by-default policy settings.
 
 ### Thumbnail Generation Is Explicitly Expensive
 
@@ -70,32 +70,32 @@ HugCivi should keep explicit DB reindexing as the reliable default. Filesystem e
 
 ### 1. Stronger Local `/config` Guidance
 
-Update operations/configuration docs to say that `/config` should live on local SSD or other fast local storage whenever possible. Explain that SQLite, job state, thumbnails, and future cache metadata are latency-sensitive.
+Implemented as operations/configuration guidance. Future deployment work can add stronger install-time examples, but no automatic mount migration is performed.
 
 ### 2. Cache Quotas And Cleanup
 
-Add an operator-visible cache policy for generated thumbnails:
+Implemented baseline controls:
 
 - maximum thumbnail cache bytes
 - optional age-based cleanup
-- least-recently-used cleanup based on file access or metadata
-- manual clear controls
+- least-recently-accessed cleanup based on cache file access time
+- manual status/cleanup and thumbnail-scope clear controls
 
 The implementation should keep cache files on disk and avoid storing large binary blobs in SQLite.
 
 ### 3. Maintenance Windows For Heavy Work
 
-Add a policy layer for expensive internal jobs:
+Implemented baseline policy for expensive internal jobs:
 
 - run immediately
 - run only during a configured maintenance window
-- manual-only
+- keep queued while paused
 
-Initial candidates are library reindex, thumbnail backfill, media poster generation, transcode jobs, and any future video preview generation.
+Current gated jobs include ZIP, library reindex, thumbnail backfill, media poster, and transcode jobs. Future video preview generation should also use this policy if implemented.
 
 ### 4. Folder-Level Scan State
 
-Add or extend scan state so HugCivi can reason about folders, not only indexed items. A future folder index should store normalized path, parent path, last scan timestamps, completion state, and lightweight signatures where safe.
+Implemented baseline `library_folder_state` for selected-folder reindex progress. A future folder index could expand this into normalized folder inventory, last scan timestamps, completion state, and lightweight signatures where safe.
 
 This supports faster "what changed?" decisions and better UI messaging for unindexed folders.
 

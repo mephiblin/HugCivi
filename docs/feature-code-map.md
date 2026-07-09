@@ -192,7 +192,7 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 Fast local checks:
 
 ```bash
-python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py
+python3 -m py_compile app/main.py app/db.py app/defaults.py app/downloader.py app/internal_jobs.py
 node --check chrome-extension/shared.js
 node --check chrome-extension/background.js
 node --check chrome-extension/popup.js

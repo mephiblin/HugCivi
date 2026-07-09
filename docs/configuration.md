@@ -189,6 +189,7 @@ Current implementation status:
 | --- | --- | --- | --- |
 | `INTERNAL_JOB_MAX_CONCURRENT` | `2` | env | Global internal job concurrency. Use `1` on weak NAS hardware. |
 | `INTERNAL_JOB_MAINTENANCE_MODE` | `immediate` | env/settings fallback | Heavy internal job start policy: `immediate`, `window`, or `paused`. Applies to ZIP, library reindex, media transcode/poster, and thumbnail backfill jobs. |
+| `INTERNAL_JOB_MAINTENANCE_JOB_KINDS` | built-in heavy set | env/settings fallback | Optional comma/semicolon-separated override for which internal `job_kind` values are gated by maintenance mode. Leave unset unless debugging a specific scheduler policy. |
 | `INTERNAL_JOB_MAINTENANCE_START_HOUR` | `1` | env/settings fallback | Server-local start hour, 0-23, used when `INTERNAL_JOB_MAINTENANCE_MODE=window`. |
 | `INTERNAL_JOB_MAINTENANCE_END_HOUR` | `6` | env/settings fallback | Server-local end hour, 0-23. Same start/end means all day. |
 | `DOWNLOAD_ARCHIVE_TTL_SECONDS` | `86400` | env | Stale ZIP cleanup age. |

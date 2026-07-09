@@ -749,7 +749,6 @@ def save_settings(
         ),
     )
     db.set_setting("LIBRARY_WATCHER_ENABLED", normalize_bool_setting(library_watcher_enabled, default=False))
-    db.set_setting("LIBRARY_WATCHER_LOCAL_ONLY", "1")
     video_preview_mode = media_video_preview_mode.strip().lower()
     if video_preview_mode not in MEDIA_VIDEO_PREVIEW_MODES:
         video_preview_mode = "off"
@@ -3844,82 +3843,102 @@ def scan_library_index_batch(
         else ""
     )
     db.set_library_scan_state("library.indexing", "1")
-    if reset:
-        cursor = ""
-    elif scoped:
-        cursor = db.get_library_scan_state(f"{scope_key}.cursor", "")
-    else:
-        cursor = db.get_library_scan_state("library.cursor", "")
+    cursor = ""
     processed = 0
     indexed = 0
-    last_path = cursor
+    last_path = ""
     reached_end = True
-    favorites = db.favorite_paths()
-    index_records: list[dict[str, Any]] = []
+    scan_completed = False
+    try:
+        if reset:
+            cursor = ""
+        elif scoped:
+            cursor = db.get_library_scan_state(f"{scope_key}.cursor", "")
+        else:
+            cursor = db.get_library_scan_state("library.cursor", "")
+        last_path = cursor
+        favorites = db.favorite_paths()
+        index_records: list[dict[str, Any]] = []
 
-    record_library_folder_scan_state(
-        root_path=root_path,
-        scope_path=scope_path,
-        status="running",
-        complete=False,
-        processed=0,
-        indexed=0,
-        source_group=normalized_source_group,
-        category=normalized_category,
-    )
-
-    for path in iter_library_scan_paths(cursor=cursor, root_path=root_path):
-        if LIBRARY_INDEXER_STOP.is_set():
-            reached_end = False
-            break
-        relative = relative_data_path(path)
-        processed += 1
-        last_path = relative
-        record = library_index_record_for_path(
-            path,
-            favorites,
+        record_library_folder_scan_state(
+            root_path=root_path,
+            scope_path=scope_path,
+            status="running",
+            complete=False,
+            processed=0,
+            indexed=0,
             source_group=normalized_source_group,
             category=normalized_category,
         )
-        if record is not None:
-            indexed += 1
-            index_records.append(record)
-        if processed >= max_paths:
-            reached_end = False
-            break
 
-    if index_records:
-        db.upsert_library_items(index_records)
+        for path in iter_library_scan_paths(cursor=cursor, root_path=root_path):
+            if LIBRARY_INDEXER_STOP.is_set():
+                reached_end = False
+                break
+            relative = relative_data_path(path)
+            processed += 1
+            last_path = relative
+            record = library_index_record_for_path(
+                path,
+                favorites,
+                source_group=normalized_source_group,
+                category=normalized_category,
+            )
+            if record is not None:
+                indexed += 1
+                index_records.append(record)
+            if processed >= max_paths:
+                reached_end = False
+                break
 
-    record_library_folder_scan_state(
-        root_path=root_path,
-        scope_path=scope_path,
-        status="done" if reached_end else "partial",
-        complete=reached_end,
-        processed=processed,
-        indexed=indexed,
-        source_group=normalized_source_group,
-        category=normalized_category,
-    )
+        if index_records:
+            db.upsert_library_items(index_records)
 
-    if not scoped:
-        db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
-    else:
-        db.set_library_scan_state(f"{scope_key}.complete", "1" if reached_end else "0")
-        db.set_library_scan_state(f"{scope_key}.cursor", "" if reached_end else last_path)
-        db.set_library_scan_state(f"{scope_key}.processed", str(processed))
-        db.set_library_scan_state(f"{scope_key}.indexed", str(indexed))
-    db.set_library_scan_state("library.indexing", "0")
-    db.set_library_scan_state("library.last_scan_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    return {
-        "processed": processed,
-        "indexed": indexed,
-        "cursor": "" if reached_end else last_path,
-        "complete": reached_end,
-        "path": scope_path,
-        "source_group": normalized_source_group,
-        "category": normalized_category,
-    }
+        record_library_folder_scan_state(
+            root_path=root_path,
+            scope_path=scope_path,
+            status="done" if reached_end else "partial",
+            complete=reached_end,
+            processed=processed,
+            indexed=indexed,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+
+        if not scoped:
+            db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
+        else:
+            db.set_library_scan_state(f"{scope_key}.complete", "1" if reached_end else "0")
+            db.set_library_scan_state(f"{scope_key}.cursor", "" if reached_end else last_path)
+            db.set_library_scan_state(f"{scope_key}.processed", str(processed))
+            db.set_library_scan_state(f"{scope_key}.indexed", str(indexed))
+        scan_completed = True
+        return {
+            "processed": processed,
+            "indexed": indexed,
+            "cursor": "" if reached_end else last_path,
+            "complete": reached_end,
+            "path": scope_path,
+            "source_group": normalized_source_group,
+            "category": normalized_category,
+        }
+    except Exception as exc:
+        record_library_folder_scan_state(
+            root_path=root_path,
+            scope_path=scope_path,
+            status="failed",
+            complete=False,
+            processed=processed,
+            indexed=indexed,
+            source_group=normalized_source_group,
+            category=normalized_category,
+            error=str(exc),
+        )
+        raise
+    finally:
+        db.set_library_scan_state("library.indexing", "0")
+        if scan_completed:
+            db.set_library_scan_state("library.last_scan_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 
 def record_library_folder_scan_state(
@@ -3932,6 +3951,7 @@ def record_library_folder_scan_state(
     indexed: int,
     source_group: str = "",
     category: str = "",
+    error: str = "",
 ) -> None:
     if root_path is None:
         return
@@ -3948,6 +3968,12 @@ def record_library_folder_scan_state(
     except (OSError, ValueError):
         parent_path = ""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    detail = {
+        "source_group": source_group,
+        "category": category,
+    }
+    if error:
+        detail["error"] = error
     db.upsert_library_folder_state(
         path=scope_path,
         parent_path=parent_path,
@@ -3957,10 +3983,7 @@ def record_library_folder_scan_state(
         processed_count=processed,
         indexed_count=indexed,
         mtime_ns=mtime_ns,
-        detail={
-            "source_group": source_group,
-            "category": category,
-        },
+        detail=detail,
         scanned_at=now,
     )
 
@@ -6645,6 +6668,8 @@ def clear_cache_files(root: Path) -> int:
     for path in root.rglob("*"):
         if not removable_cache_file(path):
             continue
+        if is_temp_cache_file(path):
+            continue
         if not safe_cache_file(root, path):
             continue
         cleanup_file(path)
@@ -6688,8 +6713,7 @@ def cleanup_stale_files(
                 age = current_time - path.stat().st_mtime
             except OSError:
                 continue
-            is_temp = path.name.startswith(".") or ".tmp" in path.name
-            if is_temp and temp_ttl_seconds is not None and age >= temp_ttl_seconds:
+            if is_temp_cache_file(path) and temp_ttl_seconds is not None and age >= temp_ttl_seconds:
                 cleanup_file(path)
                 removed += 1
             elif ttl_seconds > 0 and age >= ttl_seconds:
@@ -6705,6 +6729,8 @@ def cleanup_cache_quota(root: Path, max_bytes: int) -> int:
     total = 0
     for path in root.rglob("*"):
         if not removable_cache_file(path):
+            continue
+        if is_temp_cache_file(path):
             continue
         if not safe_cache_file(root, path):
             continue
@@ -6724,6 +6750,10 @@ def cleanup_cache_quota(root: Path, max_bytes: int) -> int:
         if total <= max_bytes:
             break
     return removed
+
+
+def is_temp_cache_file(path: Path) -> bool:
+    return path.name.startswith(".") or ".tmp" in path.name
 
 
 def download_archive_semaphore() -> threading.BoundedSemaphore:

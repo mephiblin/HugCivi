@@ -438,12 +438,46 @@ def test_media_cache_quota_uses_access_time_lru(app_modules: tuple) -> None:
     media_cache.mkdir(parents=True, exist_ok=True)
     old_access = media_cache / "old-access.play.mp4"
     recent_access = media_cache / "recent-access.play.mp4"
+    active_temp = media_cache / ".active.tmp.mp4"
+    old_access.write_bytes(b"1234")
+    recent_access.write_bytes(b"5678")
+    active_temp.write_bytes(b"x" * 100)
+    os.utime(old_access, (100, 900))
+    os.utime(recent_access, (800, 200))
+    os.utime(active_temp, (50, 50))
+
+    assert main.cleanup_cache_quota(media_cache, 4) == 1
+    assert not old_access.exists()
+    assert recent_access.exists()
+    assert active_temp.exists()
+
+
+def test_media_cache_cleanup_uses_saved_quota_settings(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, config_root = app_modules
+    media_cache = config_root / "media-cache"
+    media_cache.mkdir(parents=True, exist_ok=True)
+    old_access = media_cache / "old.play.mp4"
+    recent_access = media_cache / "recent.play.mp4"
     old_access.write_bytes(b"1234")
     recent_access.write_bytes(b"5678")
     os.utime(old_access, (100, 900))
     os.utime(recent_access, (800, 200))
+    db.set_setting("MEDIA_CACHE_TTL_SECONDS", "0")
+    db.set_setting("MEDIA_CACHE_MAX_BYTES", "4")
+    client = TestClient(main.app)
 
-    assert main.cleanup_cache_quota(media_cache, 4) == 1
+    status = client.get("/api/media/cache", auth=("admin", "test-password-that-is-long"))
+    assert status.status_code == 200
+    assert status.json()["cache"]["policy"]["max_bytes"] == 4
+
+    cleanup = client.post(
+        "/api/media/cache/cleanup",
+        json={"scope": "all"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert cleanup.status_code == 200
+    assert cleanup.json()["removed"] == 1
     assert not old_access.exists()
     assert recent_access.exists()
 
@@ -615,8 +649,9 @@ def test_media_thumbnail_backfill_job_uses_card_representatives(
     assert metadata["media_job"]["workers"] == 3
 
 
-def test_settings_post_saves_cache_and_maintenance_policy(app_modules: tuple) -> None:
+def test_settings_post_saves_cache_and_maintenance_policy(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    monkeypatch.setenv("LIBRARY_WATCHER_LOCAL_ONLY", "0")
     client = TestClient(main.app)
 
     response = client.post(
@@ -645,8 +680,12 @@ def test_settings_post_saves_cache_and_maintenance_policy(app_modules: tuple) ->
     assert db.get_setting("INTERNAL_JOB_MAINTENANCE_START_HOUR") == "22"
     assert db.get_setting("INTERNAL_JOB_MAINTENANCE_END_HOUR") == "5"
     assert db.get_setting("LIBRARY_WATCHER_ENABLED") == "1"
+    assert db.get_setting("LIBRARY_WATCHER_LOCAL_ONLY") is None
     assert db.get_setting("MEDIA_VIDEO_PREVIEW_MODE") == "keyframes"
     assert main.thumbnail_backfill_worker_count() == 5
+    watcher = client.get("/api/library/watcher", auth=("admin", "test-password-that-is-long"))
+    assert watcher.status_code == 200
+    assert watcher.json()["watcher"]["local_only"] is False
 
 
 def test_internal_job_maintenance_policy_defers_heavy_jobs(app_modules: tuple) -> None:
@@ -1507,6 +1546,34 @@ def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypa
     assert folder_state["indexed_count"] >= 4
     page = main.library_items_page_payload(root_path=root)
     assert page["index_status"]["folder_state"]["path"] == "batched"
+
+
+def test_library_reindex_failure_clears_indexing_and_marks_folder_failed(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "fails"
+    root.mkdir()
+    result = json.loads(main.api_library_reindex(path="fails", _="_").body.decode("utf-8"))
+    job_id = int(result["job_id"])
+    job = db.get_job(job_id)
+    assert job is not None
+
+    def fail_iter_library_scan_paths(*_args, **_kwargs):
+        raise RuntimeError("scan boom")
+
+    monkeypatch.setattr(main, "iter_library_scan_paths", fail_iter_library_scan_paths)
+
+    with pytest.raises(RuntimeError, match="scan boom"):
+        main.run_library_reindex_job(job_id, job)
+
+    assert db.get_library_scan_state("library.indexing", "1") == "0"
+    folder_state = db.get_library_folder_state("fails")
+    assert folder_state is not None
+    assert folder_state["status"] == "failed"
+    assert folder_state["complete"] is False
+    assert folder_state["detail"]["error"] == "scan boom"
 
 
 def test_library_scan_batch_uses_bulk_upsert(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:

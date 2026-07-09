@@ -86,7 +86,7 @@ Internal server-local jobs use a separate limit:
 
 | Setting | Meaning |
 | --- | --- |
-| `INTERNAL_JOB_MAX_CONCURRENT` | Concurrent ZIP/transcode/poster jobs. Default is `2`; `1` is recommended on modest NAS hardware. |
+| `INTERNAL_JOB_MAX_CONCURRENT` | Concurrent internal jobs, including ZIP, transcode/poster, thumbnail backfill, transfer, and library reindex work. Default is `2`; `1` is recommended on modest NAS hardware. |
 
 Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS` to `${DOWNLOAD_STALL_TIMEOUT_SECONDS:-0}`, while the Dockerfile and local compose path use `600`. If you want stalled downloads to be stopped automatically in Portainer, set this value explicitly.
 
@@ -319,7 +319,7 @@ DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
 
 `0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work. Thumbnail backfill jobs use 3 queue workers by default, but each ffmpeg invocation still passes through the media semaphore. `INTERNAL_JOB_MAINTENANCE_MODE=window` starts ZIP, library reindex, transcode, poster, and thumbnail backfill jobs only during the configured server-local hour range; `paused` keeps those heavy jobs queued until the policy changes. `LIBRARY_WATCHER_ENABLED` and `MEDIA_VIDEO_PREVIEW_MODE` are disabled-by-default policy/status controls in the current build; they do not start a filesystem watcher or preview/trickplay worker.
 
-Deploy note: no DB migrations or volume changes are required for thumbnail backfill jobs. Rebuild and redeploy the web image to ship the new library action; existing `/config/media-cache` contents remain valid and the existing TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
+Deploy note: no manual operator migration or volume changes are required for thumbnail/cache maintenance. The app applies additive SQLite schema changes such as `library_folder_state` during startup. Existing `/config/media-cache` contents remain valid and TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
 
 ## Library Index
 

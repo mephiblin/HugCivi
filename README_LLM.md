@@ -112,7 +112,7 @@ Use targeted checks from the relevant skill. The broad baseline remains:
 
 ```bash
 git diff --check
-python3 -m py_compile app/main.py app/db.py app/downloader.py app/internal_jobs.py app/parsers.py app/workflows.py app/metadata.py app/utils.py app/subscriptions.py
+python3 -m py_compile app/main.py app/db.py app/defaults.py app/downloader.py app/internal_jobs.py app/parsers.py app/workflows.py app/metadata.py app/utils.py app/subscriptions.py
 node --check chrome-extension/shared.js
 node --check chrome-extension/background.js
 node --check chrome-extension/popup.js
