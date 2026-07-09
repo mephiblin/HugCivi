@@ -105,7 +105,8 @@ SQLite tables created by `db.init_db()`:
 | `job_content_refs` | Links from jobs to source content paths. |
 | `library_items` | DB-backed library index rows. Each row stores a serialized UI payload in `payload_json`. |
 | `library_scan_state` | Cursor/status values for incremental indexing and cached storage-usage scan state. |
-| `maintenance_runs` | WAL, checkpoint, optimize, compact, and backup run history. |
+| `library_folder_state` | Folder-level scan state for scoped library reindex progress and selected-folder index status payloads. |
+| `maintenance_runs` | WAL, checkpoint, optimize, compact, backup, and media cache cleanup run history. |
 | `transfer_targets` | Registered outbound transfer targets with `local_mount`, `rclone`, or `receiver` kind, base paths, enabled state, copy policy JSON, and Receiver URL/token when applicable. |
 | `subscriptions` | YouTube subscription sources and scheduling metadata. Manual `check now` and the subscription check scheduler update these rows. |
 | `subscription_items` | Discovered/queued/download state model for YouTube subscription media. Manual/scheduled discovery and the subscription download worker update these rows. |
@@ -151,6 +152,7 @@ Internal jobs:
 - created by `db.create_internal_job()`
 - scheduled by `app/internal_jobs.py`
 - limited by `INTERNAL_JOB_MAX_CONCURRENT` with default `2`
+- heavy kinds can be gated by `INTERNAL_JOB_MAINTENANCE_MODE=immediate|window|paused`; window mode uses `INTERNAL_JOB_MAINTENANCE_START_HOUR` and `INTERNAL_JOB_MAINTENANCE_END_HOUR`
 - current kinds:
   - `archive_zip`
   - `media_transcode`
@@ -227,6 +229,9 @@ Card thumbnail generation:
 - thumbnail cache misses use ffmpeg behind the same media transcode semaphore that protects video work
 - the library `썸네일 생성` action creates one `media_thumbnail_backfill` internal job for the selected folder, scans card representative images only, skips existing cache files, and defaults to 3 worker threads
 - ordinary image thumbnail requests do not create one internal job row per image; the endpoint either serves a cache hit or generates the file during the request
+- cache-hit media responses update cache access time where possible; quota cleanup removes least-recently-accessed files first
+- `/api/media/cache` reports media cache totals by category, and `/api/media/cache/cleanup` runs TTL/quota cleanup or clears the thumbnail cache scope
+- `MEDIA_VIDEO_PREVIEW_MODE` is currently a disabled-by-default policy/status setting for future preview/trickplay work; no preview job kind is started in this build
 - `/api/fs/preview`, `/api/media/file`, and `/api/media/poster` remain available for compatibility and media-viewer/full-size use
 
 Transfer copy:
@@ -259,12 +264,14 @@ Indexer behavior:
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
 - `/api/library/reindex` queues or reuses an active `library_reindex` internal job for the same normalized scope; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch, and each batch writes indexed rows through one bulk SQLite upsert transaction
+- scoped reindex records selected-folder progress in `library_folder_state`; selected-folder index responses may include this as additive `index_status.folder_state`
 - `/api/library?mode=live` can force filesystem scan behavior
 - selected-folder `mode=index` pages query SQLite only, including `source_group`/`category` filters, so indexed folders can return exact totals without a filesystem scan and unindexed scopes return fast `needs_refresh`/`refreshing` status instead of waiting on a live scan
 - `/api/library?mode=live&path=...` explicitly scopes a live scan to the selected folder; completed selected-folder scans report `total_count` and `total_pages`, so ordinary folders show their full page list. The completed item list is reused by a short in-memory cache for page/sort navigation so page clicks do not repeat the same full folder scan. If the scan cannot complete within the internal path budget, totals stay unknown and the browser falls back to previous/current/next navigation.
 - `/api/library` without `limit` or `page` keeps the legacy plain-array response
 - `/api/library?limit=50&page=N&sort=...` returns a wrapper with `items`, `page`, `limit`, `total_count`/`total_pages` when known, and `has_next`; supported sort values are `az`, `za`, `date_desc`, `date_asc`, and `favorite`, with legacy `date` kept as a newest-first alias. Optional `source_group` values are `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`. Sort SQL uses stored `sort_title`, `path`, and `mtime_ns` columns so SQLite indexes can avoid expression sorting for common pages.
 - the browser renders one 50-card page at a time and avoids rerendering the library during job polling unless completed/visible card metadata changed; manually queued reindex jobs are tracked by `job_id` through `/api/jobs/{id}` so completion is not dependent on the currently visible jobs page/filter
+- `LIBRARY_WATCHER_ENABLED` is currently a disabled-by-default policy/status setting reported by `/api/library/watcher`; explicit reindex and the background indexer remain authoritative, especially on network storage.
 
 The index row stores the same kind of payload the UI already expects in `payload_json`, plus lightweight searchable columns (`source`, `source_group`, `model_category`, `parent_path`, and `sort_title`) for source/category/path navigation. This is a pragmatic cache/index for a personal archive UI, not a full search engine.
 
@@ -297,10 +304,10 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, aggregate `/api/subscriptions/items`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `GET /api/folders/search`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex` |
+| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `GET /api/folders/search`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex`, `/api/library/watcher` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
 | Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/targets/{target_id}/comfyui/check`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/civitai-resources/preflight`, `/api/transfer/civitai-resources/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
-| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
+| Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/cache`, `/api/media/cache/cleanup`, `/api/media/video-preview`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |
 | Workflows | `/api/workflows/import`, `/api/workflows/view`, `/api/workflows/preview` |
 | Hitomi listing confirm | `/api/hitomi/listing/{job_id}`, `/api/hitomi/listing/{job_id}/queue` |
 | Civitai health/refresh | `/api/civitai/resource-health`, `/api/civitai/refresh` |
@@ -339,5 +346,6 @@ Possible future moves if real usage proves the need:
 - SQLite FTS for catalog search.
 - A duplicate internal job coalescer for repeated ZIP/transcode requests on the same source.
 - A maintenance UI for backup/checkpoint/compact controls.
+- Actual local-filesystem watcher and opt-in video preview/trickplay workers, using the policy/status settings already exposed in the current build.
 - More explicit artifact retention policy rows.
 - A multi-process worker only if the single-container model becomes a real operational constraint.

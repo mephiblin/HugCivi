@@ -1,6 +1,6 @@
 # Media Library Scaling Comparison 2026-07-09
 
-Status: planning reference before the cache/index maintenance follow-up.
+Status: planning reference with an implemented baseline follow-up.
 
 This note compares HugCivi's large library behavior with public Jellyfin and Plex guidance for projects that manage many files, metadata records, and thumbnails.
 
@@ -16,6 +16,17 @@ The main gap is not the first-page query path anymore. The next speed and stabil
 - richer folder-level scan state
 - optional filesystem watching only where reliable
 - opt-in video preview/trickplay generation
+
+## Implementation Status
+
+Baseline applied on 2026-07-09 after the initial DB/reindex/frontend optimization commit:
+
+- Local `/config` guidance: documented in operations/configuration handoff. No mount migration is performed automatically.
+- Cache quotas and cleanup: implemented for `/config/media-cache` with cache status, manual cleanup, thumbnail-scope clear, and least-recently-accessed quota cleanup.
+- Maintenance windows: implemented for heavy internal job start policy with `immediate`, `window`, and `paused` modes.
+- Folder-level scan state: implemented as additive SQLite `library_folder_state` and exposed through selected-folder index status when available.
+- Optional filesystem watcher: policy/status only. The setting and `/api/library/watcher` endpoint exist, but no watcher worker starts in this build.
+- Video preview/trickplay: policy/status only. The setting and `/api/media/video-preview` endpoint exist, but no preview generation job starts in this build.
 
 ## Jellyfin And Plex Patterns
 

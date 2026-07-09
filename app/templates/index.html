@@ -374,6 +374,14 @@
           </span>
           폴더
         </button>
+        <button type="button" class="settings-nav-item" data-settings-pane="settings-maintenance">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm0 2.2L18 6.5V11c0 3.9-2.4 7.5-6 8.8-3.6-1.3-6-4.9-6-8.8V6.5l6-2.3Zm-1 4.3h2v4.2l3 3-1.4 1.4-3.6-3.6v-5Z"/>
+            </svg>
+          </span>
+          유지보수
+        </button>
         <button type="button" class="settings-nav-item" data-settings-pane="settings-transfer">
           <span aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
@@ -609,6 +617,84 @@
                      placeholder="stable-diffusion/upscalers" autocomplete="off">
             </label>
           </div>
+        </section>
+
+        <section class="settings-block settings-pane" id="settings-maintenance"
+                 data-settings-title="유지보수"
+                 data-settings-description="캐시, 썸네일, 무거운 내부 작업 실행 정책을 조절합니다.">
+          <div class="settings-block-copy">
+            <h3>유지보수</h3>
+            <p>캐시, 썸네일, 무거운 내부 작업 실행 정책을 조절합니다.</p>
+          </div>
+          <div class="settings-grid two-cols">
+            <label class="setting-field" for="media_cache_ttl_seconds">
+              <span>미디어 캐시 TTL</span>
+              <input id="media_cache_ttl_seconds" name="media_cache_ttl_seconds" type="number" min="0" step="1"
+                     value="{{ settings.cache.MEDIA_CACHE_TTL_SECONDS.value }}" autocomplete="off">
+              <small>초 단위입니다. 0은 TTL 정리를 끕니다.</small>
+            </label>
+            <label class="setting-field" for="media_cache_max_bytes">
+              <span>미디어 캐시 최대 바이트</span>
+              <input id="media_cache_max_bytes" name="media_cache_max_bytes" type="number" min="0" step="1"
+                     value="{{ settings.cache.MEDIA_CACHE_MAX_BYTES.value }}" autocomplete="off">
+              <small>0은 용량 제한 없음입니다. 초과 시 오래 접근하지 않은 파일부터 정리합니다.</small>
+            </label>
+            <label class="setting-field" for="media_thumbnail_backfill_workers">
+              <span>썸네일 생성 worker</span>
+              <input id="media_thumbnail_backfill_workers" name="media_thumbnail_backfill_workers" type="number" min="1" max="16" step="1"
+                     value="{{ settings.cache.MEDIA_THUMBNAIL_BACKFILL_WORKERS.value }}" autocomplete="off">
+              <small>선택 폴더 카드 썸네일 생성 작업의 기본 병렬 수입니다.</small>
+            </label>
+            <label class="setting-field" for="media_thumbnail_backfill_max_items">
+              <span>썸네일 후보 최대 수</span>
+              <input id="media_thumbnail_backfill_max_items" name="media_thumbnail_backfill_max_items" type="number" min="1" max="20000" step="1"
+                     value="{{ settings.cache.MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS.value }}" autocomplete="off">
+              <small>한 번에 훑을 카드 대표 이미지 후보 상한입니다.</small>
+            </label>
+            <label class="setting-field" for="internal_job_maintenance_mode">
+              <span>무거운 내부 작업 실행</span>
+              <select id="internal_job_maintenance_mode" name="internal_job_maintenance_mode">
+                <option value="immediate" {% if settings.maintenance.INTERNAL_JOB_MAINTENANCE_MODE.value == 'immediate' %}selected{% endif %}>즉시 실행</option>
+                <option value="window" {% if settings.maintenance.INTERNAL_JOB_MAINTENANCE_MODE.value == 'window' %}selected{% endif %}>시간창에서 실행</option>
+                <option value="paused" {% if settings.maintenance.INTERNAL_JOB_MAINTENANCE_MODE.value == 'paused' %}selected{% endif %}>대기 유지</option>
+              </select>
+              <small>라이브러리 reindex, ZIP, transcode, poster, 썸네일 backfill에 적용됩니다.</small>
+            </label>
+            <label class="setting-field" for="internal_job_maintenance_start_hour">
+              <span>유지보수 시작 시각</span>
+              <input id="internal_job_maintenance_start_hour" name="internal_job_maintenance_start_hour" type="number" min="0" max="23" step="1"
+                     value="{{ settings.maintenance.INTERNAL_JOB_MAINTENANCE_START_HOUR.value }}" autocomplete="off">
+              <small>서버 로컬 시간 기준 0-23시입니다.</small>
+            </label>
+            <label class="setting-field" for="internal_job_maintenance_end_hour">
+              <span>유지보수 종료 시각</span>
+              <input id="internal_job_maintenance_end_hour" name="internal_job_maintenance_end_hour" type="number" min="0" max="23" step="1"
+                     value="{{ settings.maintenance.INTERNAL_JOB_MAINTENANCE_END_HOUR.value }}" autocomplete="off">
+              <small>시작과 같으면 하루 종일 허용합니다.</small>
+            </label>
+            <label class="setting-field" for="media_video_preview_mode">
+              <span>비디오 preview 정책</span>
+              <select id="media_video_preview_mode" name="media_video_preview_mode">
+                <option value="off" {% if settings.maintenance.MEDIA_VIDEO_PREVIEW_MODE.value == 'off' %}selected{% endif %}>사용 안 함</option>
+                <option value="keyframes" {% if settings.maintenance.MEDIA_VIDEO_PREVIEW_MODE.value == 'keyframes' %}selected{% endif %}>Keyframe 우선</option>
+                <option value="full" {% if settings.maintenance.MEDIA_VIDEO_PREVIEW_MODE.value == 'full' %}selected{% endif %}>전체 preview</option>
+              </select>
+              <small>현재 빌드에서는 정책만 저장하고 preview 생성 job은 만들지 않습니다.</small>
+            </label>
+            <label class="setting-field setting-toggle wide" for="library_watcher_enabled">
+              <span>라이브러리 파일 watcher</span>
+              <input id="library_watcher_enabled" name="library_watcher_enabled" type="checkbox" value="1"
+                     {% if settings.maintenance.LIBRARY_WATCHER_ENABLED.value == "1" %}checked{% endif %}>
+              <span class="setting-toggle-track" aria-hidden="true"></span>
+              <small>기본은 명시적 reindex입니다. 네트워크 스토리지는 watcher 대신 reindex를 사용하세요.</small>
+            </label>
+          </div>
+          <div class="settings-inline-actions">
+            <button type="button" class="settings-cancel" id="media-cache-refresh">캐시 상태</button>
+            <button type="button" class="settings-cancel" id="media-cache-cleanup">캐시 정리</button>
+            <button type="button" class="settings-cancel" id="media-cache-clear-thumbnails">썸네일 비우기</button>
+          </div>
+          <p class="folder-search-status" id="media-cache-status">-</p>
         </section>
 
         <section class="settings-block settings-pane" id="settings-transfer"
@@ -1132,6 +1218,10 @@
     const settingsDescription = document.getElementById('settings-description');
     const settingsNavItems = document.querySelectorAll('.settings-nav-item');
     const settingsPanes = document.querySelectorAll('.settings-pane');
+    const mediaCacheRefreshButton = document.getElementById('media-cache-refresh');
+    const mediaCacheCleanupButton = document.getElementById('media-cache-cleanup');
+    const mediaCacheClearThumbnailsButton = document.getElementById('media-cache-clear-thumbnails');
+    const mediaCacheStatus = document.getElementById('media-cache-status');
     const mobileTabs = document.querySelectorAll('[data-mobile-tab]');
     const mobilePanels = document.querySelectorAll('[data-mobile-panel]');
     const mobileSettingsButton = document.querySelector('[data-mobile-action="settings"]');
@@ -1628,6 +1718,9 @@
     });
     settingsClose.addEventListener('click', closeSettingsModal);
     settingsCancel.addEventListener('click', closeSettingsModal);
+    mediaCacheRefreshButton?.addEventListener('click', () => refreshMediaCacheStatus());
+    mediaCacheCleanupButton?.addEventListener('click', () => cleanupMediaCache({scope: 'all'}));
+    mediaCacheClearThumbnailsButton?.addEventListener('click', () => cleanupMediaCache({scope: 'thumbnails', clear: true}));
     settingsNavItems.forEach(item => {
       item.addEventListener('click', () => {
         activateSettingsPane(item.dataset.settingsPane || 'settings-tokens');
@@ -5278,6 +5371,56 @@
       }
     }
 
+    async function refreshMediaCacheStatus() {
+      if (!mediaCacheStatus) return;
+      mediaCacheStatus.textContent = '캐시 상태를 읽는 중';
+      try {
+        const response = await fetch('/api/media/cache');
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          mediaCacheStatus.textContent = data.detail || '캐시 상태를 읽지 못했습니다.';
+          return;
+        }
+        renderMediaCacheStatus(data.cache || {});
+      } catch (err) {
+        mediaCacheStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    async function cleanupMediaCache(options = {}) {
+      if (!mediaCacheStatus) return;
+      mediaCacheStatus.textContent = '캐시를 정리하는 중';
+      try {
+        const response = await fetch('/api/media/cache/cleanup', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(options),
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          mediaCacheStatus.textContent = data.detail || '캐시 정리를 완료하지 못했습니다.';
+          return;
+        }
+        renderMediaCacheStatus(data.cache || {}, `정리 ${formatCount(data.removed || 0)}개`);
+      } catch (err) {
+        mediaCacheStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
+      }
+    }
+
+    function renderMediaCacheStatus(cache, prefix = '') {
+      if (!mediaCacheStatus) return;
+      const total = cache.total_human || formatFileSize(cache.total_bytes || 0);
+      const files = formatCount(cache.file_count || 0);
+      const categories = cache.categories || {};
+      const thumbs = categories.thumbnails?.human || formatFileSize(categories.thumbnails?.bytes || 0);
+      const transcodes = categories.transcodes?.human || formatFileSize(categories.transcodes?.bytes || 0);
+      const posters = categories.posters?.human || formatFileSize(categories.posters?.bytes || 0);
+      const policy = cache.policy || {};
+      const quota = Number(policy.max_bytes || 0) > 0 ? formatFileSize(policy.max_bytes) : '제한 없음';
+      const head = prefix ? `${prefix} · ` : '';
+      mediaCacheStatus.textContent = `${head}전체 ${total} · 파일 ${files}개 · 썸네일 ${thumbs} · 변환 ${transcodes} · 포스터 ${posters} · quota ${quota}`;
+    }
+
     function subscriptionCountsText(counts) {
       const total = Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
       const eligible = Number(counts.eligible || 0);
@@ -5463,6 +5606,8 @@
       }
       if (targetId === 'settings-transfer') {
         loadTransferSettingTargets();
+      } else if (targetId === 'settings-maintenance') {
+        refreshMediaCacheStatus();
       }
     }
 

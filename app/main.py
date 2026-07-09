@@ -35,6 +35,8 @@ from .defaults import (
     DOWNLOAD_ARCHIVE_MAX_CONCURRENT_DEFAULT,
     DOWNLOAD_ARCHIVE_TTL_DEFAULT_SECONDS,
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT,
+    INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT,
     LIBRARY_ITEM_SIZE_SCAN_MAX_FILES_DEFAULT,
     MAX_CONCURRENT_DOWNLOADS_HARD_LIMIT_DEFAULT,
     MEDIA_CACHE_MAX_BYTES_DEFAULT,
@@ -192,6 +194,9 @@ MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS = 3
 MEDIA_THUMBNAIL_BACKFILL_MAX_WORKERS = 16
 MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS = 5000
 MEDIA_THUMBNAIL_BACKFILL_HARD_MAX_ITEMS = 20000
+INTERNAL_JOB_MAINTENANCE_MODES = {"immediate", "window", "paused"}
+MEDIA_CACHE_CLEANUP_SCOPES = {"all", "thumbnails"}
+MEDIA_VIDEO_PREVIEW_MODES = {"off", "keyframes", "full"}
 DOWNLOAD_ARCHIVE_MAX_FILES_DEFAULT = 50_000
 DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES_DEFAULT = 0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES_DEFAULT = 0
@@ -586,6 +591,15 @@ def save_settings(
     queue_stall_timeout_seconds: str = Form(str(DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS)),
     hitomi_listing_queue_mode: str = Form("auto"),
     gallery_dl_auto_update: str = Form("0"),
+    media_cache_ttl_seconds: str = Form(str(MEDIA_CACHE_TTL_DEFAULT_SECONDS)),
+    media_cache_max_bytes: str = Form(str(MEDIA_CACHE_MAX_BYTES_DEFAULT)),
+    media_thumbnail_backfill_workers: str = Form(str(MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS)),
+    media_thumbnail_backfill_max_items: str = Form(str(MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS)),
+    internal_job_maintenance_mode: str = Form("immediate"),
+    internal_job_maintenance_start_hour: str = Form(str(INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT)),
+    internal_job_maintenance_end_hour: str = Form(str(INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT)),
+    library_watcher_enabled: str = Form("0"),
+    media_video_preview_mode: str = Form("off"),
     _: str = Depends(require_auth),
 ) -> RedirectResponse:
     save_optional_setting("HF_TOKEN", hf_token)
@@ -686,7 +700,62 @@ def save_settings(
     gallery_dl_auto_update_value = normalize_bool_setting(gallery_dl_auto_update, default=True)
     db.set_setting("GALLERY_DL_AUTO_UPDATE", gallery_dl_auto_update_value)
     write_startup_config({"GALLERY_DL_AUTO_UPDATE": gallery_dl_auto_update_value})
+    db.set_setting(
+        "MEDIA_CACHE_TTL_SECONDS",
+        normalize_int_setting(media_cache_ttl_seconds, MEDIA_CACHE_TTL_DEFAULT_SECONDS, minimum=0),
+    )
+    db.set_setting(
+        "MEDIA_CACHE_MAX_BYTES",
+        normalize_int_setting(media_cache_max_bytes, MEDIA_CACHE_MAX_BYTES_DEFAULT, minimum=0),
+    )
+    db.set_setting(
+        "MEDIA_THUMBNAIL_BACKFILL_WORKERS",
+        normalize_int_setting(
+            media_thumbnail_backfill_workers,
+            MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS,
+            minimum=1,
+            maximum=MEDIA_THUMBNAIL_BACKFILL_MAX_WORKERS,
+        ),
+    )
+    db.set_setting(
+        "MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS",
+        normalize_int_setting(
+            media_thumbnail_backfill_max_items,
+            MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS,
+            minimum=1,
+            maximum=MEDIA_THUMBNAIL_BACKFILL_HARD_MAX_ITEMS,
+        ),
+    )
+    maintenance_mode = internal_job_maintenance_mode.strip().lower().replace("-", "_")
+    if maintenance_mode not in INTERNAL_JOB_MAINTENANCE_MODES:
+        maintenance_mode = "immediate"
+    db.set_setting("INTERNAL_JOB_MAINTENANCE_MODE", maintenance_mode)
+    db.set_setting(
+        "INTERNAL_JOB_MAINTENANCE_START_HOUR",
+        normalize_int_setting(
+            internal_job_maintenance_start_hour,
+            INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT,
+            minimum=0,
+            maximum=23,
+        ),
+    )
+    db.set_setting(
+        "INTERNAL_JOB_MAINTENANCE_END_HOUR",
+        normalize_int_setting(
+            internal_job_maintenance_end_hour,
+            INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT,
+            minimum=0,
+            maximum=23,
+        ),
+    )
+    db.set_setting("LIBRARY_WATCHER_ENABLED", normalize_bool_setting(library_watcher_enabled, default=False))
+    db.set_setting("LIBRARY_WATCHER_LOCAL_ONLY", "1")
+    video_preview_mode = media_video_preview_mode.strip().lower()
+    if video_preview_mode not in MEDIA_VIDEO_PREVIEW_MODES:
+        video_preview_mode = "off"
+    db.set_setting("MEDIA_VIDEO_PREVIEW_MODE", video_preview_mode)
     notify_queue_settings_changed()
+    internal_jobs.notify_policy_changed()
 
     return RedirectResponse(url="/", status_code=303)
 
@@ -1216,6 +1285,51 @@ def api_check_subscription_now(subscription_id: int, _: str = Depends(require_au
 @app.get("/api/storage")
 def api_storage(_: str = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(storage_status())
+
+
+@app.get("/api/media/cache")
+def api_media_cache(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse({"ok": True, "cache": media_cache_status()})
+
+
+@app.post("/api/media/cache/cleanup")
+async def api_media_cache_cleanup(request: Request, _: str = Depends(require_auth)) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="요청 본문이 올바르지 않습니다.")
+    scope = str(payload.get("scope") or "all").strip().lower()
+    if scope not in MEDIA_CACHE_CLEANUP_SCOPES:
+        raise HTTPException(status_code=400, detail="지원하지 않는 캐시 정리 scope입니다.")
+    clear_all = bool(payload.get("clear"))
+    ttl_seconds = payload.get("ttl_seconds")
+    max_bytes = payload.get("max_bytes")
+    run_id = db.create_maintenance_run(
+        "media_cache_cleanup",
+        detail={"scope": scope, "clear": clear_all, "ttl_seconds": ttl_seconds, "max_bytes": max_bytes},
+    )
+    try:
+        removed = cleanup_media_cache_scope(
+            scope=scope,
+            clear_all=clear_all,
+            ttl_seconds=ttl_seconds,
+            max_bytes=max_bytes,
+        )
+    except Exception as exc:
+        db.finish_maintenance_run(run_id, "failed", {"error": str(exc), "scope": scope})
+        raise
+    detail = {"scope": scope, "removed": removed, "cache": media_cache_status()}
+    db.finish_maintenance_run(run_id, "done", detail)
+    return JSONResponse({"ok": True, "run_id": run_id, **detail})
+
+
+@app.get("/api/library/watcher")
+def api_library_watcher(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse({"ok": True, "watcher": library_watcher_status()})
+
+
+@app.get("/api/media/video-preview")
+def api_media_video_preview(_: str = Depends(require_auth)) -> JSONResponse:
+    return JSONResponse({"ok": True, "preview": media_video_preview_status()})
 
 
 @app.post("/api/storage/archive-usage")
@@ -2355,6 +2469,7 @@ def api_media_thumbnail(
     thumbnail = cached_image_thumbnail_path(source, size=size)
     if not safe_cache_file(MEDIA_CACHE_DIR, thumbnail):
         raise HTTPException(status_code=404, detail="썸네일 파일을 찾지 못했습니다.")
+    touch_cache_file_accessed(thumbnail)
     response = FileResponse(thumbnail, media_type="image/jpeg", filename=f"{source.stem}.jpg")
     response.headers["Cache-Control"] = MEDIA_THUMBNAIL_CACHE_CONTROL
     return response
@@ -2478,6 +2593,7 @@ def api_media_play(path: str, _: str = Depends(require_auth)) -> Response:
             },
             status_code=202,
         )
+    touch_cache_file_accessed(playable)
     return FileResponse(playable, media_type="video/mp4")
 
 
@@ -2509,6 +2625,7 @@ def api_media_poster(path: str, _: str = Depends(require_auth)) -> Response:
             },
             status_code=202,
         )
+    touch_cache_file_accessed(poster)
     return FileResponse(poster, media_type="image/jpeg", filename=f"{source.stem}.jpg")
 
 
@@ -2553,6 +2670,7 @@ def api_media_transcode_job_file(job_id: int, _: str = Depends(require_auth)) ->
     artifact_path = Path(str(job.get("artifact_path") or ""))
     if not safe_media_artifact_file(artifact_path):
         raise HTTPException(status_code=404, detail="재생 파일을 찾지 못했습니다.")
+    touch_cache_file_accessed(artifact_path)
     return FileResponse(artifact_path, media_type="video/mp4", filename=str(job.get("filename") or artifact_path.name))
 
 
@@ -2597,6 +2715,7 @@ def api_media_poster_job_file(job_id: int, _: str = Depends(require_auth)) -> Fi
     artifact_path = Path(str(job.get("artifact_path") or ""))
     if not safe_media_artifact_file(artifact_path):
         raise HTTPException(status_code=404, detail="썸네일 파일을 찾지 못했습니다.")
+    touch_cache_file_accessed(artifact_path)
     return FileResponse(artifact_path, media_type="image/jpeg", filename=str(job.get("filename") or artifact_path.name))
 
 
@@ -2971,6 +3090,13 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
     job["job_kind"] = db.normalized_job_kind(job.get("job_kind"))
     if job["job_kind"] != db.JOB_KIND_DOWNLOAD and str(job.get("source") or "") == "internal":
         job["source"] = job["job_kind"]
+    if (
+        db.is_internal_job(job)
+        and str(job.get("status") or "") == "queued"
+        and not internal_jobs.job_start_allowed(job)
+    ):
+        job["maintenance_deferred"] = True
+        job["maintenance_policy"] = internal_job_maintenance_policy()
     if job["job_kind"] in {INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL, INTERNAL_JOB_LIBRARY_REINDEX}:
         job["progress_human"] = f"{int(progress)}개"
         job["total_human"] = f"{int(total or 0)}개" if total is not None else ""
@@ -3086,6 +3212,13 @@ def library_index_scope_refreshing(*, path_prefix: str = "", source_group: str =
     )
 
 
+def library_index_status_payload(path_prefix: str, **values: Any) -> dict[str, Any]:
+    payload = dict(values)
+    if path_prefix.strip("/"):
+        payload["folder_state"] = db.get_library_folder_state(path_prefix)
+    return payload
+
+
 def library_items_page_payload(
     *,
     limit: int | None = LIBRARY_PAGE_SIZE,
@@ -3140,7 +3273,7 @@ def library_items_page_payload(
                 "sort": normalized_sort,
                 "source_group": normalized_source_group,
                 "category": normalized_category,
-                "index_status": {"usable": True, "fallback": False},
+                "index_status": library_index_status_payload(path_prefix, usable=True, fallback=False),
                 "paged": True,
             }
         if library_index_scope_complete(
@@ -3161,7 +3294,7 @@ def library_items_page_payload(
                 "sort": normalized_sort,
                 "source_group": normalized_source_group,
                 "category": normalized_category,
-                "index_status": {"usable": True, "fallback": False, "empty": True},
+                "index_status": library_index_status_payload(path_prefix, usable=True, fallback=False, empty=True),
                 "paged": True,
             }
         if root_path is None and db.get_library_scan_state("library.indexing", "0") == "1":
@@ -3178,7 +3311,12 @@ def library_items_page_payload(
                 "sort": normalized_sort,
                 "source_group": normalized_source_group,
                 "category": normalized_category,
-                "index_status": {"usable": False, "fallback": False, "indexing": True},
+                "index_status": library_index_status_payload(
+                    path_prefix,
+                    usable=False,
+                    fallback=False,
+                    indexing=True,
+                ),
                 "paged": True,
             }
         return {
@@ -3194,16 +3332,17 @@ def library_items_page_payload(
             "sort": normalized_sort,
             "source_group": normalized_source_group,
             "category": normalized_category,
-            "index_status": {
-                "usable": False,
-                "fallback": False,
-                "needs_refresh": True,
-                "refreshing": library_index_scope_refreshing(
+            "index_status": library_index_status_payload(
+                path_prefix,
+                usable=False,
+                fallback=False,
+                needs_refresh=True,
+                refreshing=library_index_scope_refreshing(
                     path_prefix=path_prefix,
                     source_group=normalized_source_group,
                     category=normalized_category,
                 ),
-            },
+            ),
             "paged": True,
         }
 
@@ -3718,6 +3857,17 @@ def scan_library_index_batch(
     favorites = db.favorite_paths()
     index_records: list[dict[str, Any]] = []
 
+    record_library_folder_scan_state(
+        root_path=root_path,
+        scope_path=scope_path,
+        status="running",
+        complete=False,
+        processed=0,
+        indexed=0,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
+
     for path in iter_library_scan_paths(cursor=cursor, root_path=root_path):
         if LIBRARY_INDEXER_STOP.is_set():
             reached_end = False
@@ -3741,6 +3891,17 @@ def scan_library_index_batch(
     if index_records:
         db.upsert_library_items(index_records)
 
+    record_library_folder_scan_state(
+        root_path=root_path,
+        scope_path=scope_path,
+        status="done" if reached_end else "partial",
+        complete=reached_end,
+        processed=processed,
+        indexed=indexed,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
+
     if not scoped:
         db.set_library_scan_state("library.cursor", "" if reached_end else last_path)
     else:
@@ -3759,6 +3920,49 @@ def scan_library_index_batch(
         "source_group": normalized_source_group,
         "category": normalized_category,
     }
+
+
+def record_library_folder_scan_state(
+    *,
+    root_path: Path | None,
+    scope_path: str,
+    status: str,
+    complete: bool,
+    processed: int,
+    indexed: int,
+    source_group: str = "",
+    category: str = "",
+) -> None:
+    if root_path is None:
+        return
+    try:
+        stat = root_path.stat()
+    except OSError:
+        mtime_ns = 0
+    else:
+        mtime_ns = int(stat.st_mtime_ns)
+    parent_path = ""
+    try:
+        if root_path.resolve(strict=False) != DATA_ROOT.resolve(strict=False):
+            parent_path = relative_data_path(root_path.parent)
+    except (OSError, ValueError):
+        parent_path = ""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    db.upsert_library_folder_state(
+        path=scope_path,
+        parent_path=parent_path,
+        name=root_path.name,
+        status=status,
+        complete=complete,
+        processed_count=processed,
+        indexed_count=indexed,
+        mtime_ns=mtime_ns,
+        detail={
+            "source_group": source_group,
+            "category": category,
+        },
+        scanned_at=now,
+    )
 
 
 def iter_library_scan_paths(*, cursor: str, root_path: Path | None = None):
@@ -4949,7 +5153,7 @@ def thumbnail_ready_for_url(url: str) -> bool:
 
 
 def thumbnail_backfill_worker_count(value: Any | None = None) -> int:
-    raw_value = value if value is not None else os.getenv("MEDIA_THUMBNAIL_BACKFILL_WORKERS")
+    raw_value = value if value is not None else setting_or_env("MEDIA_THUMBNAIL_BACKFILL_WORKERS")
     try:
         workers = int(raw_value if raw_value is not None else MEDIA_THUMBNAIL_BACKFILL_DEFAULT_WORKERS)
     except (TypeError, ValueError):
@@ -4958,7 +5162,7 @@ def thumbnail_backfill_worker_count(value: Any | None = None) -> int:
 
 
 def thumbnail_backfill_item_limit(value: Any | None = None) -> int:
-    raw_value = value if value is not None else os.getenv("MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS")
+    raw_value = value if value is not None else setting_or_env("MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS")
     try:
         limit = int(raw_value if raw_value is not None else MEDIA_THUMBNAIL_BACKFILL_DEFAULT_MAX_ITEMS)
     except (TypeError, ValueError):
@@ -5346,6 +5550,16 @@ def run_library_reindex_job(job_id: int, job: dict[str, Any]) -> None:
             ensure_ascii=False,
         ),
     )
+    record_library_folder_scan_state(
+        root_path=root,
+        scope_path=normalized_path,
+        status="done",
+        complete=complete,
+        processed=processed_total,
+        indexed=indexed_total,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
     db.append_log(job_id, f"library reindex done processed={processed_total} indexed={indexed_total}")
 
 
@@ -5711,7 +5925,7 @@ def normalize_int_setting(value: str, default: int, *, minimum: int = 0, maximum
 
 
 def nonnegative_int_env(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
+    raw_value = setting_or_env(name)
     if raw_value is None:
         return default
     try:
@@ -5731,10 +5945,18 @@ def storage_usage_scan_sleep_seconds() -> float:
 
 
 def bool_env(name: str, *, default: bool = False) -> bool:
-    raw_value = os.getenv(name)
+    raw_value = setting_or_env(name)
     if raw_value is None:
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def setting_or_env(name: str) -> str | None:
+    try:
+        value = db.get_setting(name)
+    except sqlite3.Error:
+        value = None
+    return value if value is not None else os.getenv(name)
 
 
 def normalize_bool_setting(value: str | None, *, default: bool = False) -> str:
@@ -6259,19 +6481,185 @@ def cleanup_stale_download_archives(now: float | None = None) -> int:
     )
 
 
-def cleanup_stale_media_cache(now: float | None = None) -> int:
-    ttl_seconds = nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS)
-    max_bytes = nonnegative_int_env("MEDIA_CACHE_MAX_BYTES", MEDIA_CACHE_MAX_BYTES_DEFAULT)
+def media_cache_status() -> dict[str, Any]:
+    stats = media_cache_stats(MEDIA_CACHE_DIR)
+    return {
+        "path": str(MEDIA_CACHE_DIR),
+        "thumbnail_path": str(MEDIA_THUMBNAIL_CACHE_DIR),
+        "policy": {
+            "ttl_seconds": nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS),
+            "max_bytes": nonnegative_int_env("MEDIA_CACHE_MAX_BYTES", MEDIA_CACHE_MAX_BYTES_DEFAULT),
+            "quota_order": "access_time",
+        },
+        **stats,
+    }
+
+
+def internal_job_maintenance_policy() -> dict[str, Any]:
+    return {
+        "mode": internal_jobs.internal_job_maintenance_mode(),
+        "start_hour": internal_jobs.hour_setting(
+            "INTERNAL_JOB_MAINTENANCE_START_HOUR",
+            INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT,
+        ),
+        "end_hour": internal_jobs.hour_setting(
+            "INTERNAL_JOB_MAINTENANCE_END_HOUR",
+            INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT,
+        ),
+        "allowed_now": internal_jobs.maintenance_window_allows(),
+        "heavy_job_kinds": sorted(internal_jobs.heavy_internal_job_kinds()),
+    }
+
+
+def library_watcher_status() -> dict[str, Any]:
+    enabled = setting_bool("LIBRARY_WATCHER_ENABLED", default=False)
+    local_only = setting_bool("LIBRARY_WATCHER_LOCAL_ONLY", default=True)
+    return {
+        "enabled": enabled,
+        "local_only": local_only,
+        "status": "configured_not_started" if enabled else "disabled",
+        "path": str(DATA_ROOT),
+        "requires_local_filesystem": True,
+        "message": (
+            "Filesystem watcher policy is enabled, but no watcher worker is started in this build."
+            if enabled
+            else "Filesystem watcher is disabled; explicit reindex remains authoritative."
+        ),
+    }
+
+
+def media_video_preview_status() -> dict[str, Any]:
+    raw_mode = (setting_or_env("MEDIA_VIDEO_PREVIEW_MODE") or "off").strip().lower()
+    mode = raw_mode if raw_mode in MEDIA_VIDEO_PREVIEW_MODES else "off"
+    return {
+        "enabled": mode != "off",
+        "mode": mode,
+        "status": "policy_only" if mode != "off" else "disabled",
+        "default_enabled": False,
+        "message": (
+            "Video preview/trickplay generation is policy-only in this build and does not enqueue preview jobs."
+            if mode != "off"
+            else "Video preview/trickplay generation is disabled by default."
+        ),
+    }
+
+
+def setting_bool(name: str, *, default: bool = False) -> bool:
+    raw_value = setting_or_env(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def media_cache_stats(root: Path) -> dict[str, Any]:
+    categories = {
+        "thumbnails": {"bytes": 0, "files": 0},
+        "transcodes": {"bytes": 0, "files": 0},
+        "posters": {"bytes": 0, "files": 0},
+        "other": {"bytes": 0, "files": 0},
+    }
+    total_bytes = 0
+    total_files = 0
+    if root.exists():
+        for path in root.rglob("*"):
+            if not removable_cache_file(path):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            total_bytes += size
+            total_files += 1
+            category = media_cache_file_category(path)
+            categories[category]["bytes"] += size
+            categories[category]["files"] += 1
+    return {
+        "total_bytes": total_bytes,
+        "total_human": human_bytes(total_bytes),
+        "file_count": total_files,
+        "categories": {
+            key: {**value, "human": human_bytes(int(value["bytes"]))}
+            for key, value in categories.items()
+        },
+    }
+
+
+def media_cache_file_category(path: Path) -> str:
+    try:
+        thumbnail_root = MEDIA_THUMBNAIL_CACHE_DIR.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+        if resolved != thumbnail_root and thumbnail_root in resolved.parents:
+            return "thumbnails"
+    except OSError:
+        pass
+    name = path.name.lower()
+    if name.endswith(".play.mp4"):
+        return "transcodes"
+    if name.endswith(".jpg") or name.endswith(".jpeg"):
+        return "posters"
+    return "other"
+
+
+def cleanup_media_cache_scope(
+    *,
+    scope: str,
+    clear_all: bool = False,
+    ttl_seconds: Any | None = None,
+    max_bytes: Any | None = None,
+    now: float | None = None,
+) -> int:
+    root = MEDIA_THUMBNAIL_CACHE_DIR if scope == "thumbnails" else MEDIA_CACHE_DIR
+    if clear_all:
+        return clear_cache_files(root)
+    ttl = normalized_optional_nonnegative_int(ttl_seconds, nonnegative_int_env("MEDIA_CACHE_TTL_SECONDS", MEDIA_CACHE_TTL_DEFAULT_SECONDS))
+    quota = normalized_optional_nonnegative_int(max_bytes, nonnegative_int_env("MEDIA_CACHE_MAX_BYTES", MEDIA_CACHE_MAX_BYTES_DEFAULT))
     removed = cleanup_stale_files(
-        MEDIA_CACHE_DIR,
+        root,
         patterns=("*",),
-        ttl_seconds=ttl_seconds,
-        temp_ttl_seconds=min(ttl_seconds, 24 * 60 * 60) if ttl_seconds > 0 else 24 * 60 * 60,
+        ttl_seconds=ttl,
+        temp_ttl_seconds=min(ttl, 24 * 60 * 60) if ttl > 0 else 24 * 60 * 60,
         now=now,
     )
-    if max_bytes > 0:
-        removed += cleanup_cache_quota(MEDIA_CACHE_DIR, max_bytes)
+    if quota > 0:
+        removed += cleanup_cache_quota(root, quota)
     return removed
+
+
+def cleanup_stale_media_cache(now: float | None = None) -> int:
+    return cleanup_media_cache_scope(scope="all", now=now)
+
+
+def normalized_optional_nonnegative_int(value: Any | None, default: int) -> int:
+    if value is None:
+        return max(0, default)
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return max(0, default)
+
+
+def clear_cache_files(root: Path) -> int:
+    if not root.exists():
+        return 0
+    removed = 0
+    for path in root.rglob("*"):
+        if not removable_cache_file(path):
+            continue
+        if not safe_cache_file(root, path):
+            continue
+        cleanup_file(path)
+        removed += 1
+    return removed
+
+
+def touch_cache_file_accessed(path: Path) -> None:
+    if not safe_cache_file(MEDIA_CACHE_DIR, path):
+        return
+    try:
+        stat = path.stat()
+        os.utime(path, (time.time(), stat.st_mtime))
+    except OSError:
+        return
 
 
 def cleanup_stale_files(
@@ -6313,21 +6701,23 @@ def cleanup_stale_files(
 def cleanup_cache_quota(root: Path, max_bytes: int) -> int:
     if max_bytes <= 0 or not root.exists():
         return 0
-    files: list[tuple[float, int, Path]] = []
+    files: list[tuple[float, float, int, Path]] = []
     total = 0
     for path in root.rglob("*"):
         if not removable_cache_file(path):
+            continue
+        if not safe_cache_file(root, path):
             continue
         try:
             stat = path.stat()
         except OSError:
             continue
         total += stat.st_size
-        files.append((stat.st_mtime, stat.st_size, path))
+        files.append((stat.st_atime, stat.st_mtime, stat.st_size, path))
     if total <= max_bytes:
         return 0
     removed = 0
-    for _mtime, size, path in sorted(files):
+    for _atime, _mtime, size, path in sorted(files):
         cleanup_file(path)
         total -= size
         removed += 1

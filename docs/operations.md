@@ -24,6 +24,8 @@ Recommended Synology defaults from `portainer-stack.yml`:
 
 `/config` contains the DB, settings, cached ZIP/media artifacts, and backups. Keep it if you want job history, settings, favorites, notes, and library index state.
 
+Keep `/config` on local SSD or other fast local storage whenever possible. `/data` can be a large NAS/archive mount, but SQLite, thumbnail cache metadata, media cache cleanup, and job polling are latency-sensitive and behave poorly if the DB/cache volume is slow or network-backed.
+
 Do not run two HugCivi containers against the same `/config/jobs.sqlite3` at the same time.
 
 `portainer-stack.yml` is the production/NAS reference. `docker-compose.yml` is for local development or hosts where building from the checkout is intentional. Some defaults differ between them; document and set the values you care about in Portainer environment variables instead of relying on implicit image defaults.
@@ -288,6 +290,8 @@ Media:
 - The library `썸네일 생성` button queues a `media_thumbnail_backfill` internal job for the selected folder. It scans card representatives only, skips thumbnails already cached, and defaults to 3 worker threads.
 - Media cache files live under `/config/media-cache`.
 - First visit or first load of existing files may spend CPU/I/O creating uncached thumbnails, but the browser queues requests for cards in or near the viewport. API payloads mark `thumbnail_ready`; the browser runs up to 10 ready-thumbnail requests at a time and keeps cold/generating thumbnail requests capped at 3, so it should not send 100 thumbnail generations at once.
+- The settings modal `유지보수` pane can report media cache size, run TTL/quota cleanup, or clear the thumbnail cache scope. API equivalents are `GET /api/media/cache` and `POST /api/media/cache/cleanup`.
+- Cache quota cleanup removes least-recently-accessed files first. Serving cached thumbnails, posters, or transcodes updates cache access time when the filesystem permits it.
 
 Useful media/cache settings:
 
@@ -301,6 +305,11 @@ MEDIA_CACHE_TTL_SECONDS=2592000
 MEDIA_CACHE_MAX_BYTES=0
 MEDIA_THUMBNAIL_BACKFILL_WORKERS=3
 MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS=5000
+INTERNAL_JOB_MAINTENANCE_MODE=immediate
+INTERNAL_JOB_MAINTENANCE_START_HOUR=1
+INTERNAL_JOB_MAINTENANCE_END_HOUR=6
+LIBRARY_WATCHER_ENABLED=0
+MEDIA_VIDEO_PREVIEW_MODE=off
 DOWNLOAD_ARCHIVE_TTL_SECONDS=86400
 DOWNLOAD_ARCHIVE_MAX_CONCURRENT=1
 DOWNLOAD_ARCHIVE_MAX_FILES=50000
@@ -308,7 +317,7 @@ DOWNLOAD_ARCHIVE_MAX_SOURCE_BYTES=0
 DOWNLOAD_ARCHIVE_MIN_FREE_BYTES=0
 ```
 
-`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work. Thumbnail backfill jobs use 3 queue workers by default, but each ffmpeg invocation still passes through the media semaphore.
+`0` usually means unlimited or disabled for max/threshold-style settings. Use conservative values if the NAS volume is tight. `MEDIA_CACHE_TTL_SECONDS` and `MEDIA_CACHE_MAX_BYTES` apply to transcodes, posters, and thumbnail files together. Thumbnail generation shares `MEDIA_TRANSCODE_MAX_CONCURRENT`, so lowering it also limits image thumbnail ffmpeg work. Thumbnail backfill jobs use 3 queue workers by default, but each ffmpeg invocation still passes through the media semaphore. `INTERNAL_JOB_MAINTENANCE_MODE=window` starts ZIP, library reindex, transcode, poster, and thumbnail backfill jobs only during the configured server-local hour range; `paused` keeps those heavy jobs queued until the policy changes. `LIBRARY_WATCHER_ENABLED` and `MEDIA_VIDEO_PREVIEW_MODE` are disabled-by-default policy/status controls in the current build; they do not start a filesystem watcher or preview/trickplay worker.
 
 Deploy note: no DB migrations or volume changes are required for thumbnail backfill jobs. Rebuild and redeploy the web image to ship the new library action; existing `/config/media-cache` contents remain valid and the existing TTL/quota cleanup continues to cover `/config/media-cache/thumbnails`.
 
@@ -335,6 +344,7 @@ Operational notes:
 - `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
 - `/api/library/reindex` queues a `library_reindex` internal job or reuses an already queued/running job for the same selected folder/provider/category scope. Optional `path`, `source_group`, and `category` query parameters refresh only that scope; the browser tracks the returned `job_id` directly and refreshes the DB page after completion.
+- Scoped reindex jobs record selected-folder scan progress in `library_folder_state`; selected-folder index responses may include this as `index_status.folder_state`.
 - `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next normal library load stays DB-only; use explicit live mode, wait for background indexing, or trigger `/api/library/reindex` so sidecar-backed Civitai and media cards reappear from `/data` without job rows.
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.

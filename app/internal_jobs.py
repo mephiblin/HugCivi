@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime
 import os
 import threading
 from typing import Any, Callable
 
 from . import db
+from .defaults import (
+    INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT,
+    INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT,
+)
 
 InternalJobHandler = Callable[[int, dict[str, Any]], None]
 
@@ -17,6 +22,14 @@ _CONDITION = threading.Condition()
 _PENDING_JOB_IDS: list[int] = []
 _ACTIVE_JOBS = 0
 INTERNAL_JOB_MAX_CONCURRENT_DEFAULT = 2
+HEAVY_INTERNAL_JOB_KINDS_DEFAULT = {
+    "archive_zip",
+    "library_reindex",
+    "media_poster",
+    "media_thumbnail_backfill",
+    "media_transcode",
+}
+INTERNAL_JOB_MAINTENANCE_POLL_SECONDS = 60.0
 
 
 class InternalJobControlStop(Exception):
@@ -55,6 +68,11 @@ def enqueue_job(job_id: int) -> None:
     with _CONDITION:
         if job_id not in _PENDING_JOB_IDS:
             _PENDING_JOB_IDS.append(job_id)
+        _CONDITION.notify_all()
+
+
+def notify_policy_changed() -> None:
+    with _CONDITION:
         _CONDITION.notify_all()
 
 
@@ -116,7 +134,10 @@ def scheduler_loop() -> None:
                     _CONDITION.wait()
                 if _STOP_EVENT.is_set():
                     return
-                job_id = _PENDING_JOB_IDS.pop(0)
+                job_id = pop_next_startable_job_locked()
+                if job_id is None:
+                    _CONDITION.wait(INTERNAL_JOB_MAINTENANCE_POLL_SECONDS)
+                    continue
                 _ACTIVE_JOBS += 1
 
             thread = threading.Thread(
@@ -165,6 +186,82 @@ def max_concurrent_jobs() -> int:
         return max(1, int(raw_value))
     except ValueError:
         return INTERNAL_JOB_MAX_CONCURRENT_DEFAULT
+
+
+def pop_next_startable_job_locked() -> int | None:
+    for index, job_id in enumerate(list(_PENDING_JOB_IDS)):
+        if pending_job_start_allowed(job_id):
+            return _PENDING_JOB_IDS.pop(index)
+    return None
+
+
+def pending_job_start_allowed(job_id: int) -> bool:
+    job = db.get_job(job_id)
+    if not job or not db.is_internal_job(job) or job.get("status") not in {"queued", "running"}:
+        return True
+    return job_start_allowed(job)
+
+
+def job_start_allowed(job: dict[str, Any], *, now: datetime | None = None) -> bool:
+    job_kind = db.normalized_job_kind(job.get("job_kind"))
+    if job_kind not in heavy_internal_job_kinds():
+        return True
+    mode = internal_job_maintenance_mode()
+    if mode == "immediate":
+        return True
+    if mode == "paused":
+        return False
+    return maintenance_window_allows(now=now)
+
+
+def internal_job_maintenance_mode() -> str:
+    raw_value = setting_or_env("INTERNAL_JOB_MAINTENANCE_MODE", "immediate").strip().lower()
+    normalized = raw_value.replace("-", "_")
+    if normalized in {"window", "maintenance_window", "scheduled"}:
+        return "window"
+    if normalized in {"paused", "pause", "manual", "manual_only", "manual_only_queue"}:
+        return "paused"
+    return "immediate"
+
+
+def maintenance_window_allows(*, now: datetime | None = None) -> bool:
+    current = now or datetime.now()
+    start_hour = hour_setting("INTERNAL_JOB_MAINTENANCE_START_HOUR", INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT)
+    end_hour = hour_setting("INTERNAL_JOB_MAINTENANCE_END_HOUR", INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT)
+    current_hour = int(current.hour)
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= current_hour < end_hour
+    return current_hour >= start_hour or current_hour < end_hour
+
+
+def heavy_internal_job_kinds() -> set[str]:
+    raw_value = setting_or_env("INTERNAL_JOB_MAINTENANCE_JOB_KINDS", "")
+    if not raw_value.strip():
+        return set(HEAVY_INTERNAL_JOB_KINDS_DEFAULT)
+    values = {
+        db.normalized_job_kind(value)
+        for value in raw_value.replace(";", ",").split(",")
+        if value.strip()
+    }
+    return values or set(HEAVY_INTERNAL_JOB_KINDS_DEFAULT)
+
+
+def hour_setting(name: str, default: int) -> int:
+    raw_value = setting_or_env(name, str(default))
+    try:
+        return max(0, min(23, int(raw_value)))
+    except ValueError:
+        return max(0, min(23, default))
+
+
+def setting_or_env(name: str, default: str) -> str:
+    try:
+        value = db.get_setting(name)
+    except Exception:  # noqa: BLE001 - scheduler settings should fall back during early startup
+        value = None
+    return str(value if value is not None else os.getenv(name, default))
 
 
 def run_job(job_id: int) -> None:

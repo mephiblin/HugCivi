@@ -5,6 +5,7 @@ import json
 import os
 import zipfile
 import zlib
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -431,6 +432,50 @@ def test_startup_cleanup_removes_stale_archives_and_media_cache(
     assert not old_thumbnail.exists()
 
 
+def test_media_cache_quota_uses_access_time_lru(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, config_root = app_modules
+    media_cache = config_root / "media-cache"
+    media_cache.mkdir(parents=True, exist_ok=True)
+    old_access = media_cache / "old-access.play.mp4"
+    recent_access = media_cache / "recent-access.play.mp4"
+    old_access.write_bytes(b"1234")
+    recent_access.write_bytes(b"5678")
+    os.utime(old_access, (100, 900))
+    os.utime(recent_access, (800, 200))
+
+    assert main.cleanup_cache_quota(media_cache, 4) == 1
+    assert not old_access.exists()
+    assert recent_access.exists()
+
+
+def test_media_cache_status_and_manual_thumbnail_clear(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, config_root = app_modules
+    media_cache = config_root / "media-cache"
+    thumbnail_cache = media_cache / "thumbnails"
+    thumbnail_cache.mkdir(parents=True, exist_ok=True)
+    (media_cache / "video.play.mp4").write_bytes(b"transcode")
+    (thumbnail_cache / "thumb.jpg").write_bytes(b"thumbnail")
+    client = TestClient(main.app)
+
+    status = client.get("/api/media/cache", auth=("admin", "test-password-that-is-long"))
+    assert status.status_code == 200
+    cache = status.json()["cache"]
+    assert cache["file_count"] == 2
+    assert cache["categories"]["thumbnails"]["files"] == 1
+    assert cache["categories"]["transcodes"]["files"] == 1
+
+    cleared = client.post(
+        "/api/media/cache/cleanup",
+        json={"scope": "thumbnails", "clear": True},
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert cleared.status_code == 200
+    payload = cleared.json()
+    assert payload["removed"] == 1
+    assert not (thumbnail_cache / "thumb.jpg").exists()
+    assert (media_cache / "video.play.mp4").exists()
+
+
 def test_media_thumbnail_endpoint_creates_and_reuses_cached_image(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -568,6 +613,75 @@ def test_media_thumbnail_backfill_job_uses_card_representatives(
     metadata = json.loads(updated["metadata_json"])
     assert metadata["media_job"]["generated"] == 1
     assert metadata["media_job"]["workers"] == 3
+
+
+def test_settings_post_saves_cache_and_maintenance_policy(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/settings",
+        data={
+            "media_cache_ttl_seconds": "60",
+            "media_cache_max_bytes": "4096",
+            "media_thumbnail_backfill_workers": "5",
+            "media_thumbnail_backfill_max_items": "250",
+            "internal_job_maintenance_mode": "window",
+            "internal_job_maintenance_start_hour": "22",
+            "internal_job_maintenance_end_hour": "5",
+            "library_watcher_enabled": "1",
+            "media_video_preview_mode": "keyframes",
+        },
+        auth=("admin", "test-password-that-is-long"),
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert db.get_setting("MEDIA_CACHE_TTL_SECONDS") == "60"
+    assert db.get_setting("MEDIA_CACHE_MAX_BYTES") == "4096"
+    assert db.get_setting("MEDIA_THUMBNAIL_BACKFILL_WORKERS") == "5"
+    assert db.get_setting("MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS") == "250"
+    assert db.get_setting("INTERNAL_JOB_MAINTENANCE_MODE") == "window"
+    assert db.get_setting("INTERNAL_JOB_MAINTENANCE_START_HOUR") == "22"
+    assert db.get_setting("INTERNAL_JOB_MAINTENANCE_END_HOUR") == "5"
+    assert db.get_setting("LIBRARY_WATCHER_ENABLED") == "1"
+    assert db.get_setting("MEDIA_VIDEO_PREVIEW_MODE") == "keyframes"
+    assert main.thumbnail_backfill_worker_count() == 5
+
+
+def test_internal_job_maintenance_policy_defers_heavy_jobs(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, _data_root, _config_root = app_modules
+    heavy_id = db.create_internal_job(main.INTERNAL_JOB_LIBRARY_REINDEX, input_text="reindex", payload={})
+    light_id = db.create_internal_job(main.INTERNAL_JOB_TRANSFER_COPY, input_text="transfer", payload={})
+    heavy_job = db.get_job(heavy_id)
+    light_job = db.get_job(light_id)
+    assert heavy_job is not None
+    assert light_job is not None
+
+    assert main.internal_jobs.job_start_allowed(heavy_job) is True
+    db.set_setting("INTERNAL_JOB_MAINTENANCE_MODE", "paused")
+    assert main.internal_jobs.job_start_allowed(heavy_job) is False
+    assert main.internal_jobs.job_start_allowed(light_job) is True
+
+    db.set_setting("INTERNAL_JOB_MAINTENANCE_MODE", "window")
+    db.set_setting("INTERNAL_JOB_MAINTENANCE_START_HOUR", "1")
+    db.set_setting("INTERNAL_JOB_MAINTENANCE_END_HOUR", "3")
+    assert main.internal_jobs.job_start_allowed(heavy_job, now=datetime(2026, 7, 9, 2, 0, 0)) is True
+    assert main.internal_jobs.job_start_allowed(heavy_job, now=datetime(2026, 7, 9, 4, 0, 0)) is False
+
+
+def test_policy_status_endpoints_default_disabled(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    client = TestClient(main.app)
+
+    watcher = client.get("/api/library/watcher", auth=("admin", "test-password-that-is-long"))
+    preview = client.get("/api/media/video-preview", auth=("admin", "test-password-that-is-long"))
+
+    assert watcher.status_code == 200
+    assert watcher.json()["watcher"]["status"] == "disabled"
+    assert preview.status_code == 200
+    assert preview.json()["preview"]["mode"] == "off"
+    assert preview.json()["preview"]["enabled"] is False
 
 
 def test_lifespan_runs_startup_tasks_and_stops_workers(
@@ -1385,6 +1499,14 @@ def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypa
     scope_key = main.library_index_scope_key(path_prefix="batched", source_group="civitai")
     assert db.get_library_scan_state(f"{scope_key}.complete", "0") == "1"
     assert db.get_library_scan_state(f"{scope_key}.cursor", "not-empty") == ""
+    folder_state = db.get_library_folder_state("batched")
+    assert folder_state is not None
+    assert folder_state["status"] == "done"
+    assert folder_state["complete"] is True
+    assert folder_state["processed_count"] >= 4
+    assert folder_state["indexed_count"] >= 4
+    page = main.library_items_page_payload(root_path=root)
+    assert page["index_status"]["folder_state"]["path"] == "batched"
 
 
 def test_library_scan_batch_uses_bulk_upsert(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2004,6 +2126,20 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
         render_library.index("libraryGrid.innerHTML = matches.map(job => {")
         < render_library.rindex("setupDeferredThumbnails(")
     )
+
+
+def test_home_template_declares_maintenance_cache_controls(app_modules: tuple) -> None:
+    _utils, _db, _downloader, main, _data_root, _config_root = app_modules
+    template = (main.BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+
+    assert 'data-settings-pane="settings-maintenance"' in template
+    assert 'id="media_cache_ttl_seconds"' in template
+    assert 'id="media_cache_max_bytes"' in template
+    assert 'id="internal_job_maintenance_mode"' in template
+    assert 'id="library_watcher_enabled"' in template
+    assert 'id="media_video_preview_mode"' in template
+    assert "fetch('/api/media/cache')" in template
+    assert "fetch('/api/media/cache/cleanup'" in template
 
 
 def test_folder_tree_large_sibling_does_not_hide_later_route_roots(app_modules: tuple) -> None:

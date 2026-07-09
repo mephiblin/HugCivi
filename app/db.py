@@ -12,7 +12,11 @@ from typing import Any
 from . import transfer
 from .defaults import (
     DOWNLOAD_STALL_TIMEOUT_DEFAULT_SECONDS,
+    INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT,
+    INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT,
     JOB_LOG_MAX_CHARS_DEFAULT,
+    MEDIA_CACHE_MAX_BYTES_DEFAULT,
+    MEDIA_CACHE_TTL_DEFAULT_SECONDS,
     QUEUE_PROVIDER_COOLDOWN_MAX_DEFAULT_SECONDS,
     QUEUE_PROVIDER_COOLDOWN_MIN_DEFAULT_SECONDS,
     YT_DLP_DEFAULT_FORMAT,
@@ -180,6 +184,25 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS library_folder_state (
+                path TEXT PRIMARY KEY,
+                parent_path TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                complete INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                indexed_count INTEGER NOT NULL DEFAULT 0,
+                mtime_ns INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                scanned_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        ensure_library_folder_state_indexes(conn)
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS maintenance_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT NOT NULL,
@@ -342,6 +365,21 @@ def ensure_library_item_indexes(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_library_items_source_category_mtime_desc
         ON library_items(stale, source_group, model_category, mtime_ns DESC, path)
+        """
+    )
+
+
+def ensure_library_folder_state_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_folder_state_parent
+        ON library_folder_state(parent_path, name)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_library_folder_state_status
+        ON library_folder_state(status, updated_at)
         """
     )
 
@@ -2128,10 +2166,81 @@ def set_library_scan_state(key: str, value: str) -> None:
         conn.commit()
 
 
+def upsert_library_folder_state(
+    *,
+    path: str,
+    parent_path: str = "",
+    name: str = "",
+    status: str = "",
+    complete: bool = False,
+    processed_count: int = 0,
+    indexed_count: int = 0,
+    mtime_ns: int = 0,
+    detail: dict[str, Any] | None = None,
+    started_at: str | None = None,
+    scanned_at: str | None = None,
+) -> None:
+    clean_path = path.strip("/")
+    now = utc_now()
+    with _DB_LOCK, connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO library_folder_state (
+                path, parent_path, name, status, complete, processed_count,
+                indexed_count, mtime_ns, detail_json, started_at, scanned_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                parent_path = excluded.parent_path,
+                name = excluded.name,
+                status = excluded.status,
+                complete = excluded.complete,
+                processed_count = excluded.processed_count,
+                indexed_count = excluded.indexed_count,
+                mtime_ns = excluded.mtime_ns,
+                detail_json = excluded.detail_json,
+                started_at = COALESCE(excluded.started_at, library_folder_state.started_at),
+                scanned_at = excluded.scanned_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                clean_path,
+                parent_path.strip("/"),
+                name,
+                status,
+                1 if complete else 0,
+                max(0, int(processed_count)),
+                max(0, int(indexed_count)),
+                max(0, int(mtime_ns)),
+                json.dumps(detail or {}, ensure_ascii=False),
+                started_at,
+                scanned_at,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def get_library_folder_state(path: str) -> dict[str, Any] | None:
+    clean_path = path.strip("/")
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT * FROM library_folder_state WHERE path = ?", (clean_path,)).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    try:
+        payload["detail"] = json.loads(str(payload.pop("detail_json") or "{}"))
+    except json.JSONDecodeError:
+        payload["detail"] = {}
+    payload["complete"] = bool(payload.get("complete"))
+    return payload
+
+
 def clear_library_index() -> None:
     with _DB_LOCK, connect() as conn:
         conn.execute("DELETE FROM library_items")
         conn.execute("DELETE FROM library_scan_state WHERE key LIKE 'library.%'")
+        conn.execute("DELETE FROM library_folder_state")
         conn.commit()
 
 
@@ -2412,6 +2521,48 @@ def settings_status() -> dict[str, Any]:
     }
     status["youtube"] = {
         "YT_DLP_FORMAT": settings_status_entry("YT_DLP_FORMAT", YT_DLP_DEFAULT_FORMAT, db_settings),
+    }
+    status["cache"] = {
+        "MEDIA_CACHE_TTL_SECONDS": settings_status_entry(
+            "MEDIA_CACHE_TTL_SECONDS",
+            str(MEDIA_CACHE_TTL_DEFAULT_SECONDS),
+            db_settings,
+        ),
+        "MEDIA_CACHE_MAX_BYTES": settings_status_entry(
+            "MEDIA_CACHE_MAX_BYTES",
+            str(MEDIA_CACHE_MAX_BYTES_DEFAULT),
+            db_settings,
+        ),
+        "MEDIA_THUMBNAIL_BACKFILL_WORKERS": settings_status_entry(
+            "MEDIA_THUMBNAIL_BACKFILL_WORKERS",
+            "3",
+            db_settings,
+        ),
+        "MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS": settings_status_entry(
+            "MEDIA_THUMBNAIL_BACKFILL_MAX_ITEMS",
+            "5000",
+            db_settings,
+        ),
+    }
+    status["maintenance"] = {
+        "INTERNAL_JOB_MAINTENANCE_MODE": settings_status_entry(
+            "INTERNAL_JOB_MAINTENANCE_MODE",
+            "immediate",
+            db_settings,
+        ),
+        "INTERNAL_JOB_MAINTENANCE_START_HOUR": settings_status_entry(
+            "INTERNAL_JOB_MAINTENANCE_START_HOUR",
+            str(INTERNAL_JOB_MAINTENANCE_START_HOUR_DEFAULT),
+            db_settings,
+        ),
+        "INTERNAL_JOB_MAINTENANCE_END_HOUR": settings_status_entry(
+            "INTERNAL_JOB_MAINTENANCE_END_HOUR",
+            str(INTERNAL_JOB_MAINTENANCE_END_HOUR_DEFAULT),
+            db_settings,
+        ),
+        "LIBRARY_WATCHER_ENABLED": settings_status_entry("LIBRARY_WATCHER_ENABLED", "0", db_settings),
+        "LIBRARY_WATCHER_LOCAL_ONLY": settings_status_entry("LIBRARY_WATCHER_LOCAL_ONLY", "1", db_settings),
+        "MEDIA_VIDEO_PREVIEW_MODE": settings_status_entry("MEDIA_VIDEO_PREVIEW_MODE", "off", db_settings),
     }
     return status
 
