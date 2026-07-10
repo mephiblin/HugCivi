@@ -1528,6 +1528,8 @@
     let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
     let libraryRequestId = 0;
     let libraryRequestController = null;
+    let libraryRenderFrame = null;
+    let libraryRenderCancel = null;
     let libraryReindexPollTimer = null;
     let libraryReindexPollActive = false;
     const trackedLibraryReindexJobs = new Map();
@@ -4407,12 +4409,27 @@
       root.querySelectorAll('img[data-thumbnail-src]').forEach(registerThumbnailImage);
     }
 
+    function cleanupDeferredThumbnails(root = document) {
+      if (!root || typeof root.querySelectorAll !== 'function') return;
+      root.querySelectorAll('img[data-thumbnail-src]').forEach(img => {
+        thumbnailObserver?.unobserve(img);
+        const url = thumbnailImageUrl(img);
+        if (!url) return;
+        const state = thumbnailRequests.get(url);
+        if (state) state.elements.delete(img);
+      });
+    }
+
     function registerThumbnailImage(img) {
       const url = thumbnailImageUrl(img);
       if (!url) return;
       const state = thumbnailRequestState(url);
       pruneThumbnailElements(state, url);
-      if (thumbnailImageReady(img)) state.ready = true;
+      const ready = thumbnailImageReady(img);
+      if (ready) {
+        state.ready = true;
+        if (state.status === 'error') state.status = 'idle';
+      }
       if (state.status === 'loaded') {
         applyThumbnailResult(img, url);
         return;
@@ -5651,6 +5668,8 @@
       const normalized = normalizePath(path || '');
       const page = Math.max(1, Number(options.page || 1));
       const limit = Math.max(1, Number(options.limit || currentLibraryPage.limit || LIBRARY_PAGE_SIZE));
+      cancelScheduledLibraryRender();
+      cleanupDeferredThumbnails(libraryGrid);
       currentLibraryItems = [];
       currentLibraryPage = normalizeLibraryPage(
         {
@@ -5926,7 +5945,7 @@
           if (refreshActiveLibraryAfterRender || refreshLibraryAfterReindex) {
             await refreshLibraryForActivePath({page: refreshLibraryAfterReindex ? 1 : currentLibraryPage.page});
           } else if (librarySignatureBefore !== libraryJobSignature(currentJobs, libraryFolder)) {
-            renderLibrary();
+            scheduleLibraryRender();
           }
         }
         if (refreshFoldersAfterRender) {
@@ -6146,7 +6165,7 @@
           activeLibrarySourceGroup = currentLibraryPage.source_group || requestedSourceGroup;
           if (librarySourceGroup) librarySourceGroup.value = activeLibrarySourceGroup;
         }
-        if (activeLibraryPath !== null) renderLibrary();
+        if (activeLibraryPath !== null) scheduleLibraryRender();
       } catch (err) {
         if (err?.name === 'AbortError') return;
         console.error(err);
@@ -6665,6 +6684,48 @@
       await selectFolderPath(path, {expandTree: true, scrollIntoView: true});
     }
 
+    function scheduleLibraryRender() {
+      if (libraryRenderFrame !== null) return;
+      const useAnimationFrame = typeof window.requestAnimationFrame === 'function';
+      const schedule = useAnimationFrame
+        ? window.requestAnimationFrame.bind(window)
+        : callback => window.setTimeout(callback, 0);
+      libraryRenderCancel = useAnimationFrame && typeof window.cancelAnimationFrame === 'function'
+        ? window.cancelAnimationFrame.bind(window)
+        : window.clearTimeout.bind(window);
+      libraryRenderFrame = schedule(() => {
+        libraryRenderFrame = null;
+        libraryRenderCancel = null;
+        renderLibrary();
+      });
+    }
+
+    function cancelScheduledLibraryRender() {
+      if (libraryRenderFrame === null) return;
+      if (typeof libraryRenderCancel === 'function') {
+        libraryRenderCancel(libraryRenderFrame);
+      }
+      libraryRenderFrame = null;
+      libraryRenderCancel = null;
+    }
+
+    function updateLibraryFavoriteCard(path, favorite) {
+      if (!libraryGrid || activeLibraryPath === null) return false;
+      const normalized = normalizePath(path || '');
+      let card = null;
+      try {
+        card = libraryGrid.querySelector(`.asset-card[data-path="${cssEscape(normalized)}"]`);
+      } catch (err) {
+        card = null;
+      }
+      if (!card) return false;
+      const button = card.querySelector('[data-card-action="favorite"]');
+      if (!button) return false;
+      button.classList.toggle('active', Boolean(favorite));
+      button.setAttribute('aria-pressed', favorite ? 'true' : 'false');
+      return true;
+    }
+
     function renderModelInfo(job) {
       const image = job.thumbnail_url ? `<img data-thumbnail-src="${escapeHtml(job.thumbnail_url)}" data-thumbnail-ready="${thumbnailReadyAttr(job)}" alt="" loading="lazy" decoding="async">` : '';
       const details = [job.base_model, job.precision, job.file_format].filter(Boolean).map(escapeHtml).join(' · ');
@@ -6688,10 +6749,12 @@
       setLibraryRefreshButtonState();
       setLibraryThumbnailJobButtonState();
       if (!matches.length) {
+        cleanupDeferredThumbnails(libraryGrid);
         libraryGrid.innerHTML = `<div class="library-empty">${escapeHtml(libraryEmptyMessage())}</div>`;
         renderLibraryPagination();
         return;
       }
+      cleanupDeferredThumbnails(libraryGrid);
       libraryGrid.innerHTML = matches.map(job => {
         const title = job.model_title || job.filename || job.input_text || 'Model';
         const category = job.model_category || job.model_type || job.source || 'Model';
@@ -6921,8 +6984,8 @@
         });
         if ((librarySort?.value || 'az') === 'favorite') {
           await refreshLibraryForActivePath({page: currentLibraryPage.page});
-        } else {
-          renderLibrary();
+        } else if (!updateLibraryFavoriteCard(normalized, Boolean(data.favorite))) {
+          scheduleLibraryRender();
         }
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');

@@ -2972,12 +2972,17 @@ a:hover {
 }
 
 .asset-card {
+  --asset-card-min-height: 238px;
+  --asset-card-intrinsic-height: 280px;
   position: relative;
   overflow: hidden;
-  min-height: 238px;
+  min-height: var(--asset-card-min-height);
   border-radius: 7px;
   background: #111827;
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12), 12px 12px 0 rgba(15, 23, 42, 0.06);
+  contain: layout paint style;
+  contain-intrinsic-block-size: auto var(--asset-card-intrinsic-height);
+  content-visibility: auto;
 }
 
 .asset-card[data-media-archive="true"] {
@@ -2998,6 +3003,7 @@ a:hover {
 }
 
 .asset-card > img {
+  background: #202938;
   transition: filter 0.18s ease, transform 0.18s ease;
 }
 
@@ -3018,7 +3024,7 @@ a:hover {
 }
 
 .asset-card.no-thumb .asset-placeholder {
-  min-height: 238px;
+  min-height: var(--asset-card-min-height);
 }
 
 .asset-topline {
@@ -5904,11 +5910,11 @@ a:hover {
   }
 
   .asset-card {
-    min-height: 198px;
+    --asset-card-min-height: 198px;
+    --asset-card-intrinsic-height: 250px;
   }
 
   .asset-card.no-thumb .asset-placeholder {
-    min-height: 198px;
     font-size: 28px;
   }
 

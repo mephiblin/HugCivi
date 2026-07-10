@@ -2200,6 +2200,27 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
     render_library = template[
         template.index("function renderLibrary()") : template.index("function libraryCountLabel(visibleCount)")
     ]
+    asset_card_style = stylesheet[
+        stylesheet.index(".asset-card {") : stylesheet.index(".asset-card[data-media-archive")
+    ]
+    schedule_library_render = template[
+        template.index("function scheduleLibraryRender()") : template.index("function updateLibraryFavoriteCard")
+    ]
+    cancel_library_render = template[
+        template.index("function cancelScheduledLibraryRender()") : template.index("function updateLibraryFavoriteCard")
+    ]
+    update_favorite_card = template[
+        template.index("function updateLibraryFavoriteCard") : template.index("function renderModelInfo(job)")
+    ]
+    cleanup_thumbnails = template[
+        template.index("function cleanupDeferredThumbnails") : template.index("function registerThumbnailImage")
+    ]
+    register_thumbnail = template[
+        template.index("function registerThumbnailImage") : template.index("function handleThumbnailIntersections")
+    ]
+    toggle_favorite = template[
+        template.index("async function toggleFavorite") : template.index("function jobMatchesFolder")
+    ]
 
     assert "THUMBNAIL_READY_REQUEST_MAX_ACTIVE = 10" in template
     assert "THUMBNAIL_COLD_REQUEST_MAX_ACTIVE = 3" in template
@@ -2208,6 +2229,31 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
     assert "function thumbnailImageReady" in template
     assert "thumbnailReadyQueue" in template
     assert "thumbnailColdQueue" in template
+    assert "let libraryRenderFrame = null;" in template
+    assert "let libraryRenderCancel = null;" in template
+    assert "function scheduleLibraryRender()" in template
+    assert "function cancelScheduledLibraryRender()" in template
+    assert "if (libraryRenderFrame !== null) return;" in schedule_library_render
+    assert "window.requestAnimationFrame.bind(window)" in template
+    assert "window.cancelAnimationFrame.bind(window)" in schedule_library_render
+    assert "window.clearTimeout.bind(window)" in schedule_library_render
+    assert "callback => window.setTimeout(callback, 0)" in schedule_library_render
+    assert "libraryRenderFrame = null;" in schedule_library_render
+    assert "libraryRenderCancel = null;" in schedule_library_render
+    assert "renderLibrary();" in schedule_library_render
+    assert "libraryRenderCancel(libraryRenderFrame);" in cancel_library_render
+    assert "cancelScheduledLibraryRender();" in template
+    assert "function updateLibraryFavoriteCard(path, favorite)" in template
+    assert 'libraryGrid.querySelector(`.asset-card[data-path="${cssEscape(normalized)}"]`)' in update_favorite_card
+    assert "button.classList.toggle('active', Boolean(favorite));" in update_favorite_card
+    assert "button.setAttribute('aria-pressed', favorite ? 'true' : 'false');" in update_favorite_card
+    assert "function cleanupDeferredThumbnails" in template
+    assert "thumbnailObserver?.unobserve(img);" in cleanup_thumbnails
+    assert "state.elements.delete(img);" in cleanup_thumbnails
+    assert "if (state.status === 'error') state.status = 'idle';" in register_thumbnail
+    assert "await refreshLibraryForActivePath({page: currentLibraryPage.page});" in toggle_favorite
+    assert "else if (!updateLibraryFavoriteCard(normalized, Boolean(data.favorite)))" in toggle_favorite
+    assert "scheduleLibraryRender();" in toggle_favorite
     assert 'id="library-thumbnail-job-button"' in template
     assert "fetch('/api/media/thumbnail-jobs'" in template
     assert "workers: THUMBNAIL_COLD_REQUEST_MAX_ACTIVE" not in template
@@ -2220,9 +2266,17 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
     assert "IntersectionObserver" in template
     assert "new IntersectionObserver" in template
     assert "window.setTimeout(" in template
+    assert "scheduleLibraryRender();" in template
     assert "setupDeferredThumbnails(" in render_jobs
     assert "setupDeferredThumbnails(" in render_mobile_jobs
     assert "setupDeferredThumbnails(" in render_library
+    assert "--asset-card-min-height: 238px;" in asset_card_style
+    assert "--asset-card-intrinsic-height: 280px;" in asset_card_style
+    assert "contain: layout paint style;" in asset_card_style
+    assert "content-visibility: auto;" in asset_card_style
+    assert "contain-intrinsic-block-size: auto var(--asset-card-intrinsic-height);" in asset_card_style
+    assert "--asset-card-min-height: 198px;" in stylesheet
+    assert "--asset-card-intrinsic-height: 250px;" in stylesheet
     assert render_jobs.rindex("renderMobileJobs(jobs);") < render_jobs.rindex("setupDeferredThumbnails(")
     assert (
         render_mobile_jobs.index("mobileJobsList.innerHTML = jobs.map(renderMobileJobCard).join('');")
