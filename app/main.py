@@ -60,6 +60,7 @@ from .downloader import (
     process_output_queue,
     queue_hitomi_listing_galleries,
     read_process_output,
+    register_download_completion_hook,
     remove_pending_job,
     start_workers,
     stop_controlled_process,
@@ -80,6 +81,7 @@ def startup_tasks() -> None:
     cleanup_stale_download_archives()
     cleanup_stale_media_cache()
     register_internal_job_handlers()
+    register_download_completion_hooks()
     start_workers()
     internal_jobs.start_workers()
     subscriptions.start_workers()
@@ -104,6 +106,11 @@ def register_internal_job_handlers() -> None:
     internal_jobs.register_handler(INTERNAL_JOB_MEDIA_THUMBNAIL_BACKFILL, run_media_thumbnail_backfill_job)
     internal_jobs.register_handler(INTERNAL_JOB_TRANSFER_COPY, run_transfer_copy_job)
     internal_jobs.register_handler(INTERNAL_JOB_LIBRARY_REINDEX, run_library_reindex_job)
+
+
+def register_download_completion_hooks() -> None:
+    register_download_completion_hook(refresh_completed_job_library_index)
+    subscriptions.register_download_completion_hook(refresh_completed_subscription_item_library_index)
 
 
 @asynccontextmanager
@@ -2936,6 +2943,7 @@ async def api_import_workflow(
 
     db.update_job(job_id, status="done")
     db.append_log(job_id, "done")
+    refresh_completed_job_library_index(job_id, db.get_job(job_id) or {"id": job_id})
     return JSONResponse(
         {
             "ok": True,
@@ -4247,6 +4255,80 @@ def index_library_path(
         return False
     db.upsert_library_items([record])
     return True
+
+
+def refresh_completed_job_library_index(job_id: int, job: dict[str, Any]) -> None:
+    try:
+        result = refresh_library_index_for_completed_job(job)
+    except Exception as exc:  # noqa: BLE001 - indexing must not fail a completed job/import
+        db.append_log(job_id, f"library index refresh failed: {exc}")
+        return
+    if result.get("indexed"):
+        target_path = str(result.get("path") or "").strip("/")
+        message = f"library index updated: {target_path}" if target_path else "library index updated"
+        db.append_log(job_id, message)
+
+
+def refresh_completed_subscription_item_library_index(item_id: int, item: dict[str, Any]) -> None:
+    try:
+        result = refresh_library_index_for_completed_job(item)
+    except Exception as exc:  # noqa: BLE001 - indexing must not fail a completed subscription item
+        db.append_subscription_item_log(item_id, f"library index refresh failed: {exc}")
+        return
+    if result.get("indexed"):
+        target_path = str(result.get("path") or "").strip("/")
+        message = f"library index updated: {target_path}" if target_path else "library index updated"
+        db.append_subscription_item_log(item_id, message)
+
+
+def refresh_library_index_for_completed_job(job: dict[str, Any]) -> dict[str, Any]:
+    status_value = str(job.get("status") or "").strip().lower()
+    if status_value and status_value != "done":
+        return {"indexed": False, "reason": "job_not_done"}
+    target_dir = str(job.get("target_dir") or "").strip()
+    if not target_dir:
+        return {"indexed": False, "reason": "missing_target_dir"}
+    return refresh_library_index_for_completed_path(Path(target_dir))
+
+
+def refresh_library_index_for_completed_path(path: Path | str) -> dict[str, Any]:
+    target = Path(path)
+    try:
+        relative = relative_data_path(target)
+    except (OSError, ValueError):
+        return {"indexed": False, "reason": "outside_data_root"}
+    if not relative:
+        return {"indexed": False, "reason": "data_root"}
+
+    with LIBRARY_SCAN_LOCK:
+        try:
+            if should_skip_index_path(target):
+                return {"indexed": False, "reason": "skipped_path", "path": relative}
+            if not target.exists():
+                db.mark_library_item_stale(relative)
+                clear_live_library_page_cache()
+                return {"indexed": False, "reason": "missing_path", "path": relative, "stale": True}
+
+            favorites = db.favorite_paths()
+            if index_library_path(target, favorites):
+                clear_live_library_page_cache()
+                return {"indexed": True, "path": relative}
+
+            if target.is_file():
+                parent = target.parent
+                parent_relative = relative_data_path(parent)
+                if parent_relative and parent.exists() and not should_skip_index_path(parent) and should_index_directory(parent):
+                    if index_library_path(parent, favorites):
+                        clear_live_library_page_cache()
+                        return {"indexed": True, "path": parent_relative}
+
+            db.mark_library_item_stale(relative)
+            clear_live_library_page_cache()
+            return {"indexed": False, "reason": "not_indexable", "path": relative, "stale": True}
+        except (OSError, ValueError):
+            db.mark_library_item_stale(relative)
+            clear_live_library_page_cache()
+            return {"indexed": False, "reason": "path_error", "path": relative, "stale": True}
 
 
 def library_index_record_for_path(

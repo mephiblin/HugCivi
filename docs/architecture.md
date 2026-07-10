@@ -263,6 +263,7 @@ Indexer behavior:
 - startup launches a background library indexer after `LIBRARY_INDEXER_START_DELAY_SECONDS`
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
+- completed HugCivi-owned external download jobs, subscription downloads, and ComfyUI workflow imports call a single-target library index refresh for their completed `target_dir`, then invalidate the selected-folder live-page cache; this is not a filesystem watcher and does not scan the whole selected folder
 - `/api/library/sync` performs a bounded scoped reconcile without clearing existing rows. The browser `갱신` button uses this path first so newly added or removed cards can be persisted in SQLite without immediately queueing a full selected-folder rebuild.
 - `/api/library/reindex` queues or reuses an active `library_reindex` internal job for the same normalized scope; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch, and each batch writes indexed rows through one bulk SQLite upsert transaction
 - scoped reindex records selected-folder progress in `library_folder_state`; selected-folder index responses may include this as additive `index_status.folder_state`
@@ -283,7 +284,7 @@ Filesystem operations from the app update related path state:
 - rename/move update job target prefixes, favorites, notes, and library index prefixes
 - delete clears affected favorites, notes, target prefixes, and library index rows
 - clearing job history resets stale library index rows so filesystem-backed cards can be restored from sidecars
-- app-driven folder create/rename/move/delete, manual reindex, and job-history clear also invalidate the selected-folder live page cache
+- app-driven folder create/rename/move/delete, completed HugCivi download/import indexing, manual reindex, and job-history clear also invalidate the selected-folder live page cache
 - external filesystem edits made outside HugCivi are eventually reflected by the indexer or live fallback; the sidebar folder-tree refresh action rereads `/data` directly without relying on cached DB rows
 
 Civitai model cards can be restored from `_civitai_metadata.json` even after the original job row is gone. If `_civitai_generation_metadata.json` exists, media viewer metadata uses its selected example image and generation payload; otherwise it falls back to the model metadata sidecar and reconstructs the model-details panel from stored model/version fields.

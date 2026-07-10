@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlparse
 
 from . import db, downloader
@@ -102,6 +102,25 @@ _download_wake_event = threading.Event()
 _download_thread: threading.Thread | None = None
 _active_check_ids: set[int] = set()
 _active_download_item_ids: set[int] = set()
+_DOWNLOAD_COMPLETION_HOOKS_LOCK = threading.Lock()
+_DOWNLOAD_COMPLETION_HOOKS: list[Callable[[int, dict[str, Any]], None]] = []
+
+
+def register_download_completion_hook(callback: Callable[[int, dict[str, Any]], None]) -> None:
+    with _DOWNLOAD_COMPLETION_HOOKS_LOCK:
+        if callback not in _DOWNLOAD_COMPLETION_HOOKS:
+            _DOWNLOAD_COMPLETION_HOOKS.append(callback)
+
+
+def notify_download_completed(item_id: int) -> None:
+    item = db.get_subscription_item(item_id) or {"id": item_id}
+    with _DOWNLOAD_COMPLETION_HOOKS_LOCK:
+        callbacks = list(_DOWNLOAD_COMPLETION_HOOKS)
+    for callback in callbacks:
+        try:
+            callback(item_id, dict(item))
+        except Exception as exc:  # noqa: BLE001 - completion hooks must not fail completed subscription items
+            db.append_subscription_item_log(item_id, f"completion hook failed: {exc}")
 
 
 def scheduler_status() -> dict[str, Any]:
@@ -673,6 +692,7 @@ def _download_subscription_item(item: dict[str, Any]) -> None:
             error=None,
         )
         db.append_subscription_item_log(item_id, f"saved subscription item: {selected} ({downloader.human_bytes(size)})")
+        notify_download_completed(item_id)
     except Exception as exc:
         failed_at = utc_now()
         retryable = attempt_count < subscription_download_max_attempts()

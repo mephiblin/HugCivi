@@ -499,7 +499,7 @@ def test_subscription_download_worker_downloads_ready_items_without_jobs(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db, subscriptions, _main, _config_root = app_modules
+    db, subscriptions, main, _config_root = app_modules
     subscription_id = db.create_subscription(
         kind="playlist",
         source_url="https://www.youtube.com/playlist?list=PLdownloads",
@@ -520,15 +520,20 @@ def test_subscription_download_worker_downloads_ready_items_without_jobs(
         (target / "Download me [down123].mp4").write_bytes(b"video")
 
     monkeypatch.setattr(subscriptions, "run_subscription_download_process", fake_run)
+    main.register_download_completion_hooks()
 
     assert subscriptions.run_ready_subscription_downloads() == 1
 
     item = db.get_subscription_item(item_id)
+    rows = db.list_library_index_items(path_prefix="gallery-dl/youtube.com/playlist/PLdownloads")
     assert item is not None
     assert item["status"] == "done"
     assert item["filename"] == "Download me [down123].mp4"
     assert item["target_dir"].endswith("gallery-dl/youtube.com/playlist/PLdownloads")
     assert "saved subscription item" in item["log"]
+    assert "library index updated: gallery-dl/youtube.com/playlist/PLdownloads" in item["log"]
+    assert [row["target_path"] for row in rows] == ["gallery-dl/youtube.com/playlist/PLdownloads"]
+    assert rows[0]["source_group"] == "ytdlp"
     assert db.list_jobs() == []
 
 

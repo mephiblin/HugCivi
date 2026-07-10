@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse, unquote
 
 import requests
@@ -82,6 +82,8 @@ _GALLERY_DL_VERSION_LOCK = threading.Lock()
 _GALLERY_DL_VERSION_CACHE: str | None = None
 _YT_DLP_VERSION_LOCK = threading.Lock()
 _YT_DLP_VERSION_CACHE: str | None = None
+_DOWNLOAD_COMPLETION_HOOKS_LOCK = threading.Lock()
+_DOWNLOAD_COMPLETION_HOOKS: list[Callable[[int, dict[str, Any]], None]] = []
 DOWNLOAD_RUNTIME_METADATA_KEY = "download_runtime"
 THUMBNAIL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 CIVITAI_VIDEO_EXTENSIONS = {".m4v", ".mov", ".mp4", ".webm"}
@@ -95,6 +97,23 @@ THUMBNAIL_MEDIA_TYPES = {
     ".avif": "image/avif",
     ".bmp": "image/bmp",
 }
+
+
+def register_download_completion_hook(callback: Callable[[int, dict[str, Any]], None]) -> None:
+    with _DOWNLOAD_COMPLETION_HOOKS_LOCK:
+        if callback not in _DOWNLOAD_COMPLETION_HOOKS:
+            _DOWNLOAD_COMPLETION_HOOKS.append(callback)
+
+
+def notify_download_completed(job_id: int) -> None:
+    job = db.get_job(job_id) or {"id": job_id}
+    with _DOWNLOAD_COMPLETION_HOOKS_LOCK:
+        callbacks = list(_DOWNLOAD_COMPLETION_HOOKS)
+    for callback in callbacks:
+        try:
+            callback(job_id, dict(job))
+        except Exception as exc:  # noqa: BLE001 - completion hooks must not fail completed downloads
+            db.append_log(job_id, f"completion hook failed: {exc}")
 ASMRONE_COVER_URL_KEYS = (
     "mainCoverUrl",
     "main_cover_url",
@@ -801,6 +820,7 @@ def run_job(job_id: int) -> None:
     check_job_control(job_id)
     db.update_job(job_id, status="done")
     db.append_log(job_id, "done")
+    notify_download_completed(job_id)
 
 
 def current_job_status(job_id: int) -> str | None:

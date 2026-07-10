@@ -343,6 +343,7 @@ Operational notes:
 - The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>` plus optional source filters.
 - `/api/library?mode=live` can force live filesystem scanning.
 - Normal selected-folder library pages query the SQLite index only and return quickly with `needs_refresh`/`refreshing` status when indexed rows are missing. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
+- Completed HugCivi-owned download jobs, subscription downloads, and ComfyUI workflow imports immediately upsert the completed target path into `library_items` and invalidate the live-page cache. Operators do not need to press `갱신` for files that HugCivi itself just downloaded or imported.
 - The browser `갱신` button calls `/api/library/sync` first. This is a bounded scoped reconcile that upserts found cards and marks missing indexed rows stale without deleting the selected folder's existing rows before work begins.
 - `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
@@ -353,7 +354,7 @@ Operational notes:
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.
 - App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.
-- NAS-side manual file changes are picked up by later indexer passes or live fallback. The sidebar `저장 폴더` refresh button immediately reloads the folder tree from the current `/data` filesystem view when an operator deletes or creates folders outside HugCivi.
+- NAS-side manual file changes made outside HugCivi are picked up by quick sync, later indexer passes, explicit live mode, or reindex. The sidebar `저장 폴더` refresh button immediately reloads the folder tree from the current `/data` filesystem view when an operator deletes or creates folders outside HugCivi.
 - The sidebar folder search uses bounded `/api/folders/search` server-side scanning, scoped to the selected folder when one is active. Results can include folders that were not expanded in the sidebar yet; choosing one lazy-loads only the needed ancestors/pages. Hidden folders, `.part` branches, symlink folders, and Hitomi archive page folders are skipped.
 
 ## Storage Readout

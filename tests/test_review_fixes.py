@@ -1191,6 +1191,63 @@ def test_library_index_scan_populates_db_backed_library_items(app_modules: tuple
     ] == []
 
 
+def test_completed_download_hook_upserts_library_index_without_scope_scan(
+    app_modules: tuple,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _utils, db, downloader, main, data_root, _config_root = app_modules
+    target = data_root / "completed-hook" / "civitai-card"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "raw_input": "https://civitai.com/models/321",
+                "archive_info": {"model_title": "Hook Card", "model_category": "LoRA"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    parsed = ParsedDownload(source="civitai", raw_input="https://civitai.com/models/321", civitai_model_id="321")
+    job_id = db.create_job(parsed)
+    db.update_job(job_id, status="done", target_dir=str(target))
+
+    def fail_scope_scan(*_args: object, **_kwargs: object):
+        raise AssertionError("completed download hook should not walk a library scope")
+
+    monkeypatch.setattr(main, "iter_library_scan_paths", fail_scope_scan)
+    main.register_download_completion_hooks()
+    downloader.notify_download_completed(job_id)
+
+    rows = db.list_library_index_items(path_prefix="completed-hook")
+    job = db.get_job(job_id)
+
+    assert [row["target_path"] for row in rows] == ["completed-hook/civitai-card"]
+    assert rows[0]["model_title"] == "Hook Card"
+    assert rows[0]["source_group"] == "civitai"
+    assert job is not None
+    assert "library index updated: completed-hook/civitai-card" in str(job["log"])
+
+
+def test_completed_download_file_target_indexes_parent_archive_folder(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "completed-file" / "folder-card"
+    target.mkdir(parents=True)
+    model = target / "model.safetensors"
+    model.write_text("model", encoding="utf-8")
+    (target / "_generic_metadata.json").write_text(
+        json.dumps({"source": "generic", "raw_input": "https://example.com/model.safetensors"}),
+        encoding="utf-8",
+    )
+
+    result = main.refresh_library_index_for_completed_path(model)
+    rows = db.list_library_index_items(path_prefix="completed-file")
+
+    assert result == {"indexed": True, "path": "completed-file/folder-card"}
+    assert [row["target_path"] for row in rows] == ["completed-file/folder-card"]
+
+
 def test_library_index_schema_stores_source_group_fields(app_modules: tuple) -> None:
     _utils, db, _downloader, main, data_root, _config_root = app_modules
     target = data_root / "stable-diffusion" / "loras" / "schema-card"
