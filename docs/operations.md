@@ -92,13 +92,13 @@ Current default note: `portainer-stack.yml` sets `DOWNLOAD_STALL_TIMEOUT_SECONDS
 
 ## Copy-Only Transfer
 
-The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`.
+The `전송` context-menu action copies an existing `/data` file or folder to a registered outbound target. The browser loads targets from `/api/transfer/targets`, checks the selected source with `/api/transfer/preflight`, then creates a `transfer_copy` internal job with `/api/transfer/jobs`. Transfer jobs appear in the normal job list as `Transfer`. Civitai model archive folders keep their parent model folder in the destination, so a `version_<id>` archive under a LoRA/checkpoint model folder does not arrive in ComfyUI as a bare version-number folder.
 
 Recommended internal-LAN PC/NAS transfer is a `연결 폴더 (/data_remote)` target. Mount PC SMB shares, Synology remote folders, or other host-managed folders under a host directory, bind that directory to `/data_remote`, then register one or more `local_mount` targets with a `/data_remote`-relative base path. HugCivi browses only the registered target base through `/api/transfer/targets/{target_id}/local-mount/tree`, sends only `target_id`, `/data` `source_path`, and `destination_subpath`, and never accepts raw host paths, SMB URLs, IPs, or credentials from the browser.
 
 In Settings -> `전송/연결 폴더`, focusing the path input shows the Portainer mapping shape. If the Portainer container path is `/data_remote/comfyui-models`, the saved HugCivi local-mount path is `comfyui-models`; the frontend also strips that known prefix when pasted.
 
-For Civitai image-page archives, the library card action row and context menu have `사용 리소스 전송`. This checks the image archive's Resources used metadata, finds locally present model-version archives through jobs/sidecars, resolves each present resource to its primary model file, and queues separate `transfer_copy` jobs through `/api/transfer/civitai-resources/jobs`. With a ComfyUI category target that stores `policy.comfyui_mappings`, checkpoint/LoRA/VAE-style files are placed under the configured ComfyUI model subfolders by their HugCivi `stable-diffusion/...` source path.
+For Civitai image-page archives, the library card action row and context menu have `사용 리소스 전송`. This checks the image archive's Resources used metadata, finds locally present model-version archives through jobs/sidecars, resolves each present resource to its primary model file, and queues separate `transfer_copy` jobs through `/api/transfer/civitai-resources/jobs`. With a ComfyUI category target that stores `policy.comfyui_mappings`, checkpoint/LoRA/VAE-style files are placed under the configured ComfyUI model subfolders by their HugCivi `stable-diffusion/...` source path, then nested under the source archive's model/version folders.
 
 For a one-shot archive clone, open Settings -> `전송/연결 폴더` -> `종합` -> `/data 전체 복제`, choose a `local_mount` target, optionally enter a destination subfolder, and queue the job. This uses `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs`, so the browser does not send a mutable source path. The job copies `/data` contents directly into the selected target/subfolder, skips existing files by default, and still refuses overlapping `/data` and `/data_remote` mounts.
 
@@ -332,6 +332,8 @@ LIBRARY_INDEXER_START_DELAY_SECONDS=5
 LIBRARY_INDEXER_INTERVAL_SECONDS=300
 LIBRARY_INDEX_BATCH_SIZE=300
 LIBRARY_REINDEX_BATCH_SIZE=5000
+LIBRARY_SYNC_MAX_PATHS=2000
+LIBRARY_SYNC_PRUNE_LIMIT=1000
 LIVE_LIBRARY_PAGE_CACHE_TTL_SECONDS=60
 ```
 
@@ -341,11 +343,12 @@ Operational notes:
 - The browser requests library cards in 50-card pages. Legacy `/api/library` array responses still exist for compatibility, but the UI uses `limit=50&page=<n>` plus optional source filters.
 - `/api/library?mode=live` can force live filesystem scanning.
 - Normal selected-folder library pages query the SQLite index only and return quickly with `needs_refresh`/`refreshing` status when indexed rows are missing. `source_group` filters include `civitai`, `gallerydl`, `ytdlp`, `hitomi`, `asmrone`, `generic`, `huggingface`, `comfyui`, `media`, and `unknown`.
+- The browser `갱신` button calls `/api/library/sync` first. This is a bounded scoped reconcile that upserts found cards and marks missing indexed rows stale without deleting the selected folder's existing rows before work begins.
 - `/api/library?mode=live&path=<relative-data-path>` explicitly live-scans only a selected folder. Completed selected-folder scans show known page totals and reuse a short in-memory item-list cache for page/sort navigation; very large or incomplete scans keep previous/current/next fallback navigation.
 - Job polling no longer rebuilds all visible library cards for progress-only updates; a matching completed job refreshes the active library page.
-- `/api/library/reindex` queues a `library_reindex` internal job or reuses an already queued/running job for the same selected folder/provider/category scope. Optional `path`, `source_group`, and `category` query parameters refresh only that scope; the browser tracks the returned `job_id` directly and refreshes the DB page after completion.
+- `/api/library/reindex` queues a heavier `library_reindex` internal job or reuses an already queued/running job for the same selected folder/provider/category scope. Optional `path`, `source_group`, and `category` query parameters rebuild only that scope and remain useful when a quick sync cannot finish within its path budget.
 - Scoped reindex jobs record selected-folder scan progress in `library_folder_state`; selected-folder index responses may include this as `index_status.folder_state`.
-- `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next normal library load stays DB-only; use explicit live mode, wait for background indexing, or trigger `/api/library/reindex` so sidecar-backed Civitai and media cards reappear from `/data` without job rows.
+- `POST /api/jobs/clear` resets the library index when it deletes inactive job rows and returns `library_index_reset: true`. The next normal library load stays DB-only; use explicit live mode, quick sync, wait for background indexing, or trigger `/api/library/reindex` so sidecar-backed Civitai and media cards reappear from `/data` without job rows.
 - App-driven create/rename/move/delete, manual library reindex, and inactive job-history clear invalidate the selected-folder live page cache immediately. NAS-side manual changes are picked up when the folder signature changes or the cache TTL expires.
 - App-driven rename/move/delete updates the index and path-linked state.
 - App-driven rename/move/delete updates the folder tree, library cards, and storage readout in place so the browser stays on the active folder when possible.

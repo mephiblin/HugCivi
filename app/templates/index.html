@@ -6207,10 +6207,10 @@
       const busy = state === 'loading';
       const refreshing = Boolean(currentLibraryPage?.index_status?.refreshing);
       libraryRefreshButton.disabled = busy || refreshing;
-      libraryRefreshButton.textContent = busy ? '예약중' : (refreshing ? '갱신중' : '갱신');
+      libraryRefreshButton.textContent = busy ? '동기화중' : (refreshing ? '갱신중' : '갱신');
       libraryRefreshButton.title = activeLibrarySourceGroup
-        ? '현재 폴더와 소스 필터 다시 색인 작업 예약'
-        : '현재 폴더 다시 색인 작업 예약';
+        ? '현재 폴더와 소스 필터를 빠르게 DB 색인과 동기화'
+        : '현재 폴더를 빠르게 DB 색인과 동기화';
     }
 
     async function refreshLibraryIndexScope(event) {
@@ -6224,7 +6224,7 @@
       setLibraryRefreshButtonState('loading');
       try {
         const query = params.toString();
-        const response = await fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex', {
+        const response = await fetch(query ? `/api/library/sync?${query}` : '/api/library/sync', {
           method: 'POST',
         });
         const data = await readJsonResponse(response);
@@ -6232,13 +6232,7 @@
           window.alert(data.detail || '라이브러리 갱신을 완료하지 못했습니다.');
           return;
         }
-        const reindexScope = data.scope || data.job?.library_reindex_scope || {
-          path,
-          source_group: sourceGroup,
-        };
-        await refreshJobs({page: 1});
-        await refreshLibraryForActivePath({page: 1, loading: true});
-        trackLibraryReindexJob(data.job_id || data.job?.id, reindexScope);
+        await refreshLibraryForActivePath({page: 1});
       } catch (err) {
         window.alert('네트워크 요청을 완료하지 못했습니다.');
       } finally {
@@ -6261,7 +6255,6 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             path,
-            workers: THUMBNAIL_COLD_REQUEST_MAX_ACTIVE,
           }),
         });
         const data = await readJsonResponse(response);

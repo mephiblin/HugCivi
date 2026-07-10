@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import zipfile
 import zlib
 from datetime import datetime
@@ -1509,6 +1510,45 @@ def test_library_reindex_dedupes_active_scope(app_modules: tuple) -> None:
     assert after_done["deduped"] is False
 
 
+def test_library_sync_scope_upserts_new_card_without_reindex_job(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    target = data_root / "sync-scope" / "card"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps({"source": "civitai", "archive_info": {"model_title": "Synced Card", "model_category": "LoRA"}}),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(main.api_library_sync(path="sync-scope", _="_").body.decode("utf-8"))
+    rows = db.list_library_index_items(path_prefix="sync-scope")
+
+    assert payload["synced"] is True
+    assert payload["complete"] is True
+    assert payload["indexed"] == 1
+    assert [row["model_title"] for row in rows] == ["Synced Card"]
+
+
+def test_library_sync_scope_prunes_missing_index_rows(app_modules: tuple) -> None:
+    _utils, db, _downloader, main, data_root, _config_root = app_modules
+    root = data_root / "sync-delete"
+    target = root / "card"
+    target.mkdir(parents=True)
+    (target / "model.safetensors").write_text("model", encoding="utf-8")
+    (target / "_civitai_metadata.json").write_text(
+        json.dumps({"source": "civitai", "archive_info": {"model_title": "Deleted Card", "model_category": "LoRA"}}),
+        encoding="utf-8",
+    )
+    main.scan_library_index_batch(max_paths=100, reset=True)
+    assert db.count_library_index_items(path_prefix="sync-delete") == 1
+
+    shutil.rmtree(target)
+    payload = json.loads(main.api_library_sync(path="sync-delete", _="_").body.decode("utf-8"))
+
+    assert payload["stale"] >= 1
+    assert db.count_library_index_items(path_prefix="sync-delete") == 0
+
+
 def test_library_reindex_job_resumes_scoped_batches(app_modules: tuple, monkeypatch: pytest.MonkeyPatch) -> None:
     _utils, db, _downloader, main, data_root, _config_root = app_modules
     root = data_root / "batched"
@@ -2095,9 +2135,8 @@ def test_home_template_declares_storage_folder_search_ui(app_modules: tuple) -> 
     assert "function trackLibraryReindexJob(jobId, scope)" in template
     assert "async function pollTrackedLibraryReindexJobs()" in template
     assert "fetch(`/api/jobs/${encodeURIComponent(jobId)}`)" in template
-    assert "trackLibraryReindexJob(data.job_id || data.job?.id, reindexScope);" in template
     assert "async function refreshLibraryIndexScope(event)" in template
-    assert "fetch(query ? `/api/library/reindex?${query}` : '/api/library/reindex'" in template
+    assert "fetch(query ? `/api/library/sync?${query}` : '/api/library/sync'" in template
     assert "function libraryReindexCompletedForActiveScope(previousJobs, nextJobs)" in template
     assert "아직 색인된 카드가 없습니다." in template
     assert "function visibleUnknownTotalLibraryPages(page, hasNext)" in template
@@ -2171,7 +2210,7 @@ def test_home_template_declares_deferred_thumbnail_queue(app_modules: tuple) -> 
     assert "thumbnailColdQueue" in template
     assert 'id="library-thumbnail-job-button"' in template
     assert "fetch('/api/media/thumbnail-jobs'" in template
-    assert "workers: THUMBNAIL_COLD_REQUEST_MAX_ACTIVE" in template
+    assert "workers: THUMBNAIL_COLD_REQUEST_MAX_ACTIVE" not in template
     assert "media_thumbnail_backfill: 'Thumbnail'" in template
     assert ".library-thumbnail-job-button" in stylesheet
     assert "data-thumbnail-src" in render_model_info

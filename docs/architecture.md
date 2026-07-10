@@ -238,13 +238,13 @@ Transfer copy:
 
 - the context menu `전송` action opens a compact modal that reads registered targets from `/api/transfer/targets`
 - the settings `전송/연결 폴더` pane starts with category tabs, then shows the selected category's registered targets and registration form; newly saved targets include optional `policy.category` metadata for UI grouping
-- ComfyUI settings targets can store optional `policy.comfyui_mappings` from fixed HugCivi `stable-diffusion/<route>` prefixes to target destination subfolders; transfer preflight/jobs apply those mappings only when the request does not already provide a `destination_subpath`
+- ComfyUI settings targets can store optional `policy.comfyui_mappings` from fixed HugCivi `stable-diffusion/<route>` prefixes to target destination subfolders; transfer preflight/jobs apply those mappings only when the request does not already provide a `destination_subpath`, and Civitai model archives keep their model/version folder context when those mapped destinations are built
 - for `local_mount` targets, `/api/transfer/targets/{target_id}/local-mount/tree` browses target-relative folders under `/data_remote/<target>` without exposing host absolute paths
 - for ComfyUI-like `local_mount` targets, `/api/transfer/targets/{target_id}/comfyui/check` checks whether the mounted folder is a ComfyUI `models` root, a ComfyUI root with `models`, a single model folder, or a generic folder, then returns target-relative folder/mapping hints plus saved mapping destination health without exposing `/data_remote` absolute paths
 - for HugCivi Receiver targets, `/api/transfer/targets/{target_id}/receiver/tree` proxies the Receiver `/api/browse` folder tree with the stored token so the browser can pick a mounted PC destination without seeing the token; disabled targets are rejected and returned Receiver paths are revalidated as destination-relative paths
 - `/api/transfer/preflight` validates the selected `/data` source against the target policy and returns a destination preview plus estimated file/byte counts when available
 - `/api/transfer/jobs` creates a `transfer_copy` internal job; the browser refreshes the shared job list and labels the source as `Transfer`
-- Civitai image-page cards expose a `사용 리소스 전송` card action and context-menu flow; `/api/transfer/civitai-resources/preflight` reads `_civitai_image_metadata.json` Resources used model-version IDs, checks local jobs/sidecars, resolves each present resource to its primary local model file, and previews per-file ComfyUI mapping destinations before `/api/transfer/civitai-resources/jobs` queues one `transfer_copy` job per transferable file
+- Civitai image-page cards expose a `사용 리소스 전송` card action and context-menu flow; `/api/transfer/civitai-resources/preflight` reads `_civitai_image_metadata.json` Resources used model-version IDs, checks local jobs/sidecars, resolves each present resource to its primary local model file, preserves the source archive's model/version folder context in the destination, and previews per-file ComfyUI mapping destinations before `/api/transfer/civitai-resources/jobs` queues one `transfer_copy` job per transferable file
 - `/api/transfer/data-root/preflight` and `/api/transfer/data-root/jobs` are the settings-pane-only `/data` root clone flow for `local_mount` targets; they do not accept browser-controlled source paths and copy `/data` contents into the selected target/subfolder
 - local mount targets copy with Python filesystem helpers to registered `/data_remote` target bases, using temp files and rename, skipping existing files by default, and recording target-relative manifest entries
 - rclone targets use argv lists built from target policy only, using `RCLONE_CONFIG` and conservative `TRANSFER_*` defaults
@@ -263,6 +263,7 @@ Indexer behavior:
 - startup launches a background library indexer after `LIBRARY_INDEXER_START_DELAY_SECONDS`
 - batches are controlled by `LIBRARY_INDEX_BATCH_SIZE`
 - interval is controlled by `LIBRARY_INDEXER_INTERVAL_SECONDS`
+- `/api/library/sync` performs a bounded scoped reconcile without clearing existing rows. The browser `갱신` button uses this path first so newly added or removed cards can be persisted in SQLite without immediately queueing a full selected-folder rebuild.
 - `/api/library/reindex` queues or reuses an active `library_reindex` internal job for the same normalized scope; optional `path`, `source_group`, and `category` parameters scope the refresh to a selected folder/provider/category, `LIBRARY_REINDEX_BATCH_SIZE` controls each scan batch, and each batch writes indexed rows through one bulk SQLite upsert transaction
 - scoped reindex records selected-folder progress in `library_folder_state`; selected-folder index responses may include this as additive `index_status.folder_state`
 - `/api/library?mode=live` can force filesystem scan behavior
@@ -304,7 +305,7 @@ Main API groups:
 | Job management | `/api/jobs`, `/api/jobs/bulk`, `/api/jobs/{id}`, pause, resume, retry, delete, clear |
 | YouTube subscriptions | `/api/subscriptions`, aggregate `/api/subscriptions/items`, `/api/subscriptions/{id}`, `/api/subscriptions/{id}/items`, create/update/delete, manual `/check`, item `/queue`, `/skip`, `/retry` |
 | Settings | `/settings` |
-| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `GET /api/folders/search`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/reindex`, `/api/library/watcher` |
+| Folders/library | `GET/POST /api/folders`, `GET /api/folders/children`, `GET /api/folders/search`, `/api/library`, paged `/api/library?limit=50&page=N`, `/api/library/sync`, `/api/library/reindex`, `/api/library/watcher` |
 | Filesystem operations | `/api/fs/rename`, `/api/fs/move`, `/api/fs/delete`, `/api/fs/properties`, `/api/fs/note`, `/api/fs/download*` |
 | Transfer | `/api/transfer/targets`, `/api/transfer/targets/{target_id}/local-mount/tree`, `/api/transfer/targets/{target_id}/receiver/tree`, `/api/transfer/targets/{target_id}/comfyui/check`, `/api/transfer/preflight`, `/api/transfer/jobs`, `/api/transfer/civitai-resources/preflight`, `/api/transfer/civitai-resources/jobs`, `/api/transfer/data-root/preflight`, `/api/transfer/data-root/jobs` |
 | Media | `/api/media/list`, `/api/media/archive`, `/api/media/file`, `/api/media/thumbnail`, `/api/media/thumbnail-jobs`, `/api/media/cache`, `/api/media/cache/cleanup`, `/api/media/video-preview`, `/api/media/play`, `/api/media/poster`, subtitle and async job endpoints |

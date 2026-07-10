@@ -2065,6 +2065,15 @@ def library_index_order(sort: str) -> str:
     return "ORDER BY sort_title ASC, path ASC"
 
 
+def library_item_exists(path: str) -> bool:
+    normalized = path.strip("/")
+    if not normalized:
+        return False
+    with _DB_LOCK, connect() as conn:
+        row = conn.execute("SELECT 1 FROM library_items WHERE path = ? LIMIT 1", (normalized,)).fetchone()
+    return row is not None
+
+
 def mark_library_item_stale(path: str) -> None:
     normalized = path.strip("/")
     now = utc_now()
@@ -2132,10 +2141,20 @@ def update_library_item_path_prefix(old_path: str, new_path: str) -> None:
         conn.commit()
 
 
-def prune_missing_library_items(limit: int = 500) -> int:
+def prune_missing_library_items(
+    limit: int = 500,
+    *,
+    path_prefix: str = "",
+    source_group: str = "",
+    category: str = "",
+) -> int:
     removed = 0
+    where, params = library_index_where(path_prefix, source_group=source_group, category=category)
     with _DB_LOCK, connect() as conn:
-        rows = conn.execute("SELECT path, target_dir FROM library_items WHERE stale = 0 LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            f"SELECT path, target_dir FROM library_items {where} LIMIT ?",
+            (*params, max(0, int(limit))),
+        ).fetchall()
         for row in rows:
             target_dir = str(row["target_dir"])
             if target_dir and Path(target_dir).exists():

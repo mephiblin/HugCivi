@@ -215,6 +215,53 @@ def test_transfer_preflight_uses_comfyui_mapping_when_destination_is_empty(app_m
     assert explicit_response.json()["destination"] == "pc-comfyui:ComfyUI/models/manual/Model.safetensors"
 
 
+def test_transfer_preflight_preserves_civitai_model_folder_for_archive_versions(app_modules: tuple) -> None:
+    _db, main, data_root, _config_root = app_modules
+    archive = data_root / "stable-diffusion" / "loras" / "sdxl" / "example-model" / "version_456"
+    archive.mkdir(parents=True)
+    (archive / "example.safetensors").write_bytes(b"model")
+    (archive / "_civitai_metadata.json").write_text(
+        json.dumps(
+            {
+                "source": "civitai",
+                "model_name": "Example Model",
+                "model_id": "123",
+                "version_id": "456",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(main.app)
+
+    create_response = client.post(
+        "/api/transfer/targets",
+        json={
+            "name": "PC ComfyUI Models",
+            "remote_name": "pc-comfyui",
+            "remote_path": "ComfyUI/models",
+            "policy": {
+                "allowed_source_prefixes": ["stable-diffusion"],
+                "category": "comfyui",
+                "comfyui_mappings": {"stable-diffusion/loras": "loras"},
+            },
+        },
+        auth=("admin", "test-password-that-is-long"),
+    )
+    assert create_response.status_code == 200
+    target = create_response.json()["target"]
+
+    preflight_response = client.post(
+        "/api/transfer/preflight",
+        json={"target_id": target["id"], "source_path": "stable-diffusion/loras/sdxl/example-model/version_456"},
+        auth=("admin", "test-password-that-is-long"),
+    )
+
+    assert preflight_response.status_code == 200
+    payload = preflight_response.json()
+    assert payload["destination_subpath"] == "loras/example-model"
+    assert payload["destination"] == "pc-comfyui:ComfyUI/models/loras/example-model/version_456"
+
+
 def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
@@ -292,8 +339,8 @@ def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
     assert preflight["transferable_count"] == 1
     assert preflight["resources"][0]["name"] == "Example LoRA"
     assert preflight["resources"][0]["source_path"] == "stable-diffusion/loras/example/version_456/example.safetensors"
-    assert preflight["resources"][0]["destination_subpath"] == "loras"
-    assert preflight["resources"][0]["destination"] == "pc-comfyui:ComfyUI/models/loras/example.safetensors"
+    assert preflight["resources"][0]["destination_subpath"] == "loras/example/version_456"
+    assert preflight["resources"][0]["destination"] == "pc-comfyui:ComfyUI/models/loras/example/version_456/example.safetensors"
 
     job_response = client.post(
         "/api/transfer/civitai-resources/jobs",
@@ -311,7 +358,7 @@ def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
     assert db.parse_internal_job_payload(job) == {
         "target_id": target_id,
         "source_path": "stable-diffusion/loras/example/version_456/example.safetensors",
-        "destination_subpath": "loras",
+        "destination_subpath": "loras/example/version_456",
     }
     metadata = json.loads(job["metadata_json"])
     assert metadata["civitai_resource_transfer"]["archive_path"] == "civitai/images/creator/image_135"
@@ -325,7 +372,7 @@ def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
     updated_metadata = json.loads(updated_job["metadata_json"])
     assert updated_metadata["civitai_resource_transfer"]["archive_path"] == "civitai/images/creator/image_135"
     assert updated_metadata["civitai_resource_transfer"]["model_version_id"] == "456"
-    assert updated_metadata["transfer_preflight"]["destination"] == "pc-comfyui:ComfyUI/models/loras/example.safetensors"
+    assert updated_metadata["transfer_preflight"]["destination"] == "pc-comfyui:ComfyUI/models/loras/example/version_456/example.safetensors"
     assert commands
 
 

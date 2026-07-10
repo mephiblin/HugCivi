@@ -1666,7 +1666,72 @@ def transfer_request_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], Pat
     relative_path = relative_data_path(source)
     if not destination_subpath:
         destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
+    destination_subpath = transfer_destination_subpath_for_source(source, target, destination_subpath)
     return target, source, relative_path, destination_subpath
+
+
+def transfer_destination_subpath_for_source(source: Path, _target: dict[str, Any], destination_subpath: str) -> str:
+    context = civitai_model_transfer_destination_context(source)
+    if not context:
+        return transfer.validate_destination_subpath(destination_subpath)
+    return append_destination_context(destination_subpath, context)
+
+
+def civitai_model_transfer_destination_context(source: Path) -> str:
+    archive_dir = civitai_model_transfer_archive_dir(source)
+    if archive_dir is None:
+        return ""
+    try:
+        archive_relative = relative_data_path(archive_dir)
+    except ValueError:
+        return ""
+    prefix = matching_comfyui_source_prefix(archive_relative)
+    if not prefix:
+        return ""
+    remainder = archive_relative[len(prefix) :].strip("/")
+    parts = [part for part in remainder.split("/") if part]
+    if len(parts) < 2:
+        return ""
+
+    model_folder = parts[-2]
+    version_folder = parts[-1]
+    source_is_archive_root = source.is_dir() and lexical_absolute(source) == lexical_absolute(archive_dir)
+    return model_folder if source_is_archive_root else f"{model_folder}/{version_folder}"
+
+
+def civitai_model_transfer_archive_dir(source: Path) -> Path | None:
+    metadata_path = archive_named_metadata_path(source, "_civitai_metadata.json")
+    if metadata_path is None:
+        return None
+    archive_dir = metadata_path.parent
+    return archive_dir if civitai_model_archive_metadata(archive_dir) else None
+
+
+def matching_comfyui_source_prefix(relative_path: str) -> str:
+    clean_path = relative_path.strip("/")
+    matches = [
+        prefix
+        for prefix in transfer.COMFYUI_HUGCIVI_ROUTE_MAP
+        if clean_path == prefix or clean_path.startswith(f"{prefix}/")
+    ]
+    return max(matches, key=len, default="")
+
+
+def append_destination_context(destination_subpath: str, context: str) -> str:
+    clean_destination = transfer.validate_destination_subpath(destination_subpath)
+    clean_context = transfer.validate_destination_subpath(context)
+    if not clean_context:
+        return clean_destination
+    if not clean_destination:
+        return clean_context
+
+    destination_parts = clean_destination.split("/")
+    context_parts = clean_context.split("/")
+    max_overlap = min(len(destination_parts), len(context_parts))
+    for overlap in range(max_overlap, 0, -1):
+        if destination_parts[-overlap:] == context_parts[:overlap]:
+            return "/".join(destination_parts + context_parts[overlap:])
+    return f"{clean_destination}/{clean_context}"
 
 
 def transfer_target_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1779,6 +1844,7 @@ def civitai_resource_transfer_plan(payload: dict[str, Any]) -> tuple[dict[str, A
                 skipped.append({**base_row, "source_path": relative_path, "reason": "이미 같은 파일이 포함되었습니다."})
                 continue
             destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
+            destination_subpath = transfer_destination_subpath_for_source(checked_source, target, destination_subpath)
             preflight = transfer_preflight_payload(
                 checked_source,
                 target,
@@ -1980,6 +2046,7 @@ def transfer_preflight_payload(
     relative_path: str | None = None,
 ) -> dict[str, Any]:
     policy = target_policy(target)
+    destination_subpath = transfer_destination_subpath_for_source(source, target, destination_subpath)
     file_count, source_bytes = transfer_source_stats(source, policy)
     if file_count <= 0:
         raise HTTPException(status_code=400, detail="전송할 파일이 없습니다.")
@@ -2364,6 +2431,34 @@ def api_library_reindex(
             "deduped": not created,
             "scope": scope,
             "job": decorate_job(job),
+        }
+    )
+
+
+@app.post("/api/library/sync")
+def api_library_sync(
+    path: str = "",
+    source_group: str = "",
+    category: str = "",
+    _: str = Depends(require_auth),
+) -> JSONResponse:
+    root = existing_data_path(path) if path else None
+    with LIBRARY_SCAN_LOCK:
+        result = sync_library_index_scope(
+            root_path=root,
+            source_group=source_group,
+            category=category,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "synced": True,
+            "scope": {
+                "path": result["path"],
+                "source_group": result["source_group"],
+                "category": result["category"],
+            },
+            **result,
         }
     )
 
@@ -3204,10 +3299,12 @@ def library_index_scope_refreshing(*, path_prefix: str = "", source_group: str =
             db.get_library_scan_state("library.indexing", "0") == "1"
             or db.get_library_scan_state(f"{key}.queued", "0") == "1"
             or db.get_library_scan_state(f"{key}.running", "0") == "1"
+            or db.get_library_scan_state(f"{key}.syncing", "0") == "1"
         )
     return (
         db.get_library_scan_state(f"{key}.queued", "0") == "1"
         or db.get_library_scan_state(f"{key}.running", "0") == "1"
+        or db.get_library_scan_state(f"{key}.syncing", "0") == "1"
     )
 
 
@@ -3810,6 +3907,125 @@ def library_index_batch_size() -> int:
 
 def library_reindex_batch_size() -> int:
     return max(1, nonnegative_int_env("LIBRARY_REINDEX_BATCH_SIZE", 5000))
+
+
+def library_sync_max_paths() -> int:
+    return max(1, nonnegative_int_env("LIBRARY_SYNC_MAX_PATHS", 2000))
+
+
+def library_sync_prune_limit() -> int:
+    return max(0, nonnegative_int_env("LIBRARY_SYNC_PRUNE_LIMIT", 1000))
+
+
+def sync_library_index_scope(
+    *,
+    root_path: Path | None = None,
+    source_group: str = "",
+    category: str = "",
+    max_paths: int | None = None,
+) -> dict[str, Any]:
+    normalized_source_group = normalize_library_source_group(source_group)
+    normalized_category = category.strip()
+    scope_path = relative_data_path(root_path) if root_path is not None else ""
+    scope_key = library_index_scope_key(
+        path_prefix=scope_path,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
+    path_budget = max(1, int(max_paths or library_sync_max_paths()))
+    processed = 0
+    indexed = 0
+    stale = 0
+    complete = True
+    records: list[dict[str, Any]] = []
+    db.set_library_scan_state(f"{scope_key}.syncing", "1")
+    db.set_library_scan_state(f"{scope_key}.last_sync_started_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    record_library_folder_scan_state(
+        root_path=root_path,
+        scope_path=scope_path,
+        status="syncing",
+        complete=False,
+        processed=0,
+        indexed=0,
+        source_group=normalized_source_group,
+        category=normalized_category,
+    )
+    try:
+        favorites = db.favorite_paths()
+        for path in iter_library_scan_paths(cursor="", root_path=root_path):
+            if processed >= path_budget:
+                complete = False
+                break
+            try:
+                relative = relative_data_path(path)
+            except (OSError, ValueError):
+                continue
+            processed += 1
+            record = library_index_record_for_path(
+                path,
+                favorites,
+                source_group=normalized_source_group,
+                category=normalized_category,
+            )
+            if record is not None:
+                records.append(record)
+                indexed += 1
+            elif db.library_item_exists(relative):
+                db.mark_library_item_stale(relative)
+                stale += 1
+
+        if records:
+            db.upsert_library_items(records)
+
+        pruned = db.prune_missing_library_items(
+            limit=library_sync_prune_limit(),
+            path_prefix=scope_path,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+        stale += pruned
+        status = "done" if complete else "partial"
+        record_library_folder_scan_state(
+            root_path=root_path,
+            scope_path=scope_path,
+            status=status,
+            complete=complete,
+            processed=processed,
+            indexed=indexed,
+            source_group=normalized_source_group,
+            category=normalized_category,
+        )
+        db.set_library_scan_state(f"{scope_key}.complete", "1" if complete else "0")
+        db.set_library_scan_state(f"{scope_key}.last_sync_processed", str(processed))
+        db.set_library_scan_state(f"{scope_key}.last_sync_indexed", str(indexed))
+        db.set_library_scan_state(f"{scope_key}.last_sync_stale", str(stale))
+        db.set_library_scan_state(f"{scope_key}.last_sync_finished_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        clear_live_library_page_cache()
+        return {
+            "path": scope_path,
+            "source_group": normalized_source_group,
+            "category": normalized_category,
+            "processed": processed,
+            "indexed": indexed,
+            "stale": stale,
+            "complete": complete,
+            "max_paths": path_budget,
+        }
+    except Exception as exc:
+        record_library_folder_scan_state(
+            root_path=root_path,
+            scope_path=scope_path,
+            status="failed",
+            complete=False,
+            processed=processed,
+            indexed=indexed,
+            source_group=normalized_source_group,
+            category=normalized_category,
+            error=str(exc),
+        )
+        raise
+    finally:
+        db.set_library_scan_state(f"{scope_key}.syncing", "0")
 
 
 def scan_library_index_batch(
@@ -6797,6 +7013,7 @@ def run_transfer_copy_job(job_id: int, job: dict[str, Any]) -> None:
     else:
         source = transfer_source_path(source_path, target)
         policy = target_policy(target)
+        destination_subpath = transfer_destination_subpath_for_source(source, target, destination_subpath)
         preflight = transfer_preflight_payload(
             source,
             target,

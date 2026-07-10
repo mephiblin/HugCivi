@@ -25,6 +25,7 @@ Baseline applied on 2026-07-09 after the initial DB/reindex/frontend optimizatio
 - Cache quotas and cleanup: implemented for `/config/media-cache` with cache status, manual cleanup, thumbnail-scope clear, and least-recently-accessed quota cleanup.
 - Maintenance windows: implemented for heavy internal job start policy with `immediate`, `window`, and `paused` modes.
 - Folder-level scan state: implemented as additive SQLite `library_folder_state` and exposed through selected-folder index status when available.
+- Quick scoped reconcile: implemented as `/api/library/sync`, used by the browser refresh action to update the SQLite card index without clearing existing rows before work starts.
 - Optional filesystem watcher: policy/status only. The setting and `/api/library/watcher` endpoint exist, but no watcher worker starts in this build.
 - Video preview/trickplay: policy/status only. The setting and `/api/media/video-preview` endpoint exist, but no preview generation job starts in this build.
 
