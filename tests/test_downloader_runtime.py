@@ -1839,6 +1839,11 @@ class DownloaderRuntimeTests(unittest.TestCase):
                 self.assertIn("https://player.vimeo.com/video/1205868424?app_id=136277", command)
                 referer_index = command.index("--referer")
                 self.assertEqual(command[referer_index + 1], "https://www.patreon.com/")
+                format_indices = [index for index, token in enumerate(command) if token == "--format"]
+                self.assertGreaterEqual(len(format_indices), 2)
+                self.assertEqual(command[format_indices[-1] + 1], downloader.PAWCHIVE_VIMEO_DEFAULT_FORMAT)
+                merge_index = command.index("--merge-output-format")
+                self.assertEqual(command[merge_index + 1], "mp4")
                 self.assertIn("--no-playlist", command)
                 (target / "Patreon 377 [1205868424].mp4").write_bytes(b"video")
 

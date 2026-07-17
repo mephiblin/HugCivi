@@ -203,6 +203,9 @@ YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
 GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES = {".part", ".json", ".txt", ".srt", ".vtt"}
 PAWCHIVE_EMBED_METADATA_MAX_BYTES = 5 * 1024 * 1024
 PAWCHIVE_EMBED_MAX_ITEMS = 20
+PAWCHIVE_VIMEO_DEFAULT_FORMAT = (
+    "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=mp4]/bestvideo+bestaudio/best"
+)
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_OUTPUT_RE = re.compile(
     r"https?://(?:www\.)?hitomi\.la/(?:galleries|reader)/(?:[^/?#]+-)?(?P<id>\d+)(?:\.html)?",
@@ -5080,6 +5083,10 @@ def download_pawchive_embedded_media(job_id: int, source_url: str, target: Path)
         check_job_control(job_id)
         extra_args = ytdlp_direct_cmdline_args()
         extra_args.extend(["--referer", entry["referer"]])
+        if not ytdlp_setting("YT_DLP_FORMAT") and not has_ytdlp_cmdline_option(extra_args, "--format"):
+            extra_args.extend(["--format", PAWCHIVE_VIMEO_DEFAULT_FORMAT])
+        if not has_ytdlp_cmdline_option(extra_args, "--merge-output-format"):
+            extra_args.extend(["--merge-output-format", "mp4"])
         if not has_ytdlp_cmdline_option(extra_args, "--no-playlist"):
             extra_args.append("--no-playlist")
         db.append_log(
