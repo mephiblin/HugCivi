@@ -8,6 +8,12 @@
 - 공식 gallery-dl이 인식하지 않는 Pawchive 하위 도메인과 유사 도메인은 기존 일반 HTTP URL 처리로 유지합니다.
 - Pawchive 계정 접근이 필요한 URL은 기존 gallery-dl Username/Password 또는 Cookies 설정을 그대로 사용합니다.
 
+### 개발·배포 워크플로우
+
+- 프로젝트 스킬을 Git만 게시하는 `commit-push`와 Git/GHCR을 함께 게시하는 `commit-build-push` 두 경로로 분리했습니다.
+- `commit-build-push`는 `linux/amd64` 이미지를 `sha-<commit>`와 `latest`에 게시하며, ARM64 빌드 호스트에서는 QEMU/binfmt 등록과 AMD64 buildx 지원 확인을 포함합니다.
+- 미커밋 사용자 작업이 있는 경우 깨끗한 detached worktree에서 이미지를 빌드해 로컬 문서나 데이터가 배포 이미지에 섞이지 않도록 했습니다.
+
 ## 2026-07-07
 
 ### 복사 전용 전송

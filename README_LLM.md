@@ -34,7 +34,7 @@ Do not read every dated document at startup. Dated plans and reviews are context
 
 `SKILL_Dev/SKILL.md` is the index. Use the smallest focused skill:
 
-- `skill_build.md`: verify, commit, image build, GHCR push, git push.
+- `skill_build.md`: choose `commit-push` for Git-only publication or `commit-build-push` for verified `linux/amd64` GHCR plus Git publication; the latter includes ARM64-host QEMU/binfmt setup when required.
 - `skill_project_core.md`: broad architecture and invariants.
 - `skill_filesystem_safety.md`: `/data` paths, rename/move/delete, ZIP, symlink safety.
 - `skill_database_jobs.md`: SQLite, migrations, settings, external/internal job lifecycle.

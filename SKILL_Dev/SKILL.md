@@ -13,7 +13,7 @@ Codex auto-discovery uses `.agents/skills/hugcivi-dev-core/SKILL.md` as a small 
 
 | Task | Read |
 | --- | --- |
-| Build, verify, image push, Git push, Portainer release | [skill_build.md](skill_build.md) |
+| `commit-push` Git publication or `commit-build-push` AMD64 GHCR/Portainer release | [skill_build.md](skill_build.md) |
 | First orientation or broad architecture changes | [skill_project_core.md](skill_project_core.md) |
 | Rename, move, delete, archive, path handling, symlink safety | [skill_filesystem_safety.md](skill_filesystem_safety.md) |
 | SQLite schema, job lifecycle, internal/external queues, settings | [skill_database_jobs.md](skill_database_jobs.md) |

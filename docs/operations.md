@@ -1,6 +1,6 @@
 # HugCivi Operations Guide
 
-Last updated: 2026-07-09
+Last updated: 2026-07-18
 
 This guide covers the operational behavior that matters on Synology NAS, Portainer, or a similar Docker host.
 
@@ -40,6 +40,17 @@ Do not run two HugCivi containers against the same `/config/jobs.sqlite3` at the
 6. Open the UI and confirm the library and job list load.
 
 Container deletion is safe for archive files only if Portainer does not delete the bind-mounted host folders or named volumes. Avoid options such as removing volumes or deleting persistent data unless you have a separate backup.
+
+## Developer Publication Workflows
+
+Repository publication uses two explicit project-skill workflows:
+
+- `commit-push`: verify, selectively commit, and push Git to `origin/main` without building a container image.
+- `commit-build-push`: verify, selectively commit, build and push the production image, and publish Git. It publishes `ghcr.io/mephiblin/hugcivi:sha-<commit>` and `ghcr.io/mephiblin/hugcivi:latest` as `linux/amd64`.
+
+The production `latest` tag must remain AMD64 for ordinary Intel/AMD Synology and Ubuntu targets. When the build host is ARM64, `commit-build-push` registers QEMU/binfmt for AMD64, verifies buildx lists `linux/amd64`, and builds from a clean detached worktree so unrelated local changes cannot enter the image. Do not replace `latest` with an ARM64-only image; use a separately planned multi-architecture release if ARM targets must also be supported.
+
+The detailed commands, failure policy, and final verification checklist are in [`SKILL_Dev/skill_build.md`](../SKILL_Dev/skill_build.md).
 
 ## Recommended NAS Defaults
 

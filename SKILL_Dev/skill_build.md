@@ -1,61 +1,50 @@
 ---
 name: hugcivi-build-push
-description: Build, verify, and publish HugCivi from the project checkout. Use when working in this repository and the user asks to build, test, push, deploy, update GHCR, or prepare a Portainer/Synology image.
+description: Verify, commit, and publish HugCivi through either the commit-push Git workflow or the commit-build-push AMD64 GHCR release workflow. Use when the user asks to commit, push, build, release, update GHCR, or prepare a Portainer/Synology image.
 ---
 
-# HugCivi Build Skill
+# HugCivi Commit And Release Skill
 
-Use this repo-local skill when a user asks to verify, build, push, deploy, or refresh the HugCivi container image.
+Use one of these explicit workflows from `/home/inri/문서/HugCivi`:
 
-## Scope
+1. `commit-push` (`커밋-푸시`): verify, selectively commit, and push Git to `origin/main`. Do not build an image.
+2. `commit-build-push` (`커밋-빌드-푸시`): verify, selectively commit, build and push a `linux/amd64` image to GHCR, then push Git to `origin/main` unless the user explicitly requests Git push first.
 
-This workflow targets the HugCivi repository root:
+The production image is `ghcr.io/mephiblin/hugcivi:latest`. Never publish an ARM64-only image under `latest`; Synology and ordinary Intel/AMD Ubuntu targets require `linux/amd64`.
 
-```bash
-/home/inri/문서/HugCivi
-```
+## Common Preflight
 
-The normal production image is:
-
-```text
-ghcr.io/mephiblin/hugcivi:latest
-```
-
-The local build path is for `linux/amd64`. Do not use ARM emulation unless the user explicitly asks for it.
-
-## Environment Check
-
-Run these checks before committing or building:
+Run before either workflow:
 
 ```bash
 pwd
 git status --short
 git branch --show-current
 git remote -v
-docker version
-docker buildx version
-docker info --format '{{.Architecture}} {{.OSType}}'
+git fetch origin main
+git rev-list --left-right --count HEAD...origin/main
 df -h .
 ```
 
-Required conditions:
+Require:
 
-- Current directory is the HugCivi repo.
-- Branch is normally `main` for publishing `latest`.
-- `origin` points to `https://github.com/mephiblin/HugCivi.git`.
-- Docker and buildx are available.
-- GHCR login is already configured for image push.
-- Worktree changes are intentional. Do not include unrelated dirty files.
+- Repository root `/home/inri/문서/HugCivi`.
+- Normally branch `main` and remote `https://github.com/mephiblin/HugCivi.git`.
+- Intentional commit scope. Never include unrelated dirty or untracked files.
+- No behind commits on `origin/main`; reconcile before committing if behind.
 
-If `docker buildx build --push` fails with an auth error, ask the user to run:
+For `commit-build-push`, also run:
 
 ```bash
-docker login ghcr.io
+docker version
+docker buildx version
+docker info --format '{{.Architecture}} {{.OSType}}'
+docker buildx ls
 ```
 
 ## Verification
 
-Run the fast checks before commit:
+Run before committing:
 
 ```bash
 git diff --check
@@ -67,86 +56,124 @@ node -e "JSON.parse(require('fs').readFileSync('chrome-extension/manifest.json',
 python3 -m pytest -q -p no:cacheprovider
 ```
 
-If Chrome extension files do not exist in a future branch, skip only the `node` extension checks and explain why.
+If pytest is unavailable, use a temporary virtual environment populated from `requirements.txt`; do not add test dependencies to the repository. If existing unrelated tests fail, reproduce them against a clean `origin/main` worktree and obtain explicit user acceptance before proceeding.
 
-For Markdown-only edits, the full pytest run is still preferred before a production image push. At minimum, run `git diff --check` and any tests covering touched code.
+Before commit, follow `skill_docs_handoff.md`. Record substantive verification and deploy impact in `docs/patch-notes/YYYY-MM-DD.md`; update root `PATCH_NOTES.md` only for a user-facing changelog change.
 
-## Documentation Handoff
+## Selective Commit
 
-Before commit/build for a substantive change, follow `skill_docs_handoff.md`. Confirm the dated `docs/patch-notes/YYYY-MM-DD.md` entry records verification and deploy impact; update root `PATCH_NOTES.md` only when the user-facing changelog changes.
-
-## Commit
-
-Commit before image build because the image tag uses the commit SHA.
+Always commit before building because the immutable image tag uses the commit SHA.
 
 ```bash
-git status --short
-git add <intended files>
+git add <intended-files-only>
+git diff --cached --check
 git diff --cached --stat
+git diff --cached --name-status
 git commit -m "<clear commit message>"
-git status --short
 git rev-parse --short HEAD
+git status --short
 ```
 
-Do not commit generated caches, local data, `.pytest_cache`, `config`, or `data`.
+Do not commit generated caches, local data, `.pytest_cache`, `config`, `data`, or unrelated user work.
 
-## Build And Push Image
+## Workflow 1: `commit-push`
 
-Preferred project-local fast path:
+Push the committed code directly and verify synchronization:
+
+```bash
+git push origin main
+git fetch origin main
+git rev-list --left-right --count HEAD...origin/main
+git log -1 --oneline
+git status --short
+```
+
+Stop here. Report explicitly that no container image was built.
+
+## Workflow 2: `commit-build-push`
+
+### Ensure AMD64 Build Support
+
+The output must be `linux/amd64`, even when the local Docker host is ARM64. A `commit-build-push` request explicitly authorizes using the already-installed AMD64 emulator and, when necessary on an ARM64 host, registering QEMU/binfmt with the following privileged container:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install amd64
+docker buildx inspect --bootstrap
+docker buildx ls
+```
+
+Continue only when buildx lists `linux/amd64`. Do not use emulation during `commit-push`, and do not substitute an ARM64 image for the production `latest` tag.
+
+### Build From A Clean Commit
+
+Do not publish the current directory when it contains unrelated changes. Prefer a detached temporary worktree so user changes remain untouched:
+
+```bash
+SHORT_SHA="$(git rev-parse --short HEAD)"
+BUILD_DIR="/tmp/hugcivi-build-${SHORT_SHA}"
+git worktree add --detach "$BUILD_DIR" HEAD
+git -C "$BUILD_DIR" status --short
+git -C "$BUILD_DIR" diff --check
+```
+
+The worktree status must be empty.
+
+### Build And Push GHCR
+
+Use the project-local helper only when it is available and the primary `main` worktree is clean, so its branch-based `latest` behavior remains valid:
 
 ```bash
 /home/inri/.codex/skills/hugcivi-local-image-push/scripts/local-image-push.sh --push
 ```
 
-Expected behavior:
-
-- Builds `linux/amd64`.
-- Tags `ghcr.io/mephiblin/hugcivi:sha-<short-sha>`.
-- Tags `ghcr.io/mephiblin/hugcivi:latest` when on `main`.
-- Pushes the tags to GHCR.
-
-Fallback command if the helper script is unavailable:
+When it is unavailable, the primary worktree is dirty, or it cannot target the clean worktree, use the explicit detached-worktree build:
 
 ```bash
-SHORT_SHA="$(git rev-parse --short HEAD)"
 docker buildx build \
   --platform linux/amd64 \
   -t "ghcr.io/mephiblin/hugcivi:sha-${SHORT_SHA}" \
   -t ghcr.io/mephiblin/hugcivi:latest \
-  --push .
+  --push "$BUILD_DIR"
 ```
 
-Do not publish from a dirty worktree unless the user explicitly asks for a temporary local test image. For a local-only smoke build, use `--load` instead of `--push`.
+Verify both tags resolve to an AMD64 manifest:
 
-## Git Push
+```bash
+docker buildx imagetools inspect "ghcr.io/mephiblin/hugcivi:sha-${SHORT_SHA}"
+docker buildx imagetools inspect ghcr.io/mephiblin/hugcivi:latest
+```
 
-Push git after the image push succeeds:
+Remove only the temporary worktree created by this workflow:
+
+```bash
+git worktree remove "$BUILD_DIR" --force
+```
+
+If the user requested the normal order, push Git only after the image push succeeds:
 
 ```bash
 git push origin main
 ```
 
-Then verify:
-
-```bash
-git status --short
-git log -1 --oneline
-```
-
-## Final Report
-
-Report these items to the user:
-
-- Commit SHA and message.
-- Verification commands and pass/fail result.
-- Image tags pushed.
-- Git push result.
-- Whether the worktree is clean.
-- That Portainer can pull `ghcr.io/mephiblin/hugcivi:latest` when image push succeeded.
+If the user explicitly requested Git push first, verify `origin/main` already contains `HEAD`, then continue with the image build and report that ordering deviation.
 
 ## Failure Handling
 
-- If tests fail, stop before commit/build unless the user explicitly accepts the failure.
-- If image push fails, do not git push unless the user explicitly asks to publish the code anyway.
-- If git push fails after image push, report that GHCR has the image but `origin/main` did not receive the commit.
-- If the branch is not `main`, ask before tagging/pushing `latest`.
+- Stop before commit/build on test failures unless the user explicitly accepts verified baseline failures.
+- On GHCR authentication failure, ask the user to run `docker login ghcr.io`.
+- If image push fails in the normal order, do not Git-push unless the user explicitly asks to publish code anyway.
+- If Git was explicitly pushed first and the image later fails, report that `origin/main` contains the commit but GHCR does not contain the matching release.
+- If Git push fails after image success, report that GHCR has the image while `origin/main` lacks the commit.
+- If the branch is not `main`, ask before tagging or pushing `latest`.
+
+## Final Report
+
+Report:
+
+- Workflow used.
+- Commit SHA and message.
+- Verification pass/fail, including accepted baseline failures.
+- For build workflow: `linux/amd64` confirmation and both GHCR tags.
+- Git push result and local/remote ahead/behind count.
+- Whether the main worktree is clean; identify preserved unrelated files if not.
+- When image push succeeds, confirm Portainer can pull `ghcr.io/mephiblin/hugcivi:latest`.
