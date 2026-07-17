@@ -349,9 +349,12 @@ ASMR.one work URL은 `/data/asmr.one/{source_id} - {title}` 아래에 API track 
 ```text
 gallery-dl https://example.com/gallery
 gdl https://example.com/gallery
+https://pawchive.pw/posts
 ```
 
 `gallery-dl`이 지원하는 사이트를 명시적으로 다운로드할 때 사용합니다. 일반 HTTP 파일 URL과 충돌하지 않도록 `gallery-dl` 또는 `gdl` 접두어를 붙입니다. 기본 저장 경로는 `/data/gallery-dl/{host}/{name}`입니다.
+
+Pawchive의 `pawchive.pw`, `pawchive.st` URL은 접두어 없이 붙여넣어도 gallery-dl로 자동 분류합니다. Pawchive의 전체 게시물, 아티스트 목록, 사용자 프로필, 개별 게시물, 즐겨찾기 URL을 gallery-dl 지원 범위에서 처리하며, 계정 접근이 필요한 URL은 설정창의 gallery-dl Username/Password 또는 Cookies 설정을 사용합니다.
 
 공식 지원 목록의 인증 분류는 앱 설정의 gallery-dl 입력으로 처리합니다.
 

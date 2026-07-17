@@ -18,6 +18,12 @@ CIVITAI_HOSTS = {
     "www.civitai.green",
 }
 ASMRONE_HOSTS = {"asmr.one", "www.asmr.one"}
+PAWCHIVE_HOSTS = {
+    "pawchive.pw",
+    "www.pawchive.pw",
+    "pawchive.st",
+    "www.pawchive.st",
+}
 ASMRONE_WORK_RE = re.compile(
     r"^/work/(?:(?P<source_id>[A-Za-z]{2}\d+)|(?P<work_id>\d+)(?:/[^/?#]+/(?P<nested_source_id>[A-Za-z]{2}\d+))?)/?$",
     re.IGNORECASE,
@@ -100,6 +106,13 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
             return parse_hitomi_url(text, target_subdir=target_subdir)
         if is_asmrone_host(host):
             return parse_asmrone_url(text, target_subdir=target_subdir)
+        if is_pawchive_host(parsed.hostname or ""):
+            return ParsedDownload(
+                source="gallerydl",
+                raw_input=text,
+                target_subdir=target_subdir,
+                gallerydl_url=text,
+            )
         if is_comfyui_workflow_url(text, require_hint=True):
             return parse_comfyui_workflow_url(text, target_subdir=target_subdir)
         if is_ytdlp_preferred_url(text):
@@ -124,6 +137,10 @@ def parse_input(raw_input: str, target_subdir: str | None = None) -> ParsedDownl
 
 def is_asmrone_host(host: str) -> bool:
     return host.rstrip(".").lower() in ASMRONE_HOSTS
+
+
+def is_pawchive_host(host: str) -> bool:
+    return host.rstrip(".").lower() in PAWCHIVE_HOSTS
 
 
 def parse_asmrone_url(
