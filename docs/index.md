@@ -1,6 +1,6 @@
 # HugCivi Documentation Index
 
-Last updated: 2026-07-09
+Last updated: 2026-07-11
 
 Use this page to decide which document is authoritative for current development.
 
@@ -25,6 +25,7 @@ Use this page to decide which document is authoritative for current development.
 | [Project Philosophy](philosophy.md) | current design reference | Project values and boundaries. |
 | [Civitai Workflow Archive URL Check 2026-07-09](civitai-workflow-archive-url-check-2026-07-09.md) | snapshot reference | Documents three Civitai `Workflows` archive URLs, their current API shape, HugCivi classification, expected archive paths, and token requirement. |
 | [Media Library Scaling Comparison 2026-07-09](media-library-scaling-comparison-2026-07-09.md) | planning reference | Compares HugCivi's DB/cache/job approach with Jellyfin/Plex-style large media libraries and records the six cache/index maintenance follow-ups. |
+| [Frontend Visual Performance And Maintainability Audit 2026-07-11](frontend-visual-performance-maintainability-audit-2026-07-11.md) | verified audit and remediation planning reference | Records representative-thumbnail correctness, polling/DOM lifecycle, observer and lock registry growth, frontend source size, preview drift, browser measurements, and acceptance criteria. |
 | [gallery-dl Authentication Notes](gallery-dl-auth.md) | snapshot reference | gallery-dl supported-site auth snapshot from 2026-06-30. |
 
 ## Historical Or Planning Records
