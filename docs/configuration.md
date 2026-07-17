@@ -97,7 +97,7 @@ The authenticated settings modal renders these credential and option values in p
 | `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS` | `2` | env/UI | Minimum provider cooldown. |
 | `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS` | `2` | env/UI | Maximum provider cooldown. |
 | `QUEUE_PROVIDER_COOLDOWN_SECONDS` | `2` | env/UI legacy | Compatibility fallback used when min/max cooldown values are absent. Prefer the min/max keys. |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Docker/local `600`, Portainer `0` | env/UI | Watchdog timeout and Hugging Face Hub response wait. `0` disables timeout semantics. |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Docker/local `600`, Portainer `0` | env/UI | Watchdog timeout when neither files/counters nor external downloader output show activity, plus the Hugging Face Hub response wait. `0` disables timeout semantics. |
 | `DOWNLOAD_REQUEST_MIN_INTERVAL_SECONDS` | `1.5` | env | Default host throttle. |
 | `HF_REQUEST_MIN_INTERVAL_SECONDS` | default throttle | env | Hugging Face-specific request throttle. |
 | `CIVITAI_REQUEST_MIN_INTERVAL_SECONDS` | default throttle | env | Civitai-specific request throttle. |

@@ -91,7 +91,7 @@ Settings:
 | `QUEUE_PER_PROVIDER_LIMIT` | Concurrent jobs allowed for the same provider bucket. Hugging Face snapshot internal workers stay fixed at 1 so this provider limit does not multiply. |
 | `QUEUE_PROVIDER_COOLDOWN_MIN_SECONDS` | Minimum cooldown after a provider job finishes. |
 | `QUEUE_PROVIDER_COOLDOWN_MAX_SECONDS` | Maximum cooldown after a provider job finishes. |
-| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Watchdog timeout for jobs with no detected progress. Hugging Face Hub response waits also follow this value. `0` disables the timeout semantics. |
+| `DOWNLOAD_STALL_TIMEOUT_SECONDS` | Watchdog timeout for jobs with no detected file, byte-counter, filename, or external downloader output activity. Hugging Face Hub response waits also follow this value. `0` disables the timeout semantics. |
 
 Internal server-local jobs use a separate limit:
 
@@ -233,6 +233,8 @@ The media viewer's Civitai health check uses `/api/civitai/resource-health`. Ima
 Bare `pawchive.pw` and `pawchive.st` URLs use the gallery-dl queue and archive under `/data/gallery-dl/pawchive.pw/...`. Pawchive follows the same Kemono-style post shape: normal files and attachments are downloaded by gallery-dl, while post metadata remains in `info.json`.
 
 For Patreon posts whose `info.json` contains a Vimeo embed, HugCivi additionally runs yt-dlp against the Vimeo player URL with `https://www.patreon.com/` as the Referer. When no explicit yt-dlp format is configured, this path selects and merges the best separate MP4 video and audio streams because Patreon Vimeo embeds may not expose a pre-merged `best` format. The video and its yt-dlp info sidecar stay in the same Pawchive archive folder. An embedded-video failure fails the job instead of silently reporting success for only the preview attachment.
+
+Some HLS extractors keep an in-progress component outside the archive directory or reuse an output name while still emitting fragment progress. Those yt-dlp/gallery-dl output lines count as watchdog activity, so a healthy split-stream download is not paused merely because the visible archive size is temporarily unchanged. A process that produces neither file progress nor output still pauses after the configured timeout.
 
 ## ASMR.one Downloads
 

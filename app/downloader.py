@@ -85,6 +85,8 @@ _YT_DLP_VERSION_LOCK = threading.Lock()
 _YT_DLP_VERSION_CACHE: str | None = None
 _DOWNLOAD_COMPLETION_HOOKS_LOCK = threading.Lock()
 _DOWNLOAD_COMPLETION_HOOKS: list[Callable[[int, dict[str, Any]], None]] = []
+_EXTERNAL_PROGRESS_ACTIVITY_LOCK = threading.Lock()
+_EXTERNAL_PROGRESS_ACTIVITY: dict[int, int] = {}
 DOWNLOAD_RUNTIME_METADATA_KEY = "download_runtime"
 THUMBNAIL_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 CIVITAI_VIDEO_EXTENSIONS = {".m4v", ".mov", ".mp4", ".webm"}
@@ -768,6 +770,7 @@ def provider_cooldown_remaining_locked(provider: str) -> float:
 
 
 def job_runner(job_id: int, provider: str) -> None:
+    clear_external_progress_activity(job_id)
     watchdog_stop = threading.Event()
     watchdog = threading.Thread(
         target=job_stall_watchdog,
@@ -794,6 +797,7 @@ def job_runner(job_id: int, provider: str) -> None:
                 db.update_job(job_id, status="failed", error=str(exc))
     finally:
         watchdog_stop.set()
+        clear_external_progress_activity(job_id)
         release_provider_slot(provider)
 
 
@@ -1201,6 +1205,7 @@ def job_stall_watchdog(job_id: int, stop_event: threading.Event) -> None:
             job.get("total_bytes"),
             job.get("filename") or "",
             target_size,
+            external_progress_activity(job_id),
         )
         now = time.monotonic()
         if last_signature is None or signature != last_signature:
@@ -1216,6 +1221,21 @@ def job_stall_watchdog(job_id: int, stop_event: threading.Event) -> None:
                 error=f"No download progress for {timeout}s",
             )
             return
+
+
+def record_external_progress_activity(job_id: int) -> None:
+    with _EXTERNAL_PROGRESS_ACTIVITY_LOCK:
+        _EXTERNAL_PROGRESS_ACTIVITY[job_id] = _EXTERNAL_PROGRESS_ACTIVITY.get(job_id, 0) + 1
+
+
+def external_progress_activity(job_id: int) -> int:
+    with _EXTERNAL_PROGRESS_ACTIVITY_LOCK:
+        return _EXTERNAL_PROGRESS_ACTIVITY.get(job_id, 0)
+
+
+def clear_external_progress_activity(job_id: int) -> None:
+    with _EXTERNAL_PROGRESS_ACTIVITY_LOCK:
+        _EXTERNAL_PROGRESS_ACTIVITY.pop(job_id, None)
 
 
 def float_env(name: str, default: float) -> float:
@@ -6063,6 +6083,7 @@ def run_external_download_process(job_id: int, command: list[str], target: Path,
                 line = event[1]
                 message = line.strip()
                 if message:
+                    record_external_progress_activity(job_id)
                     db.append_log(job_id, f"{label}: {message[:1000]}")
 
             now = time.time()

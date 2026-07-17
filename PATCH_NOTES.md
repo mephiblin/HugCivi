@@ -8,6 +8,7 @@
 - 공식 gallery-dl이 인식하지 않는 Pawchive 하위 도메인과 유사 도메인은 기존 일반 HTTP URL 처리로 유지합니다.
 - Pawchive 계정 접근이 필요한 URL은 기존 gallery-dl Username/Password 또는 Cookies 설정을 그대로 사용합니다.
 - Kemono 계열 Pawchive Patreon 게시물의 `info.json`에 Vimeo 임베드가 있으면 Patreon Referer를 사용하는 yt-dlp로 본문 영상도 같은 archive 폴더에 저장합니다.
+- yt-dlp가 분리된 HLS 스트림을 저장하는 동안 파일 크기가 잠시 변하지 않더라도, 실제 다운로드 출력이 계속되면 무진행 watchdog가 정상 작업을 일시정지하지 않도록 개선했습니다.
 
 ### 개발·배포 워크플로우
 

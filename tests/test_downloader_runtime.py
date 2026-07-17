@@ -78,6 +78,53 @@ class FakeDb:
 
 
 class DownloaderRuntimeTests(unittest.TestCase):
+    def test_stall_watchdog_accepts_external_process_output_as_progress(self) -> None:
+        fake_db = FakeDb({"status": "running"})
+
+        class StopAfterActivity:
+            calls = 0
+
+            def wait(self, _timeout: float) -> bool:
+                self.calls += 1
+                if self.calls == 2:
+                    downloader.record_external_progress_activity(41)
+                return self.calls >= 3
+
+        downloader.clear_external_progress_activity(41)
+        try:
+            with (
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "queue_stall_timeout_seconds", return_value=10),
+                mock.patch.object(downloader.time, "monotonic", side_effect=[0.0, 1.0, 12.0]),
+            ):
+                downloader.job_stall_watchdog(41, StopAfterActivity())
+        finally:
+            downloader.clear_external_progress_activity(41)
+
+        self.assertEqual(fake_db.job["status"], "running")
+        self.assertFalse(any("paused: no download progress" in message for message in fake_db.logs))
+
+    def test_stall_watchdog_still_pauses_without_file_or_process_activity(self) -> None:
+        fake_db = FakeDb({"status": "running"})
+
+        class NeverStopped:
+            def wait(self, _timeout: float) -> bool:
+                return False
+
+        downloader.clear_external_progress_activity(42)
+        try:
+            with (
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "queue_stall_timeout_seconds", return_value=10),
+                mock.patch.object(downloader.time, "monotonic", side_effect=[0.0, 1.0, 12.0]),
+            ):
+                downloader.job_stall_watchdog(42, NeverStopped())
+        finally:
+            downloader.clear_external_progress_activity(42)
+
+        self.assertEqual(fake_db.job["status"], "pausing")
+        self.assertTrue(any("paused: no download progress for 10s" in message for message in fake_db.logs))
+
     def test_partial_download_path_includes_job_id_and_url_hash(self) -> None:
         final_path = Path("/data/models/model.safetensors")
 
