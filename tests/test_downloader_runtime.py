@@ -1806,6 +1806,58 @@ class DownloaderRuntimeTests(unittest.TestCase):
             "/api/fs/preview?path=gallery-dl/example.com/123/001_page.jpg",
         )
 
+    def test_pawchive_patreon_vimeo_embed_downloads_with_referer(self) -> None:
+        source_url = "https://pawchive.pw/patreon/user/55285033/post/162518737"
+        parsed = ParsedDownload(source="gallerydl", raw_input=source_url, gallerydl_url=source_url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "data"
+            fake_db = FakeDb({"status": "running"})
+
+            def fake_run_gallery_dl_process(_job_id: int, _command: list[str], target: Path) -> None:
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "cover.jpg").write_bytes(b"cover")
+                (target / "info.json").write_text(
+                    json.dumps(
+                        {
+                            "id": "162518737",
+                            "service": "patreon",
+                            "embed": {
+                                "provider": "Vimeo",
+                                "url": "https://vimeo.com/1205868424",
+                                "html": (
+                                    '<iframe src="https://player.vimeo.com/video/1205868424?app_id=136277">'
+                                    "</iframe>"
+                                ),
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            def fake_run_ytdlp_process(_job_id: int, command: list[str], target: Path) -> None:
+                self.assertIn("https://player.vimeo.com/video/1205868424?app_id=136277", command)
+                referer_index = command.index("--referer")
+                self.assertEqual(command[referer_index + 1], "https://www.patreon.com/")
+                self.assertIn("--no-playlist", command)
+                (target / "Patreon 377 [1205868424].mp4").write_bytes(b"video")
+
+            with (
+                mock.patch.object(downloader, "DATA_ROOT", root),
+                mock.patch.object(downloader, "db", fake_db),
+                mock.patch.object(downloader, "gallery_dl_available", return_value=True),
+                mock.patch.object(downloader, "yt_dlp_available", return_value=True),
+                mock.patch.object(downloader, "gallery_dl_version", return_value="test-gallery-dl"),
+                mock.patch.object(downloader, "yt_dlp_version", return_value="test-yt-dlp"),
+                mock.patch.object(downloader, "run_gallery_dl_process", side_effect=fake_run_gallery_dl_process),
+                mock.patch.object(downloader, "run_ytdlp_process", side_effect=fake_run_ytdlp_process) as ytdlp_run,
+            ):
+                downloader.download_gallerydl(58, parsed)
+
+        ytdlp_run.assert_called_once()
+        self.assertEqual(fake_db.job["filename"], "2 files")
+        self.assertTrue(any("pawchive embed saved" in message for message in fake_db.logs))
+
     def test_ytdl_download_uses_direct_ytdlp_process(self) -> None:
         parsed = ParsedDownload(
             source="gallerydl",

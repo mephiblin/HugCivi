@@ -41,6 +41,7 @@ from .defaults import (
 )
 from .metadata import classify_civitai, classify_huggingface, pick_civitai_file
 from .models import ParsedDownload
+from .parsers import is_pawchive_host
 from .utils import human_bytes, redact_sensitive_text, safe_join, sanitize_segment
 from .workflows import WorkflowParseError, extract_workflow_bundle, save_workflow_bundle, workflow_json_to_storage_text, workflow_max_bytes
 from .ytdlp_sites import is_ytdlp_preferred_host
@@ -200,6 +201,8 @@ YOUTUBE_SUBTITLE_FORMAT = "vtt/srt/best"
 YOUTUBE_METADATA_PROBE_TIMEOUT_SECONDS = 45
 YOUTUBE_SUBTITLE_PROBE_TIMEOUT_SECONDS = 45
 GALLERY_ARCHIVE_NON_MEDIA_SUFFIXES = {".part", ".json", ".txt", ".srt", ".vtt"}
+PAWCHIVE_EMBED_METADATA_MAX_BYTES = 5 * 1024 * 1024
+PAWCHIVE_EMBED_MAX_ITEMS = 20
 XHAMSTER_HOST_PATTERN = re.compile(r"^xhamster\d*\.(?:com|desi)$")
 HITOMI_GALLERY_OUTPUT_RE = re.compile(
     r"https?://(?:www\.)?hitomi\.la/(?:galleries|reader)/(?:[^/?#]+-)?(?P<id>\d+)(?:\.html)?",
@@ -5043,6 +5046,7 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
             command = gallery_dl_command(source_url, target)
             log_gallery_dl_start(job_id, source_url, target)
             run_gallery_dl_process(job_id, command, target)
+            download_pawchive_embedded_media(job_id, source_url, target)
     except Exception:
         cleanup_empty_gallery_archive_target(job_id, target)
         raise
@@ -5062,6 +5066,101 @@ def download_gallerydl(job_id: int, parsed: ParsedDownload) -> None:
         thumbnail_url=thumbnail_url or None,
     )
     db.append_log(job_id, f"saved gallery-dl archive: {target} ({human_bytes(final_size)})")
+
+
+def download_pawchive_embedded_media(job_id: int, source_url: str, target: Path) -> int:
+    entries = pawchive_embedded_media_entries(source_url, target)
+    if not entries:
+        return 0
+    if not yt_dlp_available():
+        raise RuntimeError("yt-dlp is required to download Pawchive embedded media.")
+
+    downloaded = 0
+    for entry in entries:
+        check_job_control(job_id)
+        extra_args = ytdlp_direct_cmdline_args()
+        extra_args.extend(["--referer", entry["referer"]])
+        if not has_ytdlp_cmdline_option(extra_args, "--no-playlist"):
+            extra_args.append("--no-playlist")
+        db.append_log(
+            job_id,
+            f"pawchive embed start: provider={entry['provider']} post_id={entry['post_id'] or '-'}",
+        )
+        command = yt_dlp_command(entry["url"], target, extra_args=extra_args)
+        run_ytdlp_process(job_id, command, target)
+        downloaded += 1
+        db.append_log(job_id, f"pawchive embed saved: provider={entry['provider']}")
+    return downloaded
+
+
+def pawchive_embedded_media_entries(source_url: str, target: Path) -> list[dict[str, str]]:
+    if not is_pawchive_host(urlparse(source_url).hostname or ""):
+        return []
+
+    entries: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        metadata_paths = sorted(target.rglob("*.json"), key=lambda path: str(path).lower())
+    except OSError:
+        return []
+
+    for metadata_path in metadata_paths:
+        if len(entries) >= PAWCHIVE_EMBED_MAX_ITEMS:
+            break
+        try:
+            if metadata_path.is_symlink() or metadata_path.stat().st_size > PAWCHIVE_EMBED_METADATA_MAX_BYTES:
+                continue
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or str(payload.get("service") or "").lower() != "patreon":
+            continue
+
+        raw_embeds = payload.get("embed")
+        embeds = raw_embeds if isinstance(raw_embeds, list) else [raw_embeds]
+        for embed in embeds:
+            if not isinstance(embed, dict):
+                continue
+            provider = str(embed.get("provider") or "").strip().lower()
+            if provider != "vimeo":
+                continue
+            embed_url = pawchive_vimeo_player_url(embed)
+            if not embed_url or embed_url in seen:
+                continue
+            seen.add(embed_url)
+            entries.append(
+                {
+                    "url": embed_url,
+                    "provider": "Vimeo",
+                    "referer": "https://www.patreon.com/",
+                    "post_id": str(payload.get("id") or "").strip(),
+                }
+            )
+            if len(entries) >= PAWCHIVE_EMBED_MAX_ITEMS:
+                break
+    return entries
+
+
+def pawchive_vimeo_player_url(embed: dict[str, Any]) -> str:
+    candidates: list[str] = []
+    embed_html = str(embed.get("html") or "")
+    if embed_html:
+        match = re.search(r"<iframe\b[^>]*\bsrc=(['\"])(.*?)\1", embed_html, re.IGNORECASE)
+        if match:
+            candidates.append(html.unescape(match.group(2)).strip())
+    raw_url = str(embed.get("url") or "").strip()
+    if raw_url:
+        candidates.append(raw_url)
+
+    for candidate in candidates:
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if host == "player.vimeo.com" and len(path_parts) >= 2 and path_parts[0] == "video":
+            return candidate
+        if host in {"vimeo.com", "www.vimeo.com"} and path_parts and path_parts[-1].isdigit():
+            return f"https://player.vimeo.com/video/{quote(path_parts[-1], safe='')}"
+    return ""
 
 
 def hitomi_backend() -> str:

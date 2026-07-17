@@ -7,6 +7,7 @@
 - `pawchive.pw`, `www.pawchive.pw`, `pawchive.st`, `www.pawchive.st` URL을 접두어 없이 붙여넣어도 기존 gallery-dl 다운로드 경로로 자동 분류합니다.
 - 공식 gallery-dl이 인식하지 않는 Pawchive 하위 도메인과 유사 도메인은 기존 일반 HTTP URL 처리로 유지합니다.
 - Pawchive 계정 접근이 필요한 URL은 기존 gallery-dl Username/Password 또는 Cookies 설정을 그대로 사용합니다.
+- Kemono 계열 Pawchive Patreon 게시물의 `info.json`에 Vimeo 임베드가 있으면 Patreon Referer를 사용하는 yt-dlp로 본문 영상도 같은 archive 폴더에 저장합니다.
 
 ### 개발·배포 워크플로우
 

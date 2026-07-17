@@ -228,6 +228,12 @@ The model-card `갱신` action queues a Civitai refresh job against the existing
 
 The media viewer's Civitai health check uses `/api/civitai/resource-health`. Image-page archives check referenced model-version resources from jobs/sidecars; the card/context `사용 리소스 전송` flow reuses that local presence information before creating copy-only transfer jobs for present primary files. Model archives also send the archive path and `component_downloads`, so `Check components` verifies whether local required files are present in that folder.
 
+## Pawchive Downloads
+
+Bare `pawchive.pw` and `pawchive.st` URLs use the gallery-dl queue and archive under `/data/gallery-dl/pawchive.pw/...`. Pawchive follows the same Kemono-style post shape: normal files and attachments are downloaded by gallery-dl, while post metadata remains in `info.json`.
+
+For Patreon posts whose `info.json` contains a Vimeo embed, HugCivi additionally runs yt-dlp against the Vimeo player URL with `https://www.patreon.com/` as the Referer. The video and its yt-dlp info sidecar stay in the same Pawchive archive folder. An embedded-video failure fails the job instead of silently reporting success for only the preview attachment.
+
 ## ASMR.one Downloads
 
 ASMR.one `/work/RJ...` and `/work/<id>/DLSITE/RJ...` URLs run as ordinary external download jobs in the `asmrone` provider bucket, so the global/per-provider queue limits and provider cooldown settings apply.
