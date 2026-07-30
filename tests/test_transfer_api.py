@@ -316,7 +316,7 @@ def test_civitai_resource_transfer_queues_primary_files_with_default_comfyui_map
     target_id = db.create_transfer_target(
         name="PC ComfyUI Models",
         remote_name="pc-comfyui",
-        remote_path="ComfyUI/models",
+        remote_path="5060TI_ComfyUI-models",
         policy={
             "allowed_source_prefixes": ["stable-diffusion"],
             "category": "comfyui",
@@ -339,7 +339,9 @@ def test_civitai_resource_transfer_queues_primary_files_with_default_comfyui_map
     assert preflight["resources"][0]["name"] == "Example LoRA"
     assert preflight["resources"][0]["source_path"] == "stable-diffusion/loras/example/version_456/example.safetensors"
     assert preflight["resources"][0]["destination_subpath"] == "loras/example/version_456"
-    assert preflight["resources"][0]["destination"] == "pc-comfyui:ComfyUI/models/loras/example/version_456/example.safetensors"
+    assert preflight["resources"][0]["destination"] == (
+        "pc-comfyui:5060TI_ComfyUI-models/loras/example/version_456/example.safetensors"
+    )
 
     job_response = client.post(
         "/api/transfer/civitai-resources/jobs",
@@ -351,6 +353,11 @@ def test_civitai_resource_transfer_queues_primary_files_with_default_comfyui_map
     payload = job_response.json()
     assert payload["queued_count"] == 1
     job_id = payload["jobs"][0]["id"]
+    assert payload["jobs"][0]["transfer_source_path"] == (
+        "stable-diffusion/loras/example/version_456/example.safetensors"
+    )
+    assert payload["jobs"][0]["transfer_destination_subpath"] == "loras/example/version_456"
+    assert payload["jobs"][0]["transfer_data_root_clone"] is False
     assert enqueued == [job_id]
     job = db.get_job(job_id)
     assert job is not None
@@ -371,7 +378,9 @@ def test_civitai_resource_transfer_queues_primary_files_with_default_comfyui_map
     updated_metadata = json.loads(updated_job["metadata_json"])
     assert updated_metadata["civitai_resource_transfer"]["archive_path"] == "civitai/images/creator/image_135"
     assert updated_metadata["civitai_resource_transfer"]["model_version_id"] == "456"
-    assert updated_metadata["transfer_preflight"]["destination"] == "pc-comfyui:ComfyUI/models/loras/example/version_456/example.safetensors"
+    assert updated_metadata["transfer_preflight"]["destination"] == (
+        "pc-comfyui:5060TI_ComfyUI-models/loras/example/version_456/example.safetensors"
+    )
     assert commands
 
 
@@ -1144,6 +1153,14 @@ def test_home_template_declares_transfer_ui_without_mode_payload(app_modules: tu
     assert 'id="transfer-setting-groups"' in template
     assert 'id="transfer-root-target"' in template
     assert 'id="transfer-root-submit"' in template
+    assert 'id="transfer-queue-trigger"' in template
+    assert 'id="transfer-queue-popover"' in template
+    assert 'id="transfer-queue-badge"' in template
+    assert 'id="transfer-queue-list"' in template
+    assert "function refreshTransferQueue" in template
+    assert "function renderTransferQueue" in template
+    assert "function showAllTransferJobs" in template
+    assert "source: 'transfer'" in template
     assert '<span><label for="transfer-target">대상</label></span>' in template
     assert '<span><label for="resource-transfer-target">대상</label></span>' in template
     assert '<label class="setting-field" for="transfer-target">' not in template

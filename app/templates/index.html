@@ -1087,6 +1087,29 @@
     <div class="download-queue-list" id="download-queue-list"></div>
   </section>
 
+  <aside class="transfer-queue-dock" aria-label="전송 현황">
+    <section class="transfer-queue-popover" id="transfer-queue-popover" aria-labelledby="transfer-queue-title" hidden>
+      <header class="transfer-queue-head">
+        <div>
+          <span>TRANSFER RAIL</span>
+          <strong id="transfer-queue-title">전송 현황</strong>
+        </div>
+        <button type="button" id="transfer-queue-close" aria-label="전송 현황 닫기">×</button>
+      </header>
+      <div class="transfer-queue-summary" id="transfer-queue-summary" role="status" aria-live="polite">전송 작업을 확인하는 중</div>
+      <div class="transfer-queue-list" id="transfer-queue-list"></div>
+      <button type="button" class="transfer-queue-all" id="transfer-queue-all">전체 전송 작업 보기</button>
+    </section>
+    <button type="button" class="transfer-queue-trigger" id="transfer-queue-trigger"
+            aria-expanded="false" aria-controls="transfer-queue-popover" aria-label="전송 현황 열기">
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 7h11.2l-2.6-2.6L14 3l5 5-5 5-1.4-1.4L15.2 9H4V7Zm16 10H8.8l2.6 2.6L10 21l-5-5 5-5 1.4 1.4L8.8 15H20v2Z"/>
+      </svg>
+      <span>전송</span>
+      <small id="transfer-queue-badge" hidden>0</small>
+    </button>
+  </aside>
+
   <section class="properties-modal" id="properties-modal" role="dialog" aria-modal="true" aria-labelledby="properties-title" hidden>
     <div class="properties-panel">
       <header class="properties-head">
@@ -1352,6 +1375,13 @@
     const downloadQueuePanel = document.getElementById('download-queue');
     const downloadQueueList = document.getElementById('download-queue-list');
     const downloadQueueClose = document.getElementById('download-queue-close');
+    const transferQueuePopover = document.getElementById('transfer-queue-popover');
+    const transferQueueTrigger = document.getElementById('transfer-queue-trigger');
+    const transferQueueClose = document.getElementById('transfer-queue-close');
+    const transferQueueSummary = document.getElementById('transfer-queue-summary');
+    const transferQueueList = document.getElementById('transfer-queue-list');
+    const transferQueueBadge = document.getElementById('transfer-queue-badge');
+    const transferQueueAll = document.getElementById('transfer-queue-all');
     const jobsSection = document.getElementById('jobs-section');
     const clearJobsButton = document.getElementById('clear-jobs-button');
     const jobSourceFilters = document.getElementById('job-source-filters');
@@ -1523,6 +1553,8 @@
     let currentJobs = Array.isArray(initialJobs) ? initialJobs : [];
     let activeJobSource = normalizeJobSource(initialJobsPage?.active_source || '');
     let currentJobsPage = normalizeJobsPage(initialJobsPage, currentJobs.length);
+    let transferQueueJobs = [];
+    let transferQueuePollActive = false;
     let currentLibraryItems = Array.isArray(initialLibraryItems) ? initialLibraryItems : [];
     let activeLibrarySourceGroup = normalizeLibrarySourceGroup(initialLibraryPage?.source_group || '');
     let currentLibraryPage = normalizeLibraryPage(initialLibraryPage, currentLibraryItems.length);
@@ -1739,6 +1771,7 @@
     });
 
     document.addEventListener('click', () => {
+      closeTransferQueue();
       closeSettingsModal();
       closeBulkAddModal();
       closeSubscriptionModal();
@@ -1758,6 +1791,7 @@
         return;
       }
       if (event.key === 'Escape') {
+        closeTransferQueue();
         closeSettingsModal();
         closeBulkAddModal();
         closeSubscriptionModal();
@@ -1926,6 +1960,13 @@
     transferRootDestination.addEventListener('input', clearTransferDataRootPreflight);
     transferRootPreflightButton.addEventListener('click', refreshTransferDataRootPreflight);
     transferRootSubmit.addEventListener('click', submitTransferDataRootClone);
+    transferQueueTrigger.addEventListener('click', event => {
+      event.stopPropagation();
+      toggleTransferQueue();
+    });
+    transferQueuePopover.addEventListener('click', event => event.stopPropagation());
+    transferQueueClose.addEventListener('click', closeTransferQueue);
+    transferQueueAll.addEventListener('click', showAllTransferJobs);
     clearJobsButton.addEventListener('click', clearJobHistory);
     document.getElementById('jobs-body').addEventListener('click', event => {
       const button = event.target.closest('[data-job-action]');
@@ -3020,7 +3061,10 @@
         }
         activeJobSource = 'transfer';
         closeResourceTransferModal();
-        await refreshJobs({page: 1, source: 'transfer'});
+        await Promise.all([
+          refreshJobs({page: 1, source: 'transfer'}),
+          refreshTransferQueue({open: true}),
+        ]);
       } catch (err) {
         resourceTransferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
         resourceTransferSubmit.disabled = false;
@@ -3242,11 +3286,8 @@
     function transferSettingPathLooksComfyuiModelsRoot() {
       const cleanPath = normalizePath(transferSettingPath.value || '').toLowerCase();
       if (!cleanPath) return true;
-      return cleanPath === 'comfyui-models'
-        || cleanPath.endsWith('/comfyui-models')
-        || cleanPath === 'models'
-        || cleanPath.endsWith('/models')
-        || cleanPath.endsWith('/comfyui/models');
+      const basename = cleanPath.split('/').filter(Boolean).pop() || '';
+      return basename === 'models' || /(?:^|[-_ ])comfyui[-_ ]models$/.test(basename);
     }
 
     function transferComfyuiMappingInputs() {
@@ -4024,7 +4065,10 @@
         }
         activeJobSource = 'transfer';
         closeTransferModal();
-        await refreshJobs({page: 1, source: 'transfer'});
+        await Promise.all([
+          refreshJobs({page: 1, source: 'transfer'}),
+          refreshTransferQueue({open: true}),
+        ]);
       } catch (err) {
         transferStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
         transferSubmit.disabled = false;
@@ -4218,7 +4262,10 @@
         transferRootPreflight.innerHTML = renderTransferPreflight(data);
         transferRootStatus.textContent = '복제 작업을 추가했습니다.';
         activeJobSource = 'transfer';
-        await refreshJobs({page: 1, source: 'transfer'});
+        await Promise.all([
+          refreshJobs({page: 1, source: 'transfer'}),
+          refreshTransferQueue({open: true}),
+        ]);
       } catch (err) {
         transferRootStatus.textContent = '네트워크 요청을 완료하지 못했습니다.';
       } finally {
@@ -5910,6 +5957,164 @@
       const valueOrAlias = Object.prototype.hasOwnProperty.call(aliases, normalized) ? aliases[normalized] : normalized;
       const allowed = new Set(['', 'civitai', 'gallerydl', 'ytdlp', 'hitomi', 'asmrone', 'generic', 'huggingface', 'comfyui', 'media', 'unknown']);
       return allowed.has(valueOrAlias) ? valueOrAlias : 'unknown';
+    }
+
+    function transferQueueJobActive(job) {
+      return ['queued', 'running', 'pausing', 'paused', 'canceling', 'deleting'].includes(
+        String(job?.status || '').toLowerCase()
+      );
+    }
+
+    function transferQueueStatusLabel(status) {
+      const labels = {
+        queued: '대기',
+        running: '전송 중',
+        pausing: '정지 중',
+        paused: '정지',
+        canceling: '취소 중',
+        canceled: '취소',
+        deleting: '삭제 중',
+        done: '완료',
+        failed: '실패',
+      };
+      const normalized = String(status || '').toLowerCase();
+      return labels[normalized] || normalized || '확인 중';
+    }
+
+    function transferQueueJobTitle(job) {
+      const sourcePath = normalizePath(job?.transfer_source_path || '');
+      return job?.filename
+        || (sourcePath ? sourcePath.split('/').pop() : '')
+        || (job?.transfer_data_root_clone ? '/data 전체 복제' : '')
+        || `전송 #${job?.id || '-'}`;
+    }
+
+    function transferQueueJobRoute(job) {
+      if (job?.transfer_data_root_clone) {
+        return {source: '/data', destination: '대상 루트'};
+      }
+      const sourcePath = normalizePath(job?.transfer_source_path || '');
+      const destination = normalizePath(job?.transfer_destination_subpath || '');
+      return {
+        source: sourcePath ? `/data/${sourcePath}` : '전송 원본',
+        destination: destination || '대상 루트',
+      };
+    }
+
+    function transferQueueOrderedJobs(jobs) {
+      const rows = Array.isArray(jobs) ? jobs : [];
+      return [
+        ...rows.filter(transferQueueJobActive),
+        ...rows.filter(job => !transferQueueJobActive(job)),
+      ].slice(0, 10);
+    }
+
+    function renderTransferQueue() {
+      const activeJobs = transferQueueJobs.filter(transferQueueJobActive);
+      const runningCount = activeJobs.filter(job => String(job.status || '') === 'running').length;
+      const queuedCount = activeJobs.filter(job => String(job.status || '') === 'queued').length;
+      const pausedCount = activeJobs.filter(job => ['pausing', 'paused'].includes(String(job.status || ''))).length;
+      transferQueueTrigger.classList.toggle('has-active', activeJobs.length > 0);
+      transferQueueBadge.hidden = activeJobs.length <= 0;
+      transferQueueBadge.textContent = activeJobs.length > 99 ? '99+' : String(activeJobs.length);
+      transferQueueTrigger.setAttribute(
+        'aria-label',
+        activeJobs.length ? `전송 현황 열기, 활성 작업 ${activeJobs.length}개` : '전송 현황 열기'
+      );
+      if (activeJobs.length) {
+        const parts = [
+          runningCount ? `전송 중 ${formatCount(runningCount)}` : '',
+          queuedCount ? `대기 ${formatCount(queuedCount)}` : '',
+          pausedCount ? `정지 ${formatCount(pausedCount)}` : '',
+          activeJobs.length - runningCount - queuedCount - pausedCount
+            ? `기타 ${formatCount(activeJobs.length - runningCount - queuedCount - pausedCount)}`
+            : '',
+        ].filter(Boolean);
+        transferQueueSummary.textContent = parts.join(' · ');
+      } else {
+        transferQueueSummary.textContent = transferQueueJobs.length
+          ? `활성 작업 없음 · 최근 ${formatCount(Math.min(10, transferQueueJobs.length))}개`
+          : '아직 전송 작업이 없습니다.';
+      }
+
+      const visibleJobs = transferQueueOrderedJobs(transferQueueJobs);
+      transferQueueList.innerHTML = visibleJobs.length ? visibleJobs.map(job => {
+        const status = String(job.status || '').toLowerCase();
+        const route = transferQueueJobRoute(job);
+        const pct = job.percent !== null && job.percent !== undefined ? Number(job.percent) : null;
+        const hasPercent = pct !== null && Number.isFinite(pct);
+        const safePercent = hasPercent ? Math.max(0, Math.min(100, pct)) : 0;
+        const progressText = hasPercent
+          ? `${safePercent}% · ${job.progress_human || '0 B'} / ${job.total_human || '-'}`
+          : (job.progress_human || transferQueueStatusLabel(status));
+        return `<article class="transfer-queue-item ${escapeHtml(status)}">
+          <span class="transfer-queue-node" aria-hidden="true"></span>
+          <div class="transfer-queue-copy">
+            <div class="transfer-queue-item-head">
+              <strong>${escapeHtml(transferQueueJobTitle(job))}</strong>
+              <small>${escapeHtml(transferQueueStatusLabel(status))}</small>
+            </div>
+            <p title="${escapeHtml(`${route.source} → ${route.destination}`)}">
+              <span>${escapeHtml(route.source)}</span>
+              <b>→ ${escapeHtml(route.destination)}</b>
+            </p>
+            <div class="transfer-queue-progress ${hasPercent ? '' : 'is-indeterminate'}">
+              <span style="width:${safePercent}%"></span>
+            </div>
+            <footer>
+              <span>${escapeHtml(progressText)}</span>
+              <a href="/jobs/${escapeHtml(job.id)}/log" target="_blank" rel="noopener">로그</a>
+            </footer>
+          </div>
+        </article>`;
+      }).join('') : '<div class="transfer-queue-empty">전송을 시작하면 여기에 진행 상황이 표시됩니다.</div>';
+    }
+
+    function openTransferQueue() {
+      transferQueuePopover.hidden = false;
+      transferQueueTrigger.setAttribute('aria-expanded', 'true');
+    }
+
+    function closeTransferQueue() {
+      transferQueuePopover.hidden = true;
+      transferQueueTrigger.setAttribute('aria-expanded', 'false');
+    }
+
+    function toggleTransferQueue() {
+      if (transferQueuePopover.hidden) {
+        openTransferQueue();
+        refreshTransferQueue();
+      } else {
+        closeTransferQueue();
+      }
+    }
+
+    async function refreshTransferQueue(options = {}) {
+      if (options.open) openTransferQueue();
+      if (transferQueuePollActive) return;
+      transferQueuePollActive = true;
+      try {
+        const params = new URLSearchParams({limit: '50', page: '1', source: 'transfer'});
+        const response = await fetch(`/api/jobs?${params.toString()}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        transferQueueJobs = Array.isArray(data) ? data : (Array.isArray(data.jobs) ? data.jobs : []);
+        renderTransferQueue();
+      } catch (err) {
+        if (!transferQueueJobs.length) {
+          transferQueueSummary.textContent = '전송 현황을 불러오지 못했습니다.';
+        }
+      } finally {
+        transferQueuePollActive = false;
+      }
+    }
+
+    async function showAllTransferJobs() {
+      closeTransferQueue();
+      switchToHome();
+      activeJobSource = 'transfer';
+      await refreshJobs({page: 1, source: 'transfer'});
+      jobsSection?.scrollIntoView({behavior: 'smooth', block: 'start'});
     }
 
     async function refreshJobs(options = {}) {
@@ -9390,9 +9595,12 @@
     }
 
     renderJobs(currentJobs);
+    renderTransferQueue();
+    refreshTransferQueue();
     renderWorkMode();
     refreshSubscriptions();
     setInterval(refreshJobs, 2500);
+    setInterval(refreshTransferQueue, 3000);
     setInterval(refreshSubscriptions, 30000);
     setInterval(refreshStorage, 30000);
   </script>

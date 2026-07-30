@@ -652,8 +652,11 @@ def test_default_comfyui_destination_subpath_for_source(source_path: str, destin
         ("pc/ComfyUI/models", True),
         ("comfyui-models", True),
         ("pc/comfyui-models", True),
+        ("5060TI_ComfyUI-models", True),
+        ("pc/5060ti-comfyui_models", True),
         ("ComfyUI/models/loras", False),
         ("pc-comfyui", False),
+        ("mycomfyui-models", False),
         ("", False),
     ],
 )

@@ -3217,6 +3217,10 @@ def decorate_job(job: dict, favorites: set[str] | None = None, *, include_log: b
             "source_group": normalize_library_source_group(internal_payload.get("source_group")),
             "category": str(internal_payload.get("category") or "").strip(),
         }
+    if job["job_kind"] == INTERNAL_JOB_TRANSFER_COPY:
+        job["transfer_source_path"] = str(internal_payload.get("source_path") or "").strip("/")
+        job["transfer_destination_subpath"] = str(internal_payload.get("destination_subpath") or "").strip("/")
+        job["transfer_data_root_clone"] = bool(internal_payload.get("data_root_clone"))
     if (
         not job.get("thumbnail_url")
         and job.get("target_dir")

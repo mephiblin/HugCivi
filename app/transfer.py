@@ -714,12 +714,8 @@ def path_looks_like_comfyui_models_root(path: str | Path | None) -> bool:
     normalized = normalize_remote_path(str(path or "")).lower()
     if not normalized:
         return False
-    return (
-        normalized == "models"
-        or normalized.endswith("/models")
-        or normalized == "comfyui-models"
-        or normalized.endswith("/comfyui-models")
-    )
+    basename = normalized.rsplit("/", 1)[-1]
+    return basename == "models" or bool(re.search(r"(?:^|[-_ ])comfyui[-_ ]models$", basename))
 
 
 def build_receiver_destination_path(

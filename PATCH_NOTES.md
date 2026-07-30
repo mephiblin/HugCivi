@@ -7,6 +7,8 @@
 - 전송 대상 기준 경로가 `ComfyUI/models` 또는 `comfyui-models` 같은 ComfyUI 모델 루트이면, 저장된 매핑이 없는 기존 대상도 Civitai 이미지의 사용 리소스를 종류별 표준 하위 폴더로 자동 전송합니다.
 - Checkpoint는 `checkpoints`, LoRA는 `loras`, diffusion model은 `diffusion_models`, VAE는 `vae`, ControlNet은 `controlnet`, embedding은 `embeddings`, upscaler는 `upscale_models`로 분류합니다.
 - 저장된 사용자 지정 ComfyUI 매핑은 계속 우선하며, `models/loras`처럼 단일 모델 폴더를 기준 경로로 둔 대상에는 모델 루트 기본 매핑을 중복 적용하지 않습니다.
+- `5060TI_ComfyUI-models`처럼 장치명과 구분자가 앞에 붙은 공유폴더도 ComfyUI 모델 루트로 인식해 LoRA가 대상 루트에 바로 복사되지 않도록 보완했습니다.
+- 화면 오른쪽 아래에 활성 작업 배지와 원본·목적 경로, 진행률, 최근 상태, 로그 링크를 보여주는 전송 현황 패널을 추가했습니다.
 
 ## 2026-07-18
 

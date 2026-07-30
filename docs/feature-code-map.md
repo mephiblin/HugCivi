@@ -89,6 +89,8 @@ Authentication is Basic Auth through `require_auth()` in `app/main.py`. Default 
 | Database maintenance | Maintenance APIs and optional clear-history vacuum | `api_db_wal`, checkpoint, optimize, compact, backup, `api_clear_jobs`; DB helpers | currently API-only or admin tooling | `maintenance_runs`, `/config/backups`; `SQLITE_VACUUM_AFTER_CLEAR` controls clear-history `VACUUM` | `test_database_backup_uses_sqlite_backup_api` |
 | Container deployment | Docker/Portainer/GHCR | Dockerfile, entrypoint, `portainer-stack.yml`, build skill workflow | N/A | `/data`, `/config`, image `ghcr.io/mephiblin/hugcivi:latest` and `sha-<commit>` tags | build smoke/manual CI workflow; local image push verification in patch notes |
 
+Transfer queue detail: `decorate_job` adds sanitized `transfer_source_path`, `transfer_destination_subpath`, and `transfer_data_root_clone` fields for `transfer_copy` summaries. The browser functions `refreshTransferQueue`, `renderTransferQueue`, and `showAllTransferJobs` independently poll the existing Transfer-filtered jobs page, render the bottom-right badge/popover, and jump to the full filtered table. `path_looks_like_comfyui_models_root` and `transferSettingPathLooksComfyuiModelsRoot` both recognize separated device-prefixed basenames such as `5060TI_ComfyUI-models` while leaving single model folders such as `models/loras` unchanged.
+
 ## API Route Index
 
 | Route Group | Routes | Main Code |
