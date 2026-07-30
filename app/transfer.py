@@ -698,6 +698,30 @@ def policy_destination_subpath_for_source(source_path: str | Path, policy: Mappi
     return best_destination
 
 
+def default_comfyui_destination_subpath_for_source(source_path: str | Path) -> str:
+    relative_path = normalize_remote_path(str(source_path))
+    best_prefix = ""
+    best_destination = ""
+    for prefix, destination_subpath in COMFYUI_HUGCIVI_ROUTE_MAP.items():
+        if relative_path == prefix or relative_path.startswith(f"{prefix}/"):
+            if len(prefix) > len(best_prefix):
+                best_prefix = prefix
+                best_destination = destination_subpath
+    return validate_destination_subpath(best_destination)
+
+
+def path_looks_like_comfyui_models_root(path: str | Path | None) -> bool:
+    normalized = normalize_remote_path(str(path or "")).lower()
+    if not normalized:
+        return False
+    return (
+        normalized == "models"
+        or normalized.endswith("/models")
+        or normalized == "comfyui-models"
+        or normalized.endswith("/comfyui-models")
+    )
+
+
 def build_receiver_destination_path(
     source: str | Path,
     *,

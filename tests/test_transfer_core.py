@@ -19,6 +19,7 @@ from app.transfer import (
     check_comfyui_local_mount_target,
     copy_to_local_mount,
     data_remote_dir,
+    default_comfyui_destination_subpath_for_source,
     ensure_data_remote_is_separate,
     local_mount_preflight,
     local_mount_tree,
@@ -27,6 +28,7 @@ from app.transfer import (
     normalize_receiver_url,
     normalize_local_mount_remote_path,
     normalize_remote_path,
+    path_looks_like_comfyui_models_root,
     receiver_timeout_seconds,
     resolve_data_source_path,
     resolve_local_mount_base,
@@ -624,6 +626,39 @@ def test_comfyui_policy_mappings_are_sanitized() -> None:
 
     with pytest.raises(ValueError, match="Remote path"):
         sanitize_policy({"comfyui_mappings": {"stable-diffusion/checkpoints": "../escape"}})
+
+
+@pytest.mark.parametrize(
+    ("source_path", "destination_subpath"),
+    [
+        ("stable-diffusion/checkpoints/model/version_1/model.safetensors", "checkpoints"),
+        ("stable-diffusion/loras/model/version_2/model.safetensors", "loras"),
+        ("stable-diffusion/diffusion_models/model/version_3/model.safetensors", "diffusion_models"),
+        ("stable-diffusion/vae/model/version_4/model.safetensors", "vae"),
+        ("stable-diffusion/controlnet/model/version_5/model.safetensors", "controlnet"),
+        ("stable-diffusion/embeddings/model/version_6/model.pt", "embeddings"),
+        ("stable-diffusion/upscalers/model/version_7/model.pth", "upscale_models"),
+        ("civitai/images/creator/image_1", ""),
+    ],
+)
+def test_default_comfyui_destination_subpath_for_source(source_path: str, destination_subpath: str) -> None:
+    assert default_comfyui_destination_subpath_for_source(source_path) == destination_subpath
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("ComfyUI/models", True),
+        ("pc/ComfyUI/models", True),
+        ("comfyui-models", True),
+        ("pc/comfyui-models", True),
+        ("ComfyUI/models/loras", False),
+        ("pc-comfyui", False),
+        ("", False),
+    ],
+)
+def test_path_looks_like_comfyui_models_root(path: str, expected: bool) -> None:
+    assert path_looks_like_comfyui_models_root(path) is expected
 
 
 def test_sync_move_delete_policy_inputs_are_rejected() -> None:

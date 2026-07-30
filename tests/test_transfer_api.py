@@ -262,7 +262,7 @@ def test_transfer_preflight_preserves_civitai_model_folder_for_archive_versions(
     assert payload["destination"] == "pc-comfyui:ComfyUI/models/loras/example-model/version_456"
 
 
-def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
+def test_civitai_resource_transfer_queues_primary_files_with_default_comfyui_mapping(
     app_modules: tuple,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -320,7 +320,6 @@ def test_civitai_resource_transfer_queues_primary_files_with_comfyui_mapping(
         policy={
             "allowed_source_prefixes": ["stable-diffusion"],
             "category": "comfyui",
-            "comfyui_mappings": {"stable-diffusion/loras": "loras"},
         },
     )
     enqueued: list[int] = []

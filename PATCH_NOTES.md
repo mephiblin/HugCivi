@@ -1,5 +1,13 @@
 # 패치내역
 
+## 2026-07-31
+
+### Civitai 사용 리소스 전송
+
+- 전송 대상 기준 경로가 `ComfyUI/models` 또는 `comfyui-models` 같은 ComfyUI 모델 루트이면, 저장된 매핑이 없는 기존 대상도 Civitai 이미지의 사용 리소스를 종류별 표준 하위 폴더로 자동 전송합니다.
+- Checkpoint는 `checkpoints`, LoRA는 `loras`, diffusion model은 `diffusion_models`, VAE는 `vae`, ControlNet은 `controlnet`, embedding은 `embeddings`, upscaler는 `upscale_models`로 분류합니다.
+- 저장된 사용자 지정 ComfyUI 매핑은 계속 우선하며, `models/loras`처럼 단일 모델 폴더를 기준 경로로 둔 대상에는 모델 루트 기본 매핑을 중복 적용하지 않습니다.
+
 ## 2026-07-18
 
 ### gallery-dl / Pawchive

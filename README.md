@@ -516,6 +516,8 @@ HugCivi는 `/data`에 이미 보관된 파일이나 폴더를 등록된 대상�
 
 전송 작업은 일반 작업 목록에 `Transfer`로 표시됩니다. 연결 폴더, Receiver, rclone 운영값은 [운영 가이드](docs/operations.md)의 Copy-Only Transfer 섹션을 참고하세요.
 
+Civitai 이미지 카드의 `사용 리소스 전송`은 로컬에 보유한 LoRA, checkpoint, diffusion model, VAE, ControlNet, embedding, upscaler를 각각 별도 전송 작업으로 만듭니다. 대상 기준 경로가 `ComfyUI/models` 또는 `comfyui-models` 같은 ComfyUI 모델 루트이면, 저장된 매핑이 없는 기존 대상도 `loras`, `checkpoints`, `diffusion_models`, `vae`, `controlnet`, `embeddings`, `upscale_models` 하위 폴더로 자동 분류합니다. 저장된 사용자 지정 매핑은 계속 우선합니다.
+
 ## 토큰 및 인증 입력
 
 ### Hugging Face Token

@@ -1850,7 +1850,7 @@ def civitai_resource_transfer_plan(payload: dict[str, Any]) -> tuple[dict[str, A
             if relative_path in seen_sources:
                 skipped.append({**base_row, "source_path": relative_path, "reason": "이미 같은 파일이 포함되었습니다."})
                 continue
-            destination_subpath = transfer.policy_destination_subpath_for_source(relative_path, target_policy(target))
+            destination_subpath = civitai_resource_destination_subpath(relative_path, target)
             destination_subpath = transfer_destination_subpath_for_source(checked_source, target, destination_subpath)
             preflight = transfer_preflight_payload(
                 checked_source,
@@ -1898,6 +1898,15 @@ def civitai_resource_transfer_plan(payload: dict[str, Any]) -> tuple[dict[str, A
         "skipped": skipped,
     }
     return target, plan
+
+
+def civitai_resource_destination_subpath(source_path: str, target: dict[str, Any]) -> str:
+    configured = transfer.policy_destination_subpath_for_source(source_path, target_policy(target))
+    if configured:
+        return configured
+    if not transfer.path_looks_like_comfyui_models_root(target.get("remote_path")):
+        return ""
+    return transfer.default_comfyui_destination_subpath_for_source(source_path)
 
 
 def civitai_generation_resource_entries(metadata: dict[str, Any]) -> list[dict[str, Any]]:
